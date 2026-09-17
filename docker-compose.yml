@@ -103,12 +103,12 @@ services:
     # admin site's CSS/JS is always up to date; it's a fast no-op if
     # nothing changed.
   
-    # command: python manage.py runserver 0.0.0.0:8030
-    command: sh -c "python manage.py collectstatic --noinput && exec gunicorn kormic_backend.wsgi:application --bind 0.0.0.0:8030 --workers ${GUNICORN_WORKERS:-3} --timeout ${GUNICORN_TIMEOUT:-120} --access-logfile - --error-logfile - ${GUNICORN_EXTRA_ARGS:-}"
+    # command: python manage.py runserver 0.0.0.0:8000
+    command: sh -c "python manage.py collectstatic --noinput && exec gunicorn kormic_backend.wsgi:application --bind 0.0.0.0:8000 --workers ${GUNICORN_WORKERS:-3} --timeout ${GUNICORN_TIMEOUT:-120} --access-logfile - --error-logfile - ${GUNICORN_EXTRA_ARGS:-}"
     ports:
-      - "8030:8030"
+      - "8000:8000"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8030/api/health/', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/api/health/', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3
