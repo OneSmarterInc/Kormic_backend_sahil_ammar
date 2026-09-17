@@ -66,12 +66,21 @@ class Account(models.Model):
 
 class TOTPDevice(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="totp_device")
-    # Plaintext base32 secret. Follow-up hardening item before any production
-    # deploy: encrypt at rest (e.g. a Fernet-encrypted field).
-    secret = models.CharField(max_length=64)
+    # Only ciphertext is persisted/serialized. Keys live outside the database.
+    secret_encrypted = models.TextField(editable=False)
     confirmed_at = models.DateTimeField(null=True, blank=True)
     last_used_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    @property
+    def secret(self):
+        from accounts.crypto import decrypt_totp_secret
+        return decrypt_totp_secret(self.secret_encrypted)
+
+    @secret.setter
+    def secret(self, value):
+        from accounts.crypto import encrypt_totp_secret
+        self.secret_encrypted = encrypt_totp_secret(value)
 
     def __str__(self) -> str:
         return f"TOTPDevice(user={self.user_id}, confirmed={bool(self.confirmed_at)})"
@@ -95,8 +104,8 @@ class GitHubOAuthConnection(models.Model):
     A student's own GitHub OAuth grant, so GitHub API calls made on their
     behalf count against their personal rate limit instead of one shared
     server-wide GITHUB_TOKEN. Tokens are encrypted at rest (accounts.crypto)
-    since, unlike the TOTP secret, a leaked GitHub token is a live,
-    externally-usable credential.
+    because a leaked GitHub token is a live, externally-usable credential.
+    TOTP seeds are encrypted separately with their own key ring.
     """
 
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="github_oauth_connection")

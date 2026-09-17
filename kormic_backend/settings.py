@@ -24,6 +24,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Load ANTHROPIC_API_KEY / GITHUB_TOKEN / etc. from .env before any agent code runs.
 load_dotenv(BASE_DIR / ".env")
 
+# First key encrypts new TOTP seeds; all configured keys can decrypt. Supply
+# independently of DB credentials, DJANGO_SECRET_KEY and GitHub OAuth keys.
+TOTP_SECRET_KEYS = tuple(
+    key.strip() for key in os.getenv('TOTP_SECRET_KEYS', '').split(',') if key.strip()
+)
+
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
@@ -210,6 +216,7 @@ else:
     ]
 
 REST_FRAMEWORK = {
+    "EXCEPTION_HANDLER": "accounts.exceptions.auth_exception_handler",
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
         "rest_framework.renderers.BrowsableAPIRenderer",

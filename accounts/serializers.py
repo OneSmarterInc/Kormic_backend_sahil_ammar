@@ -162,11 +162,13 @@ class RegisterSerializer(serializers.Serializer):
 class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
+    portal = serializers.ChoiceField(choices=Account.Role.choices, required=False)
 
 
 class VerifyTOTPSerializer(serializers.Serializer):
     mfa_token = serializers.CharField()
     code = serializers.CharField()
+    portal = serializers.ChoiceField(choices=Account.Role.choices, required=False)
 
 
 class EnrollVerifySerializer(serializers.Serializer):

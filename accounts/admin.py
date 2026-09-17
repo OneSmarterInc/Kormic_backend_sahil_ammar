@@ -15,6 +15,12 @@ class AccountAdmin(admin.ModelAdmin):
 class TOTPDeviceAdmin(admin.ModelAdmin):
     list_display = ("user", "confirmed_at", "last_used_at", "created_at")
     search_fields = ("user__email",)
+    fields = ('user', 'confirmed_at', 'last_used_at', 'created_at')
+    readonly_fields = fields
+
+    def has_add_permission(self, request):
+        # Seeds can only be issued through authenticated enrollment.
+        return False
 
 
 @admin.register(TOTPBackupCode)
