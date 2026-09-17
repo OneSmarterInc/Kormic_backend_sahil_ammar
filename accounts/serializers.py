@@ -197,6 +197,52 @@ class ResetPasswordConfirmSerializer(serializers.Serializer):
         return value
 
 
+def _has_text(value) -> bool:
+    return bool(str(value or "").strip())
+
+
+def _basic_info_complete(profile: StudentProfile | None) -> bool:
+    """
+    Basic Info is deliberately separate from profile existence.
+
+    Scalar identity/study fields live in typed StudentProfile columns. The
+    onboarding-only fields are canonically preserved inside the existing
+    structured JSON field at evidence["manual_profile_api"]. This matches the
+    profile API's persistence contract and avoids treating a minimal
+    registration-created (name/email only) profile as complete.
+    """
+    if profile is None:
+        return False
+
+    evidence = profile.evidence if isinstance(profile.evidence, dict) else {}
+    basic = evidence.get("manual_profile_api")
+    if not isinstance(basic, dict):
+        basic = {}
+
+    typed_complete = all(
+        [
+            _has_text(profile.name),
+            _has_text(profile.email),
+            _has_text(profile.country),
+            _has_text(profile.institution),
+            _has_text(profile.major),
+            _has_text(profile.program),
+            profile.graduation_year is not None,
+        ]
+    )
+    structured_complete = all(
+        [
+            _has_text(basic.get("phone")),
+            _has_text(basic.get("date_of_birth")),
+            _has_text(basic.get("city")),
+            _has_text(basic.get("region")),
+            _has_text(basic.get("year_in_college")),
+            bool(basic.get("interests")),
+        ]
+    )
+    return typed_complete and structured_complete
+
+
 def student_onboarding_status(student_id: str) -> dict:
     """
     Derived (not stored) so it can never drift out of sync with the actual
@@ -204,6 +250,7 @@ def student_onboarding_status(student_id: str) -> dict:
     the DB right now, not a separately-tracked wizard-completion flag.
     """
     profile = StudentProfile.objects.filter(uuid=student_id).first()
+    basic_info_complete = _basic_info_complete(profile)
     resume_uploaded = ResumeUpload.objects.filter(student__uuid=student_id).exists()
     github_connected = bool(profile and profile.github)
     # LinkedIn is normally captured via image upload + parsing (not a typed
@@ -216,10 +263,11 @@ def student_onboarding_status(student_id: str) -> dict:
 
     return {
         "profile_exists": profile is not None,
+        "basic_info_complete": basic_info_complete,
         "resume_uploaded": resume_uploaded,
         "github_connected": github_connected,
         "linkedin_connected": linkedin_connected,
-        "setup_complete": resume_uploaded and github_connected and linkedin_connected,
+        "setup_complete": basic_info_complete and resume_uploaded and github_connected and linkedin_connected,
     }
 
 
