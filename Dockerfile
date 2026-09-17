@@ -21,4 +21,5 @@ RUN addgroup --system app && adduser --system --home /home/app --ingroup app app
 ENV HOME=/home/app
 USER app
 
-EXPOSE 8030
+# Canonical Kormic backend application port for local Docker and production.
+EXPOSE 8000
