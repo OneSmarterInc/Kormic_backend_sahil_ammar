@@ -1,3 +1,4 @@
+from drf_spectacular.openapi import AutoSchema
 from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import serializers
 
@@ -19,6 +20,10 @@ ProfileCreateUpdateResponseSerializer = inline_serializer(
 
 class DocumentedProfileCreateUpdateAPIView(ProfileCreateUpdateAPIView):
     """Profile endpoint with an explicit OpenAPI request/response contract."""
+
+    # Keep this endpoint independently inspectable even before the rest of the
+    # legacy API is migrated from DRF's default AutoSchema implementation.
+    schema = AutoSchema()
 
     @extend_schema(
         operation_id="student_profile_upsert",
