@@ -1,12 +1,12 @@
 from django.urls import path
 
-from django_api import views
+from django_api import schema_views, views
 
 urlpatterns = [
     path("", views.api_home, name="api-home"),
 
     # APIs 1-5: Profile Management
-    path("profile/", views.ProfileCreateUpdateAPIView.as_view(), name="profile-create-update"),
+    path("profile/", schema_views.DocumentedProfileCreateUpdateAPIView.as_view(), name="profile-create-update"),
     path("profile/image/", views.ProfileImageUploadAPIView.as_view(), name="profile-image-upload"),
     path("profile/resume/", views.ResumeUploadAPIView.as_view(), name="profile-resume"),
     path("profile/resume/<int:resume_id>/", views.ResumeDetailAPIView.as_view(), name="profile-resume-detail"),
