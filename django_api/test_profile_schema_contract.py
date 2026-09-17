@@ -6,7 +6,7 @@ from django_api.serializers import ProfileCreateUpdateSerializer
 
 class StudentProfileSchemaContractTests(SimpleTestCase):
     def test_profile_openapi_fields_match_serializer_exactly(self):
-        schema = SchemaGenerator().get_schema(request=None, public=True)
+        schema = SchemaGenerator(urlconf="django_api.contract_urls").get_schema(request=None, public=True)
         operation = schema["paths"]["/api/profile/"]["post"]
         request_schema = operation["requestBody"]["content"]["application/json"]["schema"]
         component_name = request_schema["$ref"].rsplit("/", 1)[-1]
