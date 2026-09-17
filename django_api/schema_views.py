@@ -1,5 +1,6 @@
 from drf_spectacular.openapi import AutoSchema
 from drf_spectacular.utils import extend_schema, inline_serializer
+from drf_spectacular.views import SpectacularAPIView
 from rest_framework import serializers
 
 from django_api.serializers import ProfileCreateUpdateSerializer
@@ -37,3 +38,9 @@ class DocumentedProfileCreateUpdateAPIView(ProfileCreateUpdateAPIView):
     )
     def post(self, request, *args, **kwargs):
         return super().post(request, *args, **kwargs)
+
+
+class StudentProfileSchemaAPIView(SpectacularAPIView):
+    """OpenAPI document intentionally scoped to the student-profile contract."""
+
+    urlconf = "django_api.contract_urls"
