@@ -11,7 +11,9 @@ on:
       - "institutes_list/**"
       - "kormic_backend/**"
       - "docker-compose.yml"
+      - "Dockerfile"
       - ".env.template"
+      - "README.md"
       - "DEPLOYMENT.md"
       - "requirements.txt"
       - ".github/workflows/claim-flow-ci.yml"
@@ -128,6 +130,58 @@ jobs:
           grep -q "POSTGRES_PASSWORD is required" /tmp/missing-password.out
           rm -f .env
 
+      - name: Validate canonical backend port 8000
+        env:
+          POSTGRES_PASSWORD: port-contract-ci-password
+        run: |
+          cp .env.template .env
+          docker compose config --format json > /tmp/kormic-compose-port.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          config = json.loads(Path('/tmp/kormic-compose-port.json').read_text())
+          web = config['services']['web']
+
+          ports = web.get('ports', [])
+          assert any(
+              str(port.get('published')) == '8000' and str(port.get('target')) == '8000'
+              for port in ports
+          ), f'web must publish 8000:8000, got {ports!r}'
+
+          command = web.get('command', '')
+          if isinstance(command, list):
+              command = ' '.join(str(part) for part in command)
+          else:
+              command = str(command)
+          assert '0.0.0.0:8000' in command, f'Gunicorn must bind 0.0.0.0:8000: {command!r}'
+
+          health_test = web.get('healthcheck', {}).get('test', [])
+          health_text = ' '.join(str(part) for part in health_test)
+          assert 'localhost:8000/api/health/' in health_text, (
+              f'web healthcheck must use port 8000: {health_text!r}'
+          )
+
+          dockerfile = Path('Dockerfile').read_text()
+          compose = Path('docker-compose.yml').read_text()
+          readme = Path('README.md').read_text()
+          deployment = Path('DEPLOYMENT.md').read_text()
+
+          assert 'EXPOSE 8000' in dockerfile
+          assert 'VITE_API_BASE_URL=http://127.0.0.1:8000' in readme
+          assert 'proxy_pass http://127.0.0.1:8000;' in deployment
+          assert 'http://127.0.0.1:8000/api/health/' in readme
+
+          for filename, content in {
+              'Dockerfile': dockerfile,
+              'docker-compose.yml': compose,
+              'README.md': readme,
+              'DEPLOYMENT.md': deployment,
+          }.items():
+              assert '8030' not in content, f'stale port 8030 remains in {filename}'
+          PY
+          rm -f .env
+
       - name: Django system check
         run: python manage.py check
 
@@ -146,7 +200,8 @@ jobs:
       # The current main branch has two unrelated, order-sensitive agent
       # regressions in the complete test run. Keep reporting that baseline
       # while making claim flow, identity, Basic Info persistence, system
-      # check, migration checks, and Compose DB configuration blocking gates.
+      # check, migration checks, Compose DB configuration, and port contract
+      # blocking gates.
       - name: Report complete backend test baseline
         continue-on-error: true
         run: python manage.py test --verbosity 1
