@@ -174,9 +174,33 @@ docker compose exec web python manage.py migrate
 # Collect static files
 docker compose exec web python manage.py collectstatic --noinput
 
-# Create a Superuser account (to log into the Django Admin and Superuser frontend)
+# Create the first Kormic application operator
+docker compose exec web python manage.py create_superuser_account --email admin@example.com
+```
+
+### First Kormic operator
+
+Replace `admin@example.com` with the operator's email address and enter the password at the interactive prompts. The project command creates an `Account` with `Account.Role.SUPERUSER`, which is required by `/api/superuser/` and the Kormic Superuser portal.
+
+If running directly in the configured backend Python environment instead of Docker, the equivalent command is:
+
+```sh
+python manage.py create_superuser_account --email admin@example.com
+```
+
+After HTTPS and the Kormic Superuser frontend are configured, log in through Kormic with that email and password (`/api/auth/login/`), then enroll and confirm TOTP using an authenticator app. Save the returned backup codes securely. Superuser API access remains blocked until TOTP enrollment is confirmed.
+
+The command creates a new account; it does not upgrade an existing user. If the email already exists (including from an earlier `createsuperuser` attempt), use a distinct operator email for this bootstrap command.
+
+### Optional: separate Django Admin access
+
+Django Admin access is managed separately through Django's `is_staff` / `is_superuser` flags. The Kormic bootstrap command does not grant these flags. If Django Admin access is also needed, create a separate Django administrator:
+
+```sh
 docker compose exec web python manage.py createsuperuser
 ```
+
+Use a different username/email from the Kormic operator. Django's `createsuperuser` command does **not** create an `Account.Role.SUPERUSER` account and does not by itself grant access to the Kormic Superuser API or portal.
 
 At this point, the backend is available on the server host at `http://127.0.0.1:8000`.
 
@@ -237,6 +261,17 @@ Content-Type: application/json
 
 {"status": "ok"}
 ```
+
+---
+
+### Verify Kormic operator access
+
+1. Sign in to the Kormic Superuser portal with the operator account created in section 6.
+2. Complete TOTP enrollment and confirmation if this is the first login, and save the backup codes.
+3. Open the university list and verify that `GET /api/superuser/universities/` succeeds (HTTP 200, even if the list is empty).
+4. Sign out and sign back in, completing the TOTP challenge, to verify subsequent logins.
+
+A successful Django Admin login does not verify Kormic operator access. If the Superuser API denies access, check that this login has `Account.Role.SUPERUSER` and a confirmed TOTP device.
 
 ---
 
