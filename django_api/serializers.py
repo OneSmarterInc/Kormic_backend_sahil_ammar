@@ -19,6 +19,21 @@ class ProfileCreateUpdateSerializer(serializers.Serializer):
     program = serializers.CharField(required=False, allow_blank=True)
     graduation_year = serializers.IntegerField(required=False, allow_null=True)
 
+    # Student-app onboarding fields. These are accepted explicitly so DRF
+    # never silently discards them. create_or_update_profile preserves the
+    # full validated payload in StudentProfile.evidence["manual_profile_api"],
+    # which is the canonical structured store for onboarding-only fields that
+    # do not yet have dedicated scalar columns.
+    phone = serializers.CharField(required=False, allow_blank=True)
+    date_of_birth = serializers.CharField(required=False, allow_blank=True)
+    city = serializers.CharField(required=False, allow_blank=True)
+    region = serializers.CharField(required=False, allow_blank=True)
+    year_in_college = serializers.CharField(required=False, allow_blank=True)
+    interests = serializers.ListField(
+        child=serializers.CharField(allow_blank=False), required=False, allow_empty=True
+    )
+    target_degree_or_field = serializers.CharField(required=False, allow_blank=True)
+
     gpa = serializers.FloatField(required=False, allow_null=True)
     gpa_scale = serializers.CharField(required=False, allow_blank=True)
 
@@ -47,6 +62,11 @@ class ProfileCreateUpdateSerializer(serializers.Serializer):
 
         if not data.get("english_score_text") and data.get("english_score") not in (None, ""):
             data["english_score_text"] = str(data["english_score"])
+
+        # Keep target-degree semantics aligned with the existing preference
+        # model while retaining target_degree_or_field in manual_profile_api.
+        if data.get("target_degree_or_field") and not data.get("target_degree"):
+            data["target_degree"] = data["target_degree_or_field"]
 
         return super().to_internal_value(data)
 
