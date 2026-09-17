@@ -4,6 +4,11 @@ This runbook provides a complete, step-by-step guide to deploying the Kormic Dja
 
 ## Canonical Runtime Port
 
+Before deploying the encrypted TOTP schema, configure a separate
+`TOTP_SECRET_KEYS` key ring for migrations, web and workers. Follow
+[TOTP_SECURITY.md](TOTP_SECURITY.md) for the required maintenance-window migration,
+key rotation and recovery procedure.
+
 Production student invitations use `https://app.kormic.ai/claim`. Follow
 [the app-link deployment guide](APP_LINKS.md) to deploy its HTTPS domain,
 Android/iOS association documents and browser fallback before setting

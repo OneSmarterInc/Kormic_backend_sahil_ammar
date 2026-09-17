@@ -29,12 +29,12 @@ from accounts.github_oauth import (
 from accounts.mfa import (
     clear_totp_failures,
     create_mfa_session,
-    get_user_id_from_mfa_token,
+    get_mfa_session,
     invalidate_mfa_session,
     is_totp_throttled,
     record_totp_failure,
 )
-from accounts.models import TOTPBackupCode, TOTPDevice
+from accounts.models import Account, TOTPBackupCode, TOTPDevice
 from accounts.password_reset import (
     OTP_TTL,
     RESET_TOKEN_TTL,
@@ -203,7 +203,9 @@ class LoginView(APIView):
             password=serializer.validated_data["password"],
         )
 
-        if user is None or not user.is_active:
+        portal = serializer.validated_data.get('portal')
+        wrong_portal = user is not None and portal is not None and not Account.objects.filter(user=user, role=portal).exists()
+        if user is None or not user.is_active or wrong_portal:
             # No account, wrong password, or an existing-but-inactive
             # account -- look the email up regardless so a real account's
             # failed attempts stay linked to it in the audit trail.
@@ -213,13 +215,13 @@ class LoginView(APIView):
                 target_user=existing,
                 target_email=serializer.validated_data["email"],
             )
-            return Response({"detail": "Invalid email or password."}, status=status.HTTP_401_UNAUTHORIZED)
+            return Response({"detail": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
 
         if _user_has_confirmed_totp(user):
             # Password check passed but MFA is still pending -- the login
             # isn't complete yet, so TOTPLoginVerifyView logs the actual
             # success/failure once the second factor is checked.
-            mfa_token = create_mfa_session(user.id)
+            mfa_token = create_mfa_session(user.id, portal=portal)
             return Response(
                 {
                     "must_enroll_totp": False,
@@ -318,12 +320,22 @@ class TOTPLoginVerifyView(APIView):
         mfa_token = serializer.validated_data["mfa_token"].strip()
         code = normalize_code(serializer.validated_data["code"]).upper()
 
-        user_id = get_user_id_from_mfa_token(mfa_token)
+        session = get_mfa_session(mfa_token)
+        user_id = session.get('user_id')
         if not user_id:
             return Response(
                 {"detail": "Session expired or invalid. Please log in again."},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
+
+        portal = serializer.validated_data.get('portal')
+        expected_portal = session.get('portal')
+        if expected_portal and portal != expected_portal:
+            return Response({'detail': 'Invalid credentials.'}, status=status.HTTP_401_UNAUTHORIZED)
+        user = User.objects.filter(id=user_id, is_active=True).first()
+        if user is None or (portal and not Account.objects.filter(user=user, role=portal).exists()):
+            invalidate_mfa_session(mfa_token)
+            return Response({'detail': 'Invalid credentials.'}, status=status.HTTP_401_UNAUTHORIZED)
 
         if is_totp_throttled(user_id):
             return Response(
@@ -332,7 +344,6 @@ class TOTPLoginVerifyView(APIView):
             )
 
         try:
-            user = User.objects.get(id=user_id)
             device = user.totp_device
         except (User.DoesNotExist, TOTPDevice.DoesNotExist):
             return Response({"detail": "TOTP is not enrolled."}, status=status.HTTP_400_BAD_REQUEST)
