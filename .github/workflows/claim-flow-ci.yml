@@ -172,13 +172,20 @@ jobs:
           assert 'proxy_pass http://127.0.0.1:8000;' in deployment
           assert 'http://127.0.0.1:8000/api/health/' in readme
 
-          for filename, content in {
-              'Dockerfile': dockerfile,
-              'docker-compose.yml': compose,
-              'README.md': readme,
-              'DEPLOYMENT.md': deployment,
-          }.items():
-              assert '8030' not in content, f'stale port 8030 remains in {filename}'
+          # Documentation may mention "8030" only to say it is unsupported.
+          # Reject actual stale runtime/url patterns instead of explanatory text.
+          assert '8030' not in dockerfile, 'stale Dockerfile port 8030 remains'
+          assert '8030' not in compose, 'stale Compose port 8030 remains'
+          for filename, content in {'README.md': readme, 'DEPLOYMENT.md': deployment}.items():
+              for stale_pattern in (
+                  ':8030',
+                  'localhost:8030',
+                  '127.0.0.1:8030',
+                  '0.0.0.0:8030',
+              ):
+                  assert stale_pattern not in content, (
+                      f'stale port pattern {stale_pattern!r} remains in {filename}'
+                  )
           PY
           rm -f .env
 
