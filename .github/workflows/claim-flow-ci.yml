@@ -1,22 +1,10 @@
-name: Claim flow CI
+name: Full baseline CI
 
 on:
   push:
-    branches:
-      - fix/institute-claim-token-flow
+    branches: [main]
   pull_request:
-    paths:
-      - "accounts/**"
-      - "django_api/**"
-      - "institutes_list/**"
-      - "kormic_backend/**"
-      - "docker-compose.yml"
-      - "Dockerfile"
-      - ".env.template"
-      - "README.md"
-      - "DEPLOYMENT.md"
-      - "requirements.txt"
-      - ".github/workflows/claim-flow-ci.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -204,11 +192,8 @@ jobs:
       - name: Run institute claim-flow regression tests
         run: python manage.py test institutes_list --verbosity 2
 
-      # The current main branch has two unrelated, order-sensitive agent
-      # regressions in the complete test run. Keep reporting that baseline
-      # while making claim flow, identity, Basic Info persistence, system
-      # check, migration checks, Compose DB configuration, and port contract
-      # blocking gates.
-      - name: Report complete backend test baseline
-        continue-on-error: true
+      - name: Run complete backend test suite
         run: python manage.py test --verbosity 1
+
+      - name: Verify full-suite test-order independence
+        run: python manage.py test --shuffle 20260917 --verbosity 1
