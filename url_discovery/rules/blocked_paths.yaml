@@ -1,0 +1,62 @@
+blocked_path_fragments:
+  - /wp-admin
+  - /wp-login
+  - /admin
+  - /login
+  - /logout
+  - /signin
+  - /sign-in
+  - /register
+  - /account
+  - /cart
+  - /checkout
+  - /password-reset
+  - /xmlrpc
+  - /api/
+  - /cdn-cgi/
+  - /feed/
+  - /rss/
+  - /share/
+  - /print/
+  - /preview/
+  - /tag/
+  - /author/
+  - /wp-json/
+
+blocked_extensions:
+  - .jpg
+  - .jpeg
+  - .png
+  - .gif
+  - .webp
+  - .svg
+  - .ico
+  - .css
+  - .js
+  - .map
+  - .woff
+  - .woff2
+  - .ttf
+  - .eot
+  - .mp3
+  - .wav
+  - .mp4
+  - .avi
+  - .mov
+  - .mkv
+  - .zip
+  - .rar
+  - .7z
+  - .exe
+  - .dmg
+  - .iso
+
+supported_document_extensions:
+  - .pdf
+  - .doc
+  - .docx
+  - .xls
+  - .xlsx
+  - .csv
+  - .ppt
+  - .pptx

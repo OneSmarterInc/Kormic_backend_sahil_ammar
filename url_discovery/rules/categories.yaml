@@ -1,0 +1,489 @@
+version: 1
+categories:
+  admissions:
+    label: Admissions & Application
+    strong_keywords:
+    - admission requirements
+    - admissions requirements
+    - how to apply
+    - application process
+    - apply now
+    - undergraduate admission
+    - undergraduate admissions
+    - graduate admission
+    - graduate admissions
+    - transfer admission
+    - transfer admissions
+    - admitted students
+    - required documents
+    - application checklist
+    - entry requirements
+    - freshman admission
+    - first-year admission
+    - admission criteria
+    - eligibility requirements
+    - application requirements
+    - application instructions
+    - enrollment process
+    - prospective students
+    url_keywords:
+    - admission
+    - admissions
+    - apply
+    - application
+    - undergraduate
+    - graduate
+    - transfer
+    - requirements
+    - admitted
+    - freshman
+    - prospective-students
+    - eligibility
+    - enrollment
+    - enrolment
+    - prospective
+    - first-year
+    - firstyear
+    - accepted-students
+    - new-students
+    negative_keywords:
+    - alumni admissions story
+    - news archive
+    - press release
+    - athletics recruitment
+  international:
+    label: International Students & Visa
+    strong_keywords:
+    - international admission
+    - international admissions
+    - international students
+    - international student services
+    - visa support
+    - visa requirements
+    - i-20
+    - i20
+    - english proficiency
+    - toefl
+    - ielts
+    - gre requirements
+    - arrival support
+    - international orientation
+    - immigration services
+    - sevis
+    - international student office
+    - international student admissions
+    - f-1 visa
+    - j-1 visa
+    - optional practical training
+    - curricular practical training
+    - international applicant
+    url_keywords:
+    - international
+    - visa
+    - i-20
+    - i20
+    - immigration
+    - toefl
+    - ielts
+    - sevis
+    - global-students
+    - english-proficiency
+    - f1
+    - f-1
+    - j1
+    - j-1
+    - opt
+    - cpt
+    - oiss
+    - isss
+    - international-applicants
+    - international-office
+    - english-language
+    negative_keywords:
+    - international research partnership
+    - study abroad news
+    - faculty travel
+  programs:
+    label: Programs & Academics
+    strong_keywords:
+    - academic programs
+    - programs offered
+    - degree programs
+    - degree requirements
+    - course catalog
+    - academic catalog
+    - curriculum
+    - courses
+    - departments
+    - faculty directory
+    - research areas
+    - research labs
+    - majors and minors
+    - graduate programs
+    - undergraduate programs
+    - schools and colleges
+    - areas of study
+    - fields of study
+    - academic departments
+    - college of
+    - school of
+    - program requirements
+    - course descriptions
+    url_keywords:
+    - academics
+    - academic
+    - programs
+    - program
+    - degrees
+    - degree
+    - courses
+    - course
+    - catalog
+    - curriculum
+    - departments
+    - department
+    - faculty
+    - research
+    - labs
+    - majors
+    - minors
+    - majors-minors
+    - areas-of-study
+    - fields-of-study
+    - schools
+    - colleges
+    - institute
+    - institutes
+    - centers
+    - centres
+    - academics-research
+    - study
+    negative_keywords:
+    - sports program
+    - television program
+    - event program
+  fees:
+    label: Fees, Tuition & Financial Aid
+    strong_keywords:
+    - tuition fees
+    - tuition and fees
+    - cost of attendance
+    - scholarships
+    - financial aid
+    - graduate assistantships
+    - teaching assistantships
+    - research assistantships
+    - student billing
+    - payment deadlines
+    - fee schedule
+    - tuition payment
+    - funding opportunities
+    - net price calculator
+    - student financial services
+    - fees and expenses
+    - estimated expenses
+    - student funding
+    - grants and loans
+    - scholarship opportunities
+    url_keywords:
+    - tuition
+    - fees
+    - financial-aid
+    - financialaid
+    - scholarship
+    - scholarships
+    - assistantship
+    - assistantships
+    - billing
+    - payment
+    - cost-of-attendance
+    - funding
+    - bursar
+    - cost
+    - costs
+    - expenses
+    - affordability
+    - aid
+    - grants
+    - loans
+    - student-finance
+    - financial-services
+    - student-accounts
+    negative_keywords:
+    - donor scholarship story
+    - fundraising
+    - alumni giving
+  campus_life:
+    label: Housing, Dining & Campus Life
+    strong_keywords:
+    - student housing
+    - campus housing
+    - residence halls
+    - residence life
+    - meal plans
+    - campus dining
+    - campus facilities
+    - student clubs
+    - student activities
+    - campus recreation
+    - campus transportation
+    - campus safety
+    - parking and transportation
+    - student organizations
+    - living on campus
+    - campus experience
+    - residential life
+    - student involvement
+    - campus services
+    url_keywords:
+    - housing
+    - residence
+    - dorm
+    - dorms
+    - dining
+    - meal-plan
+    - campus-life
+    - student-life
+    - clubs
+    - activities
+    - recreation
+    - transportation
+    - parking
+    - safety
+    - facilities
+    - accommodation
+    - residential
+    - food
+    - eat
+    - campus
+    - student-experience
+    - student-organizations
+    - student-organisations
+    - police
+    - security
+    negative_keywords:
+    - faculty housing research
+    - dining news
+    - construction archive
+  support:
+    label: Student Support Services
+    strong_keywords:
+    - counseling services
+    - student health services
+    - disability support
+    - accessibility services
+    - university library
+    - academic support
+    - tutoring services
+    - student help services
+    - orientation support
+    - student success center
+    - mental health services
+    - writing center
+    - advising services
+    - student resources
+    - student wellbeing
+    - student wellness
+    - learning support
+    - student assistance
+    - academic advising
+    url_keywords:
+    - counseling
+    - health-services
+    - student-health
+    - disability
+    - accessibility
+    - library
+    - academic-support
+    - tutoring
+    - student-support
+    - student-success
+    - orientation
+    - advising
+    - writing-center
+    - wellbeing
+    - wellness
+    - student-resources
+    - resources-for-students
+    - learning-support
+    - success
+    - registrar
+    - health
+    - mental-health
+    - access-services
+    negative_keywords:
+    - counseling faculty research
+    - health news
+    - library exhibition
+  careers:
+    label: Careers & Internships
+    strong_keywords:
+    - career services
+    - career center
+    - internships
+    - internship opportunities
+    - co-op program
+    - cooperative education
+    - job fairs
+    - resume help
+    - career counseling
+    - employer connections
+    - student employment
+    - on-campus jobs
+    - career development
+    - placement services
+    - career resources
+    - professional development
+    - work experience
+    - graduate employment
+    - career opportunities
+    url_keywords:
+    - career
+    - careers
+    - internship
+    - internships
+    - co-op
+    - cooperative-education
+    - jobs
+    - job-fair
+    - employment
+    - employers
+    - resume
+    - placement
+    - professional-development
+    - work-study
+    - workstudy
+    - handshake
+    - placements
+    - employability
+    - career-development
+    - experiential-learning
+    negative_keywords:
+    - faculty careers
+    - university employment benefits
+    - staff vacancy
+    - executive hiring
+  deadlines:
+    label: Deadlines & Academic Calendar
+    strong_keywords:
+    - application deadlines
+    - admission deadlines
+    - semester dates
+    - registration dates
+    - fee deadlines
+    - orientation dates
+    - academic calendar
+    - important dates
+    - registration calendar
+    - term dates
+    - enrollment deadlines
+    - dates and deadlines
+    - registration deadlines
+    - admissions dates
+    - application dates
+    - academic dates
+    url_keywords:
+    - deadline
+    - deadlines
+    - academic-calendar
+    - calendar
+    - important-dates
+    - semester-dates
+    - term-dates
+    - registration-dates
+    - key-dates
+    - dates
+    - schedule
+    - schedules
+    - registration
+    - term-calendar
+    - semester-calendar
+    - admissions-calendar
+    negative_keywords:
+    - event calendar
+    - athletics calendar
+    - news calendar
+    - editorial calendar
+  documents:
+    label: Forms, Documents & Downloads
+    strong_keywords:
+    - application forms
+    - financial aid forms
+    - scholarship forms
+    - student forms
+    - downloadable forms
+    - admissions brochure
+    - student checklist
+    - pdf guide
+    - forms and documents
+    - document downloads
+    - application checklist
+    - student handbook
+    - application guide
+    - downloadable documents
+    - forms and publications
+    - admissions guide
+    url_keywords:
+    - forms
+    - form
+    - documents
+    - downloads
+    - brochures
+    - brochure
+    - checklist
+    - guide
+    - handbook
+    - pdf
+    - publication
+    - publications
+    - download
+    - manual
+    - fact-sheet
+    - factsheet
+    negative_keywords:
+    - brand guidelines
+    - media downloads
+    - press kit
+    - logo download
+  contact:
+    label: Contact & Help
+    strong_keywords:
+    - admissions contact
+    - international office contact
+    - financial aid contact
+    - department contact
+    - career office contact
+    - student support contact
+    - contact admissions
+    - contact us
+    - request information
+    - get help
+    - office directory
+    - student services contact
+    - contact information
+    - office locations
+    - staff directory
+    - department directory
+    - admissions office
+    - financial aid office
+    url_keywords:
+    - contact
+    - contacts
+    - help
+    - request-information
+    - directory
+    - office
+    - ask-us
+    - support
+    - staff
+    - find-us
+    - locations
+    - phone
+    - email
+    - enquire
+    - inquiry
+    negative_keywords:
+    - media contact
+    - press contact
+    - vendor contact
+    - emergency contact only

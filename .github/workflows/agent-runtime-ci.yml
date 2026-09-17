@@ -1,0 +1,84 @@
+name: Agent runtime CI
+
+on:
+  push:
+    branches:
+      - fix/agent-current-date-context
+  pull_request:
+    paths:
+      - "pure_multi_agent/**"
+      - "personas/**"
+      - "django_api/**"
+      - "requirements.txt"
+      - ".github/workflows/agent-runtime-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  agent-runtime-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: kormic_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d kormic_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DJANGO_SECRET_KEY: agent-runtime-ci-secret-key-32-bytes-minimum
+      DJANGO_DEBUG: "false"
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,testserver
+      POSTGRES_DB: kormic_ci
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: "5432"
+      DJANGO_CACHE_URL: redis://127.0.0.1:6379/2
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/0
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/1
+      EMAIL_MODE: dev
+      GITHUB_OAUTH_TOKEN_KEY: b6AZAbEEXdp7c9bD1dpHeOxrzr3jlos2qaYJxfVEOjs=
+      AGENT_DEFAULT_TIMEZONE: Asia/Kolkata
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+
+      - name: Django system check
+        run: python manage.py check
+
+      - name: Run current-date regression gate
+        run: python manage.py test pure_multi_agent.tests.CurrentDateContextTests --verbosity 2
+
+      - name: Report complete pure_multi_agent baseline
+        continue-on-error: true
+        run: python manage.py test pure_multi_agent --verbosity 1

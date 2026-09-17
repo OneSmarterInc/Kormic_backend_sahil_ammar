@@ -1,0 +1,136 @@
+x-app: &app
+  build: .
+  volumes:
+    - .:/app
+    # Named volume, not the .:/app bind mount above -- on a Linux host the
+    # bind mount is created (and owned) by whatever ran `docker compose up`,
+    # which is usually root, and that clobbers the app:app ownership the
+    # Dockerfile set on /app/staticfiles and /app/uploads. A named volume is
+    # seeded from the image on first use, so it keeps the image's ownership
+    # instead. uploads is real user data (student chat attachments etc, see
+    # MEDIA_ROOT in settings.py) so this also makes it persist independently
+    # of whatever the host checkout looks like.
+    - static_data:/app/staticfiles
+    - uploads_data:/app/uploads
+  env_file:
+    - .env
+  environment:
+    CELERY_BROKER_URL: redis://redis:6379/0
+    CELERY_RESULT_BACKEND: redis://redis:6379/1
+    # Separate Redis DB index from the Celery broker/result-backend above,
+    # so the shared rate-limit/TOTP-replay cache keyspace stays independent.
+    DJANGO_CACHE_URL: redis://redis:6379/2
+    POSTGRES_DB: kormic
+    POSTGRES_USER: kormic
+    POSTGRES_PASSWORD: kormic
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
+  depends_on:
+    redis:
+      condition: service_healthy
+    postgres:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+  restart: unless-stopped
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: kormic_redis
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: kormic_postgres
+    environment:
+      POSTGRES_DB: kormic
+      POSTGRES_USER: kormic
+      POSTGRES_PASSWORD: kormic
+    ports:
+      - "5438:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kormic -d kormic"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # One-shot: applies migrations against postgres, then exits. web/worker/beat
+  # wait for this to finish successfully before they start, so schema is
+  # always up to date.
+  migrate:
+    build: .
+    container_name: kormic_migrate
+    command: python manage.py migrate --noinput
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: kormic
+      POSTGRES_USER: kormic
+      POSTGRES_PASSWORD: kormic
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    <<: *app
+    container_name: kormic_web
+    # gunicorn, not manage.py runserver -- runserver is single-threaded-ish,
+    # unstable under load, and explicitly documented by Django as unsafe for
+    # production. GUNICORN_WORKERS/TIMEOUT are env-tunable (see
+    # .env.template); GUNICORN_EXTRA_ARGS is the local-dev escape hatch --
+    # set it to "--reload" in your local .env for hot-reload-on-save, leave
+    # it unset in production. collectstatic runs on every start so the
+    # admin site's CSS/JS is always up to date; it's a fast no-op if
+    # nothing changed.
+  
+    # command: python manage.py runserver 0.0.0.0:8030
+    command: sh -c "python manage.py collectstatic --noinput && exec gunicorn kormic_backend.wsgi:application --bind 0.0.0.0:8030 --workers ${GUNICORN_WORKERS:-3} --timeout ${GUNICORN_TIMEOUT:-120} --access-logfile - --error-logfile - ${GUNICORN_EXTRA_ARGS:-}"
+    ports:
+      - "8030:8030"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8030/api/health/', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  celery_worker:
+    <<: *app
+    container_name: kormic_celery_worker
+    command: celery -A kormic_backend worker -l info
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A kormic_backend inspect ping -d celery@$$HOSTNAME || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  celery_beat:
+    <<: *app
+    container_name: kormic_celery_beat
+    # --schedule points the PersistentScheduler db at /home/app (owned by the
+    # unprivileged `app` user, see Dockerfile) instead of the default relative
+    # path in /app. /app is the .:/app bind mount and is root-owned on a Linux
+    # host, so beat could not create its schedule file there and crash-looped.
+    command: celery -A kormic_backend beat -l info --schedule /home/app/celerybeat-schedule
+
+volumes:
+  redis_data:
+  postgres_data:
+  static_data:
+  uploads_data:

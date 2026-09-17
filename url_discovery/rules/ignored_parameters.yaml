@@ -1,0 +1,20 @@
+ignored_query_parameters:
+  - utm_source
+  - utm_medium
+  - utm_campaign
+  - utm_term
+  - utm_content
+  - fbclid
+  - gclid
+  - dclid
+  - msclkid
+  - ref
+  - source
+  - share
+  - output
+  - print
+  - preview
+  - sessionid
+  - phpsessid
+  - _ga
+  - _gl
