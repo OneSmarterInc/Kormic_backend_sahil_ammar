@@ -200,20 +200,21 @@ MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "uploads"
 
 # Kormic Django REST API settings
-# CORS_ALLOW_ALL_ORIGINS is only ever safe for local development. Production
-# (DEBUG=False) must supply an explicit comma-separated allow-list of
-# frontend origins via DJANGO_CORS_ALLOWED_ORIGINS -- see
-# DEPLOYMENT.md. Unset in production fails closed (no
-# origins allowed) rather than silently staying wide open.
-if DEBUG:
-    CORS_ALLOW_ALL_ORIGINS = True
-else:
-    CORS_ALLOW_ALL_ORIGINS = False
-    CORS_ALLOWED_ORIGINS = [
-        o.strip()
-        for o in os.environ.get("DJANGO_CORS_ALLOWED_ORIGINS", "").split(",")
-        if o.strip()
-    ]
+# Cookie authentication requires an explicit origin allow-list, even in development.
+CORS_ALLOW_ALL_ORIGINS = False
+_local_origins = ','.join(
+    f'http://{host}:{port}' for host in ('localhost', '127.0.0.1')
+    for port in (5173, 5174, 5175, 8081)
+) if DEBUG else ''
+CORS_ALLOWED_ORIGINS = [
+    origin.strip() for origin in (os.environ.get('DJANGO_CORS_ALLOWED_ORIGINS', '').strip() or _local_origins).split(',')
+    if origin.strip()
+]
+CORS_ALLOW_CREDENTIALS = True
+CSRF_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS
+CSRF_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_HTTPONLY = True
+CSRF_COOKIE_SAMESITE = 'Lax'
 
 REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "accounts.exceptions.auth_exception_handler",
@@ -250,7 +251,7 @@ REST_FRAMEWORK = {
 }
 
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=5),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
     "ROTATE_REFRESH_TOKENS": False,
     "BLACKLIST_AFTER_ROTATION": False,

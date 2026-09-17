@@ -318,3 +318,7 @@ docker compose exec postgres sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```bash
 docker compose exec web python manage.py shell
 ```
+
+## Browser cookie authentication
+
+See [WEB_AUTH.md](WEB_AUTH.md) before deploying the portal clients: configure exact HTTPS CORS/CSRF origins and same-site cookie hosting. Access tokens last five minutes; refresh credentials are HttpOnly cookies.
