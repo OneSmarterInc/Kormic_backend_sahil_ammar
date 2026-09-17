@@ -409,12 +409,12 @@ AGENT_ALERT_EMAILS = [
     addr.strip() for addr in os.getenv("AGENT_ALERT_EMAILS", "").split(",") if addr.strip()
 ]
 
-# Frontend page the claim-invite email links to, e.g. "https://app.kormic.com/claim"
-# (the student lands there with ?token=... and the page calls /api/claim/start/).
-# No sane default exists -- it's a frontend URL we don't own -- so
-# institutes_list.views.send_invites fails loudly if this is unset rather
-# than emailing a broken link, same intentional-fail-loud pattern as the
-# EMAIL_BACKEND requirement above.
+# Student frontend/deep-link destination for invite emails, not the Django API.
+# Set https://app.kormic.ai/claim after deploying the public app-link domain;
+# the backend appends ?token=... (see APP_LINKS.md). Configure the backend and
+# Celery worker, not the portal frontends. Leave unset until that page is ready:
+# institutes_list.views.send_invites intentionally fails rather than emailing
+# an unconfigured destination.
 CLAIM_PAGE_URL = os.getenv("CLAIM_PAGE_URL", "")
 
 # Served on app.kormic.ai by the dedicated proxy in deploy/app-links.nginx.conf.
