@@ -7,6 +7,7 @@ on:
   pull_request:
     paths:
       - "accounts/**"
+      - "django_api/**"
       - "institutes_list/**"
       - "kormic_backend/**"
       - "requirements.txt"
@@ -82,13 +83,16 @@ jobs:
       - name: Run claim-registration identity regression tests
         run: python manage.py test accounts.test_claim_registration --verbosity 2
 
+      - name: Run Basic Info persistence regression tests
+        run: python manage.py test accounts.test_basic_info_persistence --verbosity 2
+
       - name: Run institute claim-flow regression tests
         run: python manage.py test institutes_list --verbosity 2
 
       # The current main branch has two unrelated, order-sensitive agent
-      # regressions in the complete 218-test run. Keep reporting that baseline
-      # while making the claim-flow suite, canonical identity regression,
-      # system check, and migration check the blocking gates for this repair.
+      # regressions in the complete test run. Keep reporting that baseline
+      # while making claim flow, identity, Basic Info persistence, system
+      # check, and migration checks blocking gates for onboarding repairs.
       - name: Report complete backend test baseline
         continue-on-error: true
         run: python manage.py test --verbosity 1
