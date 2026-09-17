@@ -1,9 +1,16 @@
+from drf_spectacular.openapi import AutoSchema
 from drf_spectacular.utils import extend_schema, inline_serializer
 from drf_spectacular.views import SpectacularAPIView
 from rest_framework import serializers
+from rest_framework.settings import api_settings
 
 from django_api.serializers import ProfileCreateUpdateSerializer
 from django_api.views import ProfileCreateUpdateAPIView
+
+# This module owns the isolated profile OpenAPI contract. Configure the
+# inspector before @extend_schema builds its derived schema class so legacy
+# DRF AutoSchema views elsewhere in the project do not affect this contract.
+api_settings.DEFAULT_SCHEMA_CLASS = AutoSchema
 
 
 ProfileCreateUpdateResponseSerializer = inline_serializer(
@@ -20,6 +27,8 @@ ProfileCreateUpdateResponseSerializer = inline_serializer(
 
 class DocumentedProfileCreateUpdateAPIView(ProfileCreateUpdateAPIView):
     """Profile endpoint with an explicit OpenAPI request/response contract."""
+
+    schema = AutoSchema()
 
     @extend_schema(
         operation_id="student_profile_upsert",
