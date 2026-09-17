@@ -10,6 +10,9 @@ on:
       - "django_api/**"
       - "institutes_list/**"
       - "kormic_backend/**"
+      - "docker-compose.yml"
+      - ".env.template"
+      - "DEPLOYMENT.md"
       - "requirements.txt"
       - ".github/workflows/claim-flow-ci.yml"
 
@@ -74,6 +77,57 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
 
+      - name: Validate Compose database environment contract
+        env:
+          POSTGRES_DB: compose_ci_db
+          POSTGRES_USER: compose_ci_user
+          POSTGRES_PASSWORD: compose-ci-secret-password
+        run: |
+          cp .env.template .env
+          docker compose config --format json > /tmp/kormic-compose.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          config = json.loads(Path('/tmp/kormic-compose.json').read_text())
+          services = config['services']
+
+          expected_credentials = {
+              'POSTGRES_DB': 'compose_ci_db',
+              'POSTGRES_USER': 'compose_ci_user',
+              'POSTGRES_PASSWORD': 'compose-ci-secret-password',
+          }
+
+          for service_name in ('postgres', 'migrate', 'web', 'celery_worker', 'celery_beat'):
+              env = services[service_name].get('environment', {})
+              for key, expected in expected_credentials.items():
+                  actual = env.get(key)
+                  assert actual == expected, (
+                      f'{service_name}.{key}={actual!r}; expected {expected!r}'
+                  )
+
+          for service_name in ('migrate', 'web', 'celery_worker', 'celery_beat'):
+              env = services[service_name].get('environment', {})
+              assert env.get('POSTGRES_HOST') == 'postgres', (
+                  f'{service_name}.POSTGRES_HOST must be postgres'
+              )
+              assert str(env.get('POSTGRES_PORT')) == '5432', (
+                  f'{service_name}.POSTGRES_PORT must be 5432'
+              )
+
+          compose_source = Path('docker-compose.yml').read_text()
+          assert 'POSTGRES_PASSWORD: kormic' not in compose_source
+          assert 'POSTGRES_PASSWORD: "kormic"' not in compose_source
+          assert compose_source.count('${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}') >= 3
+          PY
+
+          if env -u POSTGRES_PASSWORD docker compose config >/tmp/missing-password.out 2>&1; then
+            echo "docker compose config unexpectedly succeeded without POSTGRES_PASSWORD"
+            exit 1
+          fi
+          grep -q "POSTGRES_PASSWORD is required" /tmp/missing-password.out
+          rm -f .env
+
       - name: Django system check
         run: python manage.py check
 
@@ -92,7 +146,7 @@ jobs:
       # The current main branch has two unrelated, order-sensitive agent
       # regressions in the complete test run. Keep reporting that baseline
       # while making claim flow, identity, Basic Info persistence, system
-      # check, and migration checks blocking gates for onboarding repairs.
+      # check, migration checks, and Compose DB configuration blocking gates.
       - name: Report complete backend test baseline
         continue-on-error: true
         run: python manage.py test --verbosity 1
