@@ -9,6 +9,58 @@ from accounts.models import Account
 from django_api.models import LinkedInAnalysis, ResumeUpload, StudentProfile
 
 
+def _is_institute_claim_profile(profile: StudentProfile) -> bool:
+    """Return True only for profiles that carry explicit institute-claim provenance."""
+    extra = profile.extra_data if isinstance(profile.extra_data, dict) else {}
+    return bool(extra.get("claimed_from_institute") or extra.get("institute_sourced"))
+
+
+def _lock_reusable_claim_profile(email: str) -> StudentProfile | None:
+    """
+    Find the one profile registration is allowed to adopt.
+
+    Claim-first onboarding creates a StudentProfile before an auth Account
+    exists. Registration must attach that exact row instead of minting a
+    second profile. We intentionally do NOT adopt arbitrary orphan profiles:
+    only an unowned profile with institute-claim provenance is safe to reuse.
+
+    All same-email unowned rows are locked for the duration of registration.
+    Any ambiguity fails closed rather than silently creating another identity.
+    """
+    candidates = list(
+        StudentProfile.objects.select_for_update()
+        .filter(email__iexact=email, account__isnull=True)
+        .order_by("created_at", "id")
+    )
+
+    if not candidates:
+        return None
+
+    claim_profiles = [profile for profile in candidates if _is_institute_claim_profile(profile)]
+
+    if len(claim_profiles) == 1 and len(candidates) == 1:
+        return claim_profiles[0]
+
+    if len(claim_profiles) > 1:
+        raise serializers.ValidationError(
+            {
+                "email": (
+                    "Multiple institute-claimed profiles exist for this email. "
+                    "Registration was stopped to avoid linking the wrong student identity."
+                )
+            }
+        )
+
+    raise serializers.ValidationError(
+        {
+            "email": (
+                "An existing unowned student profile uses this email but cannot be safely linked. "
+                "Registration was stopped to avoid creating a duplicate student identity."
+            )
+        }
+    )
+
+
 class RegisterSerializer(serializers.Serializer):
     """
     Public self-registration -- students only. University accounts are never
@@ -16,6 +68,11 @@ class RegisterSerializer(serializers.Serializer):
     via POST /api/superuser/universities/ (see project_superuser.serializers.
     AdminEnrollUniversitySerializer), and the university then enrolls its own
     TOTP device on first login just like every other role.
+
+    Claim-first students are special: /api/claim/confirm/ may already have
+    created their StudentProfile before they have a login. In that case this
+    serializer reuses the claimed, unowned profile transactionally instead of
+    creating a second StudentProfile for the same person.
     """
 
     email = serializers.EmailField()
@@ -26,6 +83,17 @@ class RegisterSerializer(serializers.Serializer):
     def validate_email(self, value: str) -> str:
         if User.objects.filter(email__iexact=value).exists():
             raise serializers.ValidationError("An account with this email already exists.")
+
+        # User.email is not unique at the Django model layer. Guard the
+        # domain identity as well so a student profile that is already owned
+        # by an Account cannot silently acquire a second login identity even
+        # if that Account's auth email was changed independently.
+        if Account.objects.filter(
+            role=Account.Role.STUDENT,
+            student_profile__email__iexact=value,
+        ).exists():
+            raise serializers.ValidationError("A student identity with this email already has an account.")
+
         return value
 
     def validate_password(self, value: str) -> str:
@@ -34,17 +102,41 @@ class RegisterSerializer(serializers.Serializer):
 
     def create(self, validated_data) -> User:
         email = validated_data["email"]
+        name = validated_data.get("name", "")
 
         with transaction.atomic():
+            profile = _lock_reusable_claim_profile(email)
+
+            if profile is None:
+                profile = StudentProfile.objects.create(
+                    name=name,
+                    email=email,
+                )
+            else:
+                # Preserve student-confirmed institute data. Registration only
+                # fills blanks and stamps an explicit identity-link marker.
+                update_fields: list[str] = []
+                if name and not (profile.name or "").strip():
+                    profile.name = name
+                    update_fields.append("name")
+                if profile.email != email:
+                    profile.email = email
+                    update_fields.append("email")
+
+                extra = dict(profile.extra_data or {})
+                if not extra.get("claimed_from_institute"):
+                    extra["claimed_from_institute"] = True
+                    profile.extra_data = extra
+                    update_fields.append("extra_data")
+
+                if update_fields:
+                    profile.save(update_fields=update_fields)
+
             user = User.objects.create_user(
                 username=email,
                 email=email,
                 password=validated_data["password"],
-                first_name=validated_data.get("name", "")[:150],
-            )
-            profile = StudentProfile.objects.create(
-                name=validated_data.get("name", ""),
-                email=email,
+                first_name=name[:150],
             )
             Account.objects.create(
                 user=user,
