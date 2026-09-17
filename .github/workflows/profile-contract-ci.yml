@@ -7,6 +7,7 @@ on:
     paths:
       - "django_api/serializers.py"
       - "django_api/schema_views.py"
+      - "django_api/contract_urls.py"
       - "django_api/urls.py"
       - "django_api/test_profile_schema_contract.py"
       - "kormic_backend/urls.py"
@@ -16,6 +17,7 @@ on:
     paths:
       - "django_api/serializers.py"
       - "django_api/schema_views.py"
+      - "django_api/contract_urls.py"
       - "django_api/urls.py"
       - "django_api/test_profile_schema_contract.py"
       - "kormic_backend/urls.py"
