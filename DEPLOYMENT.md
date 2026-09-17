@@ -2,6 +2,10 @@
 
 This runbook provides a complete, step-by-step guide to deploying the Kormic Django Backend from scratch on a fresh AWS EC2 instance. It assumes you are deploying the backend using Docker Compose.
 
+## Canonical Runtime Port
+
+The backend application port is **8000** in every environment. Docker runs Gunicorn on `0.0.0.0:8000`, publishes host port `8000`, and checks `/api/health/` on port `8000`. In production, Nginx proxies to `http://127.0.0.1:8000`. Local browser frontends should use `http://127.0.0.1:8000` as their backend base URL. Port `8030` is not part of the supported runtime configuration.
+
 ---
 
 ## 1. Provisioning the EC2 Instance
@@ -152,6 +156,11 @@ Verify that all containers (web, celery_worker, celery_beat, postgres, redis) ar
 docker compose ps
 ```
 
+Verify the host-published backend directly before configuring Nginx:
+```bash
+curl http://127.0.0.1:8000/api/health/
+```
+
 ---
 
 ## 6. Run Migrations & Collect Static Files
@@ -169,13 +178,13 @@ docker compose exec web python manage.py collectstatic --noinput
 docker compose exec web python manage.py createsuperuser
 ```
 
-At this point, the backend is successfully running on `http://127.0.0.1:8000` inside the server.
+At this point, the backend is available on the server host at `http://127.0.0.1:8000`.
 
 ---
 
 ## 7. Nginx Reverse Proxy and SSL (HTTPS)
 
-You must never expose the Django development server (Gunicorn) directly to the internet. We will use Nginx to route traffic from port 80/443 to Docker port 8000.
+You must never expose Gunicorn directly to the public internet. Nginx routes public HTTP/HTTPS traffic to the backend published on host port 8000.
 
 Create an Nginx configuration file for the API:
 ```bash
