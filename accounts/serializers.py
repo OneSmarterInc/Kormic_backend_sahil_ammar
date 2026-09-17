@@ -24,14 +24,26 @@ def _lock_reusable_claim_profile(email: str) -> StudentProfile | None:
     second profile. We intentionally do NOT adopt arbitrary orphan profiles:
     only an unowned profile with institute-claim provenance is safe to reuse.
 
-    All same-email unowned rows are locked for the duration of registration.
-    Any ambiguity fails closed rather than silently creating another identity.
+    PostgreSQL cannot apply FOR UPDATE to the nullable side of the reverse
+    OneToOne outer join produced by `account__isnull=True`, so lock all
+    same-email StudentProfile rows first and then remove already-owned rows
+    using a separate Account query. Any ambiguity fails closed rather than
+    silently creating another identity.
     """
-    candidates = list(
+    same_email_profiles = list(
         StudentProfile.objects.select_for_update()
-        .filter(email__iexact=email, account__isnull=True)
+        .filter(email__iexact=email)
         .order_by("created_at", "id")
     )
+
+    if not same_email_profiles:
+        return None
+
+    profile_ids = [profile.id for profile in same_email_profiles]
+    owned_profile_ids = set(
+        Account.objects.filter(student_profile_id__in=profile_ids).values_list("student_profile_id", flat=True)
+    )
+    candidates = [profile for profile in same_email_profiles if profile.id not in owned_profile_ids]
 
     if not candidates:
         return None
