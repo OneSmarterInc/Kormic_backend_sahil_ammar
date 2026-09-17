@@ -79,6 +79,5 @@ jobs:
       - name: Run current-date regression gate
         run: python manage.py test pure_multi_agent.tests.CurrentDateContextTests --verbosity 2
 
-      - name: Report complete pure_multi_agent baseline
-        continue-on-error: true
+      - name: Run complete pure_multi_agent suite
         run: python manage.py test pure_multi_agent --verbosity 1
