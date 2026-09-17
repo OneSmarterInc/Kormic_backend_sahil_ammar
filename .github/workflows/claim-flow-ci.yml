@@ -6,6 +6,7 @@ on:
       - fix/institute-claim-token-flow
   pull_request:
     paths:
+      - "accounts/**"
       - "institutes_list/**"
       - "kormic_backend/**"
       - "requirements.txt"
@@ -78,13 +79,16 @@ jobs:
       - name: Verify migrations are committed
         run: python manage.py makemigrations --check --dry-run
 
+      - name: Run claim-registration identity regression tests
+        run: python manage.py test accounts.test_claim_registration --verbosity 2
+
       - name: Run institute claim-flow regression tests
         run: python manage.py test institutes_list --verbosity 2
 
       # The current main branch has two unrelated, order-sensitive agent
       # regressions in the complete 218-test run. Keep reporting that baseline
-      # while making the claim-flow suite, system check, and migration check
-      # the blocking gates for this isolated repair.
+      # while making the claim-flow suite, canonical identity regression,
+      # system check, and migration check the blocking gates for this repair.
       - name: Report complete backend test baseline
         continue-on-error: true
         run: python manage.py test --verbosity 1
