@@ -4,6 +4,11 @@ This runbook provides a complete, step-by-step guide to deploying the Kormic Dja
 
 ## Canonical Runtime Port
 
+Production student invitations use `https://app.kormic.ai/claim`. Follow
+[the app-link deployment guide](APP_LINKS.md) to deploy its HTTPS domain,
+Android/iOS association documents and browser fallback before setting
+`CLAIM_PAGE_URL` and enabling invitation delivery.
+
 The backend application port is **8000** in every environment. Docker runs Gunicorn on `0.0.0.0:8000`, publishes host port `8000`, and checks `/api/health/` on port `8000`. In production, Nginx proxies to `http://127.0.0.1:8000`. Local browser frontends should use `http://127.0.0.1:8000` as their backend base URL. Port `8030` is not part of the supported runtime configuration.
 
 ---

@@ -3,6 +3,7 @@ from django.http import JsonResponse
 from django.urls import include, path
 
 from django_api.schema_views import StudentProfileSchemaAPIView
+from kormic_backend.app_links import android_assetlinks, apple_app_site_association, claim_landing
 
 
 def health_check(request):
@@ -13,6 +14,10 @@ def health_check(request):
 
 
 urlpatterns = [
+    path('.well-known/assetlinks.json', android_assetlinks),
+    path('.well-known/apple-app-site-association', apple_app_site_association),
+    path('claim', claim_landing),
+    path('claim/', claim_landing),
     path("api/health/", health_check),
     path("api/schema/", StudentProfileSchemaAPIView.as_view(), name="openapi-schema"),
     path("admin/", admin.site.urls),

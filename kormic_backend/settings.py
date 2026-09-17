@@ -417,6 +417,18 @@ AGENT_ALERT_EMAILS = [
 # EMAIL_BACKEND requirement above.
 CLAIM_PAGE_URL = os.getenv("CLAIM_PAGE_URL", "")
 
+# Served on app.kormic.ai by the dedicated proxy in deploy/app-links.nginx.conf.
+# Use the Play app-signing certificate (not merely the upload certificate).
+APP_LINK_ANDROID_SHA256_FINGERPRINTS = [
+    value.strip() for value in os.getenv('APP_LINK_ANDROID_SHA256_FINGERPRINTS', '').split(',')
+    if value.strip()
+]
+# The prefix from the signed iOS application's application-identifier entitlement.
+# Usually the Apple Team ID; older accounts can have a different App ID prefix.
+APP_LINK_APPLE_APP_ID_PREFIX = os.getenv('APP_LINK_APPLE_APP_ID_PREFIX', '').strip()
+APP_LINK_ANDROID_STORE_URL = os.getenv('APP_LINK_ANDROID_STORE_URL', '').strip()
+APP_LINK_IOS_STORE_URL = os.getenv('APP_LINK_IOS_STORE_URL', '').strip()
+
 
 # Logging -- without this, Django/Celery's default logging goes essentially
 # nowhere useful in production. Everything goes to stdout/stderr (the
