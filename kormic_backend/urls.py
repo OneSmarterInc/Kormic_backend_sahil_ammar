@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.http import JsonResponse
 from django.urls import include, path
+from drf_spectacular.views import SpectacularAPIView
 
 
 def health_check(request):
@@ -12,6 +13,7 @@ def health_check(request):
 
 urlpatterns = [
     path("api/health/", health_check),
+    path("api/schema/", SpectacularAPIView.as_view(), name="openapi-schema"),
     path("admin/", admin.site.urls),
     path("api/auth/", include("accounts.urls")),
     path("api/verification/", include("verification.urls")),
