@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Claim your Kormic profile</title>
+  <style>
+    body { margin: 0; padding: 32px 20px; background: #121327; color: #f6f3ef; font: 17px/1.6 system-ui, sans-serif; }
+    main { max-width: 580px; margin: 6vh auto; }
+    h1 { font: 700 40px/1.2 Georgia, serif; }
+    p, li { color: #d0d4e1; }
+    a { color: #ffab94; }
+    .button { display: inline-block; margin: 12px 0; padding: 12px 24px; background: #ff704f; color: #141426; border-radius: 12px; font-weight: 700; text-decoration: none; }
+    code { display: block; overflow-wrap: anywhere; padding: 16px; background: #202139; border-radius: 8px; user-select: all; }
+  </style>
+</head>
+<body>
+  <main>
+    <p>KORMIC STUDENT</p>
+    <h1>Claim your Kormic profile</h1>
+    {% if token %}
+      <p>Your invitation is ready. Open it in the Kormic Student app to verify your email and finish setting up your profile.</p>
+      <a class="button" href="{{ app_url }}">Open Kormic Student</a>
+    {% else %}
+      <p>This page needs a valid invitation link. Open the original link from your invitation email, or ask your institute to resend it.</p>
+    {% endif %}
+    <h2>Need to install the app?</h2>
+    <ol>
+      <li>Install Kormic Student on your phone using the links below. If a store link is not available, ask your institute for the official installation instructions.</li>
+      <li>After installing, return to your invitation email and tap its link again. Installation does not transfer your invitation automatically.</li>
+      <li>If the app does not open, tap “Open Kormic Student” above, or choose “Claim invitation” inside the app and paste your invitation token.</li>
+    </ol>
+    {% if android_store_url %}<p><a href="{{ android_store_url }}" rel="noreferrer">Get it on Google Play</a></p>{% endif %}
+    {% if ios_store_url %}<p><a href="{{ ios_store_url }}" rel="noreferrer">Download on the App Store</a></p>{% endif %}
+    {% if token %}<p>Your invitation token (keep it private):</p><code>{{ token }}</code>{% endif %}
+    <p>You will still need to verify your email with a one-time code in the app.</p>
+  </main>
+</body>
+</html>
