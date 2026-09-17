@@ -1,6 +1,12 @@
 # Production student invitation links
 
 Canonical invitation URL: `https://app.kormic.ai/claim?token=...`.
+`CLAIM_PAGE_URL` is a backend/Celery setting containing the **student frontend /
+deep-link URL**, not the Django API URL (such as `https://backend.kormic.ai/api`).
+It belongs in the backend environment, not in portal frontend environment files.
+Invitation sending intentionally fails when it is unset. Set it to the public
+claim page without a query string or fragment; the backend appends the token.
+
 Django serves the fallback and both association documents; no separate frontend
 deployment is required for this domain. The Student Expo repository owns native
 link registration and the in-app claim flow. An email scanner opening the fallback

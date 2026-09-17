@@ -258,7 +258,7 @@ SIMPLE_JWT = {
 # password_reset, claim_start/verify -- see DEFAULT_THROTTLE_RATES above)
 # and the TOTP replay/lockout cache (accounts/totp.py) both assume one
 # shared counter. With LocMemCache and >1 worker, each worker tracks its own
-# count, so the real effective rate limit becomes configured_rate ×
+# count, so the real effective rate limit becomes configured_rate Ã—
 # worker_count -- silently weaker than configured. Uses a separate Redis DB
 # index from the Celery broker/result-backend (0/1) to keep keyspaces apart.
 CACHES = {
@@ -338,11 +338,11 @@ EXPO_PUSH_ACCESS_TOKEN = os.environ.get("EXPO_PUSH_ACCESS_TOKEN", "")
 
 # Email configuration -- used to deliver password-reset OTP codes (see
 # accounts.email) and claim-invite emails (institutes_list.tasks).
-# dev → Ethereal only; no real emails sent.
-# prod → Real SMTP only; no Ethereal.
-# dual → Ethereal + real SMTP for non-test domains.
-# Default → dev when DEBUG=True, otherwise prod.
-# prod/dual → Require all real SMTP settings; missing values cause startup failure.
+# dev â†’ Ethereal only; no real emails sent.
+# prod â†’ Real SMTP only; no Ethereal.
+# dual â†’ Ethereal + real SMTP for non-test domains.
+# Default â†’ dev when DEBUG=True, otherwise prod.
+# prod/dual â†’ Require all real SMTP settings; missing values cause startup failure.
 EMAIL_MODE = os.getenv("EMAIL_MODE", "dev" if DEBUG else "prod").lower()
 
 FAKE_EMAIL_DOMAINS = {
@@ -409,12 +409,12 @@ AGENT_ALERT_EMAILS = [
     addr.strip() for addr in os.getenv("AGENT_ALERT_EMAILS", "").split(",") if addr.strip()
 ]
 
-# Frontend page the claim-invite email links to, e.g. "https://app.kormic.com/claim"
-# (the student lands there with ?token=... and the page calls /api/claim/start/).
-# No sane default exists -- it's a frontend URL we don't own -- so
-# institutes_list.views.send_invites fails loudly if this is unset rather
-# than emailing a broken link, same intentional-fail-loud pattern as the
-# EMAIL_BACKEND requirement above.
+# Student frontend/deep-link destination for invite emails, not the Django API.
+# Set https://app.kormic.ai/claim after deploying the public app-link domain;
+# the backend appends ?token=... (see APP_LINKS.md). Configure the backend and
+# Celery worker, not the portal frontends. Leave unset until that page is ready:
+# institutes_list.views.send_invites intentionally fails rather than emailing
+# an unconfigured destination.
 CLAIM_PAGE_URL = os.getenv("CLAIM_PAGE_URL", "")
 
 # Served on app.kormic.ai by the dedicated proxy in deploy/app-links.nginx.conf.
