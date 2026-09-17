@@ -27,20 +27,72 @@ These are two distinct concepts and are not meant to converge:
 
 - **`Institute`** (`institutes/`) is a local org -- a school, coaching center, or an agent's partner institution -- that uploads student lists for the claim flow (`institutes_list/`). An institute never gets an agent; it only ever needs an identity (id, name, contact info) for provenance and one admin login to upload lists. Also only created by a superuser, via `POST /api/superuser/institutes/`.
 
+## Canonical Backend Port
+
+Kormic uses **port 8000** for the Django/Gunicorn backend everywhere:
+
+- Docker container application port: `8000`
+- Local Docker host URL: `http://127.0.0.1:8000`
+- Health endpoint: `http://127.0.0.1:8000/api/health/`
+- Local browser frontends: `VITE_API_BASE_URL=http://127.0.0.1:8000`
+- Production Nginx upstream: `http://127.0.0.1:8000`
+
+Do not use port `8030` for this backend.
+
 ## Local Development
 
-The easiest way to run the backend is via Docker Compose, which sets up PostgreSQL, Redis, Celery, and the web server automatically.
+The easiest way to run the backend locally is Docker Compose, which starts PostgreSQL, Redis, Celery, migrations, and Gunicorn.
+
+1. Create the local environment file:
 
 ```bash
+cp .env.template .env
+```
+
+2. Set at least a local database password in `.env` because Compose intentionally refuses to start without one:
+
+```ini
+POSTGRES_DB=kormic
+POSTGRES_USER=kormic
+POSTGRES_PASSWORD=choose-a-local-password
+```
+
+Inside Docker, Django connects to the database service as `postgres:5432`; you do not need to change that host for the Compose stack.
+
+3. Start the stack:
+
+```bash
+docker compose config
 docker compose build
 docker compose up -d
 ```
 
-To run migrations:
+4. Verify the backend:
+
+```bash
+curl http://127.0.0.1:8000/api/health/
+```
+
+The API is available locally at:
+
+```text
+http://127.0.0.1:8000
+```
+
+For a browser-based Kormic frontend running on the same computer, use:
+
+```ini
+VITE_API_BASE_URL=http://127.0.0.1:8000
+```
+
+For a physical phone or another computer on your LAN, `127.0.0.1` refers to that device itself. Use the backend computer's LAN IP instead, for example `http://192.168.1.50:8000` (and include that host/origin in the appropriate Django local-development settings).
+
+Compose automatically runs the one-shot `migrate` service before the web/Celery services. If you need to run migrations manually:
+
 ```bash
 docker compose exec web python manage.py migrate
 ```
 
 ## Deployment
 
-For production deployment instructions, please read [DEPLOYMENT.md](DEPLOYMENT.md)."# Kormic_backend_sahil_ammar" 
+Production uses the same application port, `8000`; Nginx proxies HTTPS traffic to `127.0.0.1:8000` on the server. For the complete production instructions, see [DEPLOYMENT.md](DEPLOYMENT.md).
