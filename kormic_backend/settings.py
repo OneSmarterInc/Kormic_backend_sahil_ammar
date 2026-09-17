@@ -258,7 +258,7 @@ SIMPLE_JWT = {
 # password_reset, claim_start/verify -- see DEFAULT_THROTTLE_RATES above)
 # and the TOTP replay/lockout cache (accounts/totp.py) both assume one
 # shared counter. With LocMemCache and >1 worker, each worker tracks its own
-# count, so the real effective rate limit becomes configured_rate Ã—
+# count, so the real effective rate limit becomes configured_rate ×
 # worker_count -- silently weaker than configured. Uses a separate Redis DB
 # index from the Celery broker/result-backend (0/1) to keep keyspaces apart.
 CACHES = {
@@ -338,11 +338,11 @@ EXPO_PUSH_ACCESS_TOKEN = os.environ.get("EXPO_PUSH_ACCESS_TOKEN", "")
 
 # Email configuration -- used to deliver password-reset OTP codes (see
 # accounts.email) and claim-invite emails (institutes_list.tasks).
-# dev â†’ Ethereal only; no real emails sent.
-# prod â†’ Real SMTP only; no Ethereal.
-# dual â†’ Ethereal + real SMTP for non-test domains.
-# Default â†’ dev when DEBUG=True, otherwise prod.
-# prod/dual â†’ Require all real SMTP settings; missing values cause startup failure.
+# dev → Ethereal only; no real emails sent.
+# prod → Real SMTP only; no Ethereal.
+# dual → Ethereal + real SMTP for non-test domains.
+# Default → dev when DEBUG=True, otherwise prod.
+# prod/dual → Require all real SMTP settings; missing values cause startup failure.
 EMAIL_MODE = os.getenv("EMAIL_MODE", "dev" if DEBUG else "prod").lower()
 
 FAKE_EMAIL_DOMAINS = {
