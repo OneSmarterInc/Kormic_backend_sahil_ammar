@@ -98,8 +98,11 @@ DJANGO_CORS_ALLOWED_ORIGINS=https://student.kormic.ai,https://admin.kormic.ai,ht
 # ==========================================
 POSTGRES_DB=kormic_prod
 POSTGRES_USER=kormic_admin
+# REQUIRED. Use a strong unique production password; Compose intentionally
+# refuses to render/start when POSTGRES_PASSWORD is missing or empty.
 POSTGRES_PASSWORD=your_secure_db_password
-POSTGRES_HOST=db
+# Docker Compose connects Django/Celery/migrations to the `postgres` service.
+POSTGRES_HOST=postgres
 POSTGRES_PORT=5432
 DB_CONN_MAX_AGE=60
 
@@ -124,6 +127,8 @@ EMAIL_HOST_PASSWORD=your_smtp_app_password
 
 Save and exit (`Ctrl+O`, `Enter`, `Ctrl+X`).
 
+The same `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` values are injected into the PostgreSQL container, the one-shot migration service, the web process, and both Celery services. Do not place alternate database credentials directly in `docker-compose.yml`.
+
 ---
 
 ## 5. Build and Start the Application
@@ -131,6 +136,10 @@ Save and exit (`Ctrl+O`, `Enter`, `Ctrl+X`).
 With the `.env` file in place, you can bring up the stack. This will build the Python image and download the Postgres/Redis images.
 
 ```bash
+# Validate interpolation first. This will fail immediately if the required
+# POSTGRES_PASSWORD is missing.
+docker compose config >/dev/null
+
 # Build the Docker images
 docker compose build
 
@@ -138,7 +147,7 @@ docker compose build
 docker compose up -d
 ```
 
-Verify that all containers (web, celery_worker, celery_beat, db, redis) are running:
+Verify that all containers (web, celery_worker, celery_beat, postgres, redis) are running:
 ```bash
 docker compose ps
 ```
@@ -246,9 +255,9 @@ docker compose exec web python manage.py collectstatic --noinput
 ```
 
 ### Accessing the Database Shell
-If you need to query the Postgres database directly:
+If you need to query the Postgres database directly, use the credentials already injected into that container:
 ```bash
-docker compose exec db psql -U kormic_admin -d kormic_prod
+docker compose exec postgres sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
 
 ### Accessing the Django Shell
