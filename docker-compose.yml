@@ -20,9 +20,12 @@ x-app: &app
     # Separate Redis DB index from the Celery broker/result-backend above,
     # so the shared rate-limit/TOTP-replay cache keyspace stays independent.
     DJANGO_CACHE_URL: redis://redis:6379/2
-    POSTGRES_DB: kormic
-    POSTGRES_USER: kormic
-    POSTGRES_PASSWORD: kormic
+    # Database identity comes from the deployment environment. Compose keeps
+    # the Docker-internal host/port fixed to the postgres service, but never
+    # replaces operator-supplied credentials from .env with hard-coded ones.
+    POSTGRES_DB: "${POSTGRES_DB:-kormic}"
+    POSTGRES_USER: "${POSTGRES_USER:-kormic}"
+    POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
     POSTGRES_HOST: postgres
     POSTGRES_PORT: "5432"
   depends_on:
@@ -51,15 +54,17 @@ services:
     image: postgres:16-alpine
     container_name: kormic_postgres
     environment:
-      POSTGRES_DB: kormic
-      POSTGRES_USER: kormic
-      POSTGRES_PASSWORD: kormic
+      POSTGRES_DB: "${POSTGRES_DB:-kormic}"
+      POSTGRES_USER: "${POSTGRES_USER:-kormic}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
     ports:
       - "5438:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U kormic -d kormic"]
+      # $$ defers expansion until this runs inside the container, ensuring the
+      # health check uses the same database/user injected above.
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -77,9 +82,9 @@ services:
     env_file:
       - .env
     environment:
-      POSTGRES_DB: kormic
-      POSTGRES_USER: kormic
-      POSTGRES_PASSWORD: kormic
+      POSTGRES_DB: "${POSTGRES_DB:-kormic}"
+      POSTGRES_USER: "${POSTGRES_USER:-kormic}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
     depends_on:
