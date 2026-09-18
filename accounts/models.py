@@ -41,6 +41,21 @@ class Account(models.Model):
         on_delete=models.SET_NULL, related_name="accounts",
     )
 
+    # Preferences are separate from evidence/verification and actual connections.
+    onboarding_preferences = models.JSONField(default=dict, blank=True)
+
+    class UniversityRole(models.TextChoices):
+        OWNER = "owner", "University Owner/Admin"
+        ADMISSIONS = "admissions", "Admissions"
+        INTERNATIONAL = "international", "International Office"
+        FINANCIAL_AID = "financial_aid", "Financial Aid"
+        CAMPUS_LIFE = "campus_life", "Campus Life"
+        VIEWER = "viewer", "Viewer/Auditor"
+
+    # Legacy university provisioning creates the institution's owner. Staff
+    # creation requires an explicit role; this default preserves existing owners.
+    university_role = models.CharField(max_length=30, choices=UniversityRole.choices, default=UniversityRole.OWNER)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -126,3 +141,4 @@ class GitHubOAuthConnection(models.Model):
 
     def __str__(self) -> str:
         return f"GitHubOAuthConnection(user={self.user_id}, github={self.github_username})"
+

@@ -14,6 +14,7 @@ from universities import notifications, services
 from universities.identity import is_agent_name_available
 from universities.knowledge_groups import ensure_default_groups, escalation_counts_by_group
 from universities.models import KnowledgeGroup, University
+from universities.staff_permissions import GROUPS
 
 UNIVERSITY_ADMIN_PERMISSIONS = [IsAuthenticated, IsTOTPEnrolled, IsUniversityRole]
 
@@ -568,6 +569,8 @@ class KnowledgeFactListCreateAPIView(APIView):
             return _error("No university profile found for this account.", status.HTTP_404_NOT_FOUND)
 
         entries = UniversityKnowledgeEntry.objects.filter(university_id=account.university_uuid)
+        if account.university_role in GROUPS:
+            entries = entries.filter(group__slug=GROUPS[account.university_role])
 
         section = request.query_params.get("section")
         if section:
@@ -796,6 +799,9 @@ class KnowledgeGroupListAPIView(APIView):
         ensure_default_groups(university)
         counts = escalation_counts_by_group(str(university.uuid))
         groups = university.knowledge_groups.all()
+        account = get_account(request)
+        if account.university_role in GROUPS:
+            groups = groups.filter(slug=GROUPS[account.university_role])
 
         return Response({
             "groups": [_serialize_knowledge_group(group, counts) for group in groups],
@@ -1015,3 +1021,4 @@ class KnowledgeGroupEscalationNotifyAPIView(APIView):
             "escalation_count": len(escalations),
             "escalation_ids": [query.id for query in escalations],
         })
+

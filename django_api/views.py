@@ -1134,7 +1134,7 @@ class AnswerPendingQueryView(APIView):
     def post(self, request):
         query_id = request.data.get("query_id")
         answer = request.data.get("answer")
-        answered_by = request.data.get("answered_by", "Admin")
+        answered_by = (request.user.get_full_name() or request.user.email)
 
         if query_id is None:
             return Response({"status": "failed", "message": "query_id is required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -1759,7 +1759,7 @@ class EditPendingQueryView(APIView):
 
     def post(self, request, query_id: int):
         answer = request.data.get("answer")
-        answered_by = request.data.get("answered_by", "Admin")
+        answered_by = (request.user.get_full_name() or request.user.email)
 
         if not answer:
             return Response({"status": "failed", "message": "answer is required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -1806,7 +1806,7 @@ class IgnorePendingQueryView(APIView):
         from django.utils import timezone
 
         reason = request.data.get("reason", "")
-        ignored_by = request.data.get("ignored_by", "Admin")
+        ignored_by = (request.user.get_full_name() or request.user.email)
 
         selected_query, error = _get_scoped_pending_query(request, query_id)
         if error:

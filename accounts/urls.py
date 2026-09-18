@@ -1,9 +1,11 @@
 from django.urls import path
 from accounts import web_auth
+from accounts.onboarding import OnboardingPreferencesView
 
 from accounts import views
 
 urlpatterns = [
+    path("onboarding/preferences/", OnboardingPreferencesView.as_view(), name="onboarding-preferences"),
     path("web/csrf/", web_auth.WebCSRFView.as_view()),
     path("web/login/", web_auth.WebLoginView.as_view()),
     path("web/register/", web_auth.WebRegisterView.as_view()),
@@ -26,3 +28,4 @@ urlpatterns = [
     path("github/status/", views.GitHubOAuthStatusView.as_view(), name="github_oauth_status"),
     path("github/disconnect/", views.GitHubOAuthDisconnectView.as_view(), name="github_oauth_disconnect"),
 ]
+

@@ -115,3 +115,12 @@ class ScrapeJob(models.Model):
 
     def __str__(self) -> str:
         return f"ScrapeJob({self.university_id}, {self.status})"
+
+
+class StaffAuditEvent(models.Model):
+    university = models.ForeignKey(University, on_delete=models.CASCADE, related_name="staff_audit")
+    actor = models.ForeignKey("auth.User", null=True, on_delete=models.SET_NULL, related_name="staff_actions")
+    subject = models.ForeignKey("auth.User", null=True, on_delete=models.SET_NULL, related_name="staff_changes")
+    action = models.CharField(max_length=20)
+    changes = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)

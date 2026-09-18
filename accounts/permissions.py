@@ -36,7 +36,10 @@ class IsUniversityRole(BasePermission):
 
     def has_permission(self, request, view) -> bool:
         account = get_account(request)
-        return account is not None and account.role == Account.Role.UNIVERSITY
+        if account is None or account.role != Account.Role.UNIVERSITY:
+            return False
+        from universities.staff_permissions import authorize_university_request
+        return authorize_university_request(request, view, account)
 
 
 class IsInstituteRole(BasePermission):
@@ -52,7 +55,12 @@ class IsStudentOrUniversityRole(BasePermission):
 
     def has_permission(self, request, view) -> bool:
         account = get_account(request)
-        return account is not None and account.role in (Account.Role.STUDENT, Account.Role.UNIVERSITY)
+        if account is None:
+            return False
+        if account.role == Account.Role.UNIVERSITY:
+            from universities.staff_permissions import authorize_university_request
+            return authorize_university_request(request, view, account)
+        return account.role == Account.Role.STUDENT
 
 
 class IsSuperUserRole(BasePermission):
@@ -94,3 +102,4 @@ class ScopedToOwnInstituteId(BasePermission):
             return True
         account = get_account(request)
         return account is not None and account.institute_uuid == str(institute_id)
+
