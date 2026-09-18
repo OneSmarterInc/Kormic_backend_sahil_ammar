@@ -43,3 +43,10 @@ class RoadmapUnavailableTests(SimpleTestCase):
         for path in ["/api/roadmap/student/", "/api/roadmap/student/history/"]:
             with self.subTest(path=path), self.assertRaises(Resolver404):
                 resolve(path)
+
+    def test_chat_does_not_offer_unavailable_roadmap_tools(self):
+        from pure_multi_agent.tools import build_all_tools
+        tools = build_all_tools({"student_profile": {}, "memory": {}, "pending_verification_item_id": None})
+        names = {tool.name for tool in tools}
+        self.assertNotIn("generate_application_roadmap", names)
+        self.assertNotIn("get_roadmap_progress", names)

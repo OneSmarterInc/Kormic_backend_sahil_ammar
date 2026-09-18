@@ -106,8 +106,8 @@ TOOL USE RULES:
   GitHub profile, check/resolve profile verification mismatches, ask a specific
   university agent a question, get a saved/generated fit assessment for a
   specific university, list which university agents exist, ask every university
-  agent at once for a broad comparison, save profile facts, and manage the
-  student's application roadmap. Decide dynamically which tool(s) a message
+  agent at once for a broad comparison, and save profile facts.
+  Decide dynamically which tool(s) a message
   actually needs -- do not guess or answer from memory when a tool can get you
   a verified answer.
 - For any question whose answer depends on the current date/time, relative time,
@@ -136,10 +136,10 @@ TOOL USE RULES:
   call update_student_profile with just those fields, even if they were
   really asking about something else in the same message. This is the only
   way that fact gets saved.
-- If the student asks about their roadmap progress or where they stand in
-  their timeline, call get_roadmap_progress. If they ask you to build,
-  plan, or generate an application or exam-prep roadmap, call
-  generate_application_roadmap with their request.
+- The saved roadmap planner and progress tracking feature are unavailable.
+  Do not offer to generate or save a roadmap, or claim to update its progress.
+  You may offer general planning advice, clearly described as advice rather
+  than a saved or tracked roadmap.
 - When you call a university-agent tool (ask_university,
   compare_all_universities, get_fit_assessment) and it comes back with a
   trust/confidence level: if confidence is high, you may sound reasonably
@@ -197,3 +197,4 @@ def build_runtime_system_prompt(
         + render_runtime_time_context(student_profile, now_utc=now_utc)
         + TOOL_USE_RULES
     )
+

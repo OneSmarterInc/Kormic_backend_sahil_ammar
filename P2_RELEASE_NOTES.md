@@ -2,7 +2,7 @@
 
 - P2-01: removed the inactive mock liveness screen, service, state and actions. No biometric data is collected and no liveness claim is made.
 - P2-02: replaced timed agent-construction stages with a user-controlled Profile ready confirmation. Source uploads retain their real request/loading behavior. No backend construction job or identity verification is implied.
-- P2-03: removed incomplete roadmap generation/history routes and API-discovery advertising. Existing roadmap models and stored data are retained. No active student roadmap screen was present. Reintroduction requires a tested planner and an explicit product/API contract.
+- P2-03: removed incomplete roadmap generation/history routes, API-discovery advertising, and chat tools/prompt instructions that offered the unavailable planner. Existing roadmap models and stored data are retained. No active student roadmap screen was present. Reintroduction requires a tested planner and an explicit product/API contract.
 - P2-04: phone input preserves international prefixes and formatting. Country-aware libraries validate on both clients and server; successful profile writes store E.164. Explicit +country codes override residence, allowing foreign numbers. National-format API submissions must include country; unknown countries require an international prefix. Existing stored phone values are not guessed or bulk-rewritten. Parsing does not verify phone ownership.
 - P2-05: one jest-expo declaration remains, in devDependencies, with a matching lockfile. Complete lint, TypeScript, Jest and Expo exports remain blocking CI gates; no continue-on-error is present.
 

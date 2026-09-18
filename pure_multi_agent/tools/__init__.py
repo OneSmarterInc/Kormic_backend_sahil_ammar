@@ -12,7 +12,6 @@ from typing import Any, Dict, List
 from . import (
     github_tools,
     profile_tools,
-    roadmap_tools,
     time_tools,
     university_tools,
     verification_tools,
@@ -26,5 +25,5 @@ def build_all_tools(ctx: Dict[str, Any]) -> List[Any]:
         *github_tools.build_tools(ctx),
         *verification_tools.build_tools(ctx),
         *university_tools.build_tools(ctx),
-        *roadmap_tools.build_tools(ctx),
     ]
+
