@@ -23,13 +23,22 @@ def resolve(environment, matrix):
 
 def render(environment, values):
     api = values["api"]
+    origins = [values[r] for r in ("student", "superuser", "university", "institute")]
+    if environment == "local":
+        # Both loopback names are same-site only when the page/API names match.
+        for origin in list(origins):
+            parsed = urlparse(origin)
+            if parsed.hostname in ("localhost", "127.0.0.1"):
+                for host in ("localhost", "127.0.0.1"):
+                    origins.append(parsed._replace(netloc=f"{host}:{parsed.port}").geturl())
+    origins = list(dict.fromkeys(origins))
     result = {role: {"VITE_API_BASE_URL": api, "VITE_APP_ENV": environment}
               for role in ("superuser", "university", "institute")}
     result["student"] = {"EXPO_PUBLIC_API_BASE_URL": api + "/api", "EXPO_PUBLIC_APP_ENV": environment,
                          "EXPO_PUBLIC_APP_LINK_ORIGIN": values["student"]}
     result["backend"] = {"KORMIC_ENVIRONMENT": environment,
         "DJANGO_ALLOWED_HOSTS": ",".join(dict.fromkeys([urlparse(api).hostname, "localhost", "127.0.0.1"])),
-        "DJANGO_CORS_ALLOWED_ORIGINS": ",".join(values[r] for r in ("student", "superuser", "university", "institute")),
+        "DJANGO_CORS_ALLOWED_ORIGINS": ",".join(origins),
         "GITHUB_OAUTH_REDIRECT_URI": api + "/api/auth/github/callback/",
         "CLAIM_PAGE_URL": values["student"] + "/claim"}
     return result

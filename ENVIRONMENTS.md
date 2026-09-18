@@ -37,3 +37,12 @@ Native staging app-link hosts also require app association files and a matching 
 build (Expo/native domain allowlists); configuring a web claim URL alone does not establish a
 verified Android/iOS link. Provision these after choosing the staging domain, or use the staging
 web claim flow. Localhost hosts remain allowed for container health checks in every environment.
+
+## Local browser cookies
+
+Use `http://localhost:8081` for the student app and `http://localhost:8000/api` for its API.
+Do not mix `localhost` and `127.0.0.1`: browsers treat them as different sites and block
+SameSite=Lax authentication cookies. In development, the student app aligns loopback API
+hostnames with the browser page; native/LAN and remote API addresses remain explicit.
+Restart Expo after changing `.env.local` and reload the browser. Keep cookies enabled.
+Production app/API must use HTTPS on the same site, or a same-site API proxy; do not disable CSRF.

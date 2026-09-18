@@ -120,3 +120,28 @@ class WebAuthTests(TestCase):
         self.assertEqual(allowed['Access-Control-Allow-Credentials'], 'true')
         denied = self.client.get('/api/auth/web/csrf/', HTTP_ORIGIN='https://evil.example', secure=True)
         self.assertNotIn('Access-Control-Allow-Origin', denied)
+
+
+
+@override_settings(
+    DEBUG=True, CSRF_COOKIE_SECURE=False,
+    CSRF_TRUSTED_ORIGINS=['http://localhost:8081'],
+    CORS_ALLOWED_ORIGINS=['http://localhost:8081'],
+    PASSWORD_HASHERS=['django.contrib.auth.hashers.MD5PasswordHasher'],
+    CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}},
+)
+class StudentLocalCSRFTests(TestCase):
+    def test_cookie_and_header_are_both_required_on_local_student_login(self):
+        client = APIClient(enforce_csrf_checks=True)
+        response = client.get('/api/auth/web/csrf/', HTTP_HOST='localhost:8000', HTTP_ORIGIN='http://localhost:8081')
+        token = response.data['csrfToken']
+        self.assertEqual(response.cookies['csrftoken']['samesite'], 'Lax')
+        self.assertTrue(response.cookies['csrftoken']['httponly'])
+        headers = {'HTTP_HOST': 'localhost:8000', 'HTTP_ORIGIN': 'http://localhost:8081', 'HTTP_X_CSRFTOKEN': token}
+        # Empty credentials reach validation, proving CSRF passed without weakening it.
+        response = client.post('/api/auth/web/login/', {'portal': 'student'}, format='json', **headers)
+        self.assertEqual(response.status_code, 400)
+        client.cookies.clear()
+        denied = client.post('/api/auth/web/login/', {'portal': 'student'}, format='json', **headers)
+        self.assertEqual(denied.status_code, 403)
+        self.assertIn('CSRF cookie not set', str(denied.data))

@@ -180,6 +180,9 @@ jobs:
           PY
           rm -f .env
 
+      - name: Validate shared environment generation
+        run: python scripts/test_configure_environment.py
+
       - name: Django system check
         run: python manage.py check
 
@@ -200,3 +203,4 @@ jobs:
 
       - name: Verify full-suite test-order independence
         run: python manage.py test --shuffle 20260917 --verbosity 1
+

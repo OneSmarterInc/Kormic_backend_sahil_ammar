@@ -34,7 +34,6 @@ from django_api.models import (
     LinkedInAnalysis,
     PendingQuery,
     ResumeUpload,
-    RoadmapVersion,
     StudentProfile,
     UniversityQuestionLog,
     VerifiedAnswer,
@@ -148,7 +147,6 @@ def api_home(request):
             "chat_attachment": "GET /api/chat/agent/attachments/<attachment_id>/",
         },
         "core_apis": {
-            "roadmap": "GET /api/roadmap/<student_id>/",
             "pending_queries": "GET /api/queries/pending/",
             "answer_query": "POST /api/queries/answer/",
             "edit_query": "POST /api/queries/<query_id>/edit/",
@@ -989,82 +987,6 @@ class AssessmentDetailView(APIView):
 # ---------------------------------------------------------------------
 # API 10: Roadmap
 # ---------------------------------------------------------------------
-
-class RoadmapView(APIView):
-    permission_classes = STUDENT_OWNER_PERMISSIONS
-
-    def get(self, request, student_id):
-        profile, error_response = load_profile_or_404(student_id)
-        if error_response:
-            return error_response
-
-        user_message = request.query_params.get("message", "").strip()
-        if not user_message:
-            user_message = "Generate a personalized roadmap for this student's application process or exam preparation based on the saved profile."
-
-        try:
-            try:
-                from roadmap.roadmap_planner import RoadmapPlanner
-            except ImportError:
-                from roadmap_planner import RoadmapPlanner
-
-            planner = RoadmapPlanner()
-            if hasattr(planner, "generate_application_roadmap"):
-                roadmap = planner.generate_application_roadmap(profile, user_message)
-            else:
-                roadmap = call_first_available_method(
-                    planner,
-                    ["generate", "generate_roadmap", "create_roadmap", "build_roadmap", "plan"],
-                    profile,
-                    user_message,
-                )
-
-            if isinstance(roadmap, dict):
-                profile["roadmap"] = roadmap
-                save_profile_data(student_id, profile)
-                # The profile JSON can exist before a StudentProfile row does
-                # -- don't 500 on the history write in that case.
-                student_row, _ = StudentProfile.objects.get_or_create(uuid=student_id)
-                RoadmapVersion.objects.create(
-                    student=student_row,
-                    request_message=user_message,
-                    roadmap=roadmap,
-                )
-
-            return Response({"status": "success", "student_id": student_id, "request": user_message, "roadmap": roadmap})
-        except ImportError as exc:
-            return Response(
-                {
-                    "status": "failed",
-                    "message": "Roadmap planner file not found.",
-                    "error": str(exc),
-                    "expected_file": "roadmap_planner.py or roadmap/roadmap_planner.py",
-                },
-                status=status.HTTP_501_NOT_IMPLEMENTED,
-            )
-        except Exception as exc:
-            return Response(
-                {"status": "failed", "message": "Roadmap generation failed.", "error": str(exc)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-
-class RoadmapHistoryView(APIView):
-    """GET /api/roadmap/<student_id>/history/ — every roadmap generated for this student."""
-
-    permission_classes = STUDENT_OWNER_PERMISSIONS
-
-    def get(self, request, student_id):
-        rows = RoadmapVersion.objects.filter(student__uuid=student_id)
-        return Response({
-            "student_id": student_id,
-            "count": rows.count(),
-            "versions": [
-                {"request_message": r.request_message, "roadmap": r.roadmap, "created_at": r.created_at}
-                for r in rows
-            ],
-        })
-
 
 # ---------------------------------------------------------------------
 # Persistent GET APIs for profile sub-resources (resume/GitHub/LinkedIn history)

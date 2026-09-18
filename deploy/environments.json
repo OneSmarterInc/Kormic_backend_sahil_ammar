@@ -1,6 +1,6 @@
 {
   "local": {
-    "api": "http://127.0.0.1:8000",
+    "api": "http://localhost:8000",
     "student": "http://localhost:8081",
     "superuser": "http://localhost:5173",
     "university": "http://localhost:5174",

@@ -33,7 +33,7 @@ class BasicInfoPersistenceTests(TestCase):
     def test_profile_serializer_accepts_all_student_app_basic_info_fields(self):
         serializer = ProfileCreateUpdateSerializer(data=self.payload)
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        self.assertEqual(serializer.validated_data["phone"], "9876543210")
+        self.assertEqual(serializer.validated_data["phone"], "+919876543210")
         self.assertEqual(serializer.validated_data["date_of_birth"], "02/03/2004")
         self.assertEqual(serializer.validated_data["city"], "Pune")
         self.assertEqual(serializer.validated_data["region"], "Maharashtra")
@@ -52,7 +52,7 @@ class BasicInfoPersistenceTests(TestCase):
 
         self.profile.refresh_from_db()
         saved = self.profile.evidence.get("manual_profile_api", {})
-        self.assertEqual(saved["phone"], "9876543210")
+        self.assertEqual(saved["phone"], "+919876543210")
         self.assertEqual(saved["date_of_birth"], "02/03/2004")
         self.assertEqual(saved["city"], "Pune")
         self.assertEqual(saved["region"], "Maharashtra")
@@ -64,3 +64,4 @@ class BasicInfoPersistenceTests(TestCase):
         self.assertTrue(after["profile_exists"])
         self.assertTrue(after["basic_info_complete"])
         self.assertFalse(after["setup_complete"])
+

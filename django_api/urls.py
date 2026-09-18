@@ -54,9 +54,7 @@ urlpatterns = [
         name="assessment-detail",
     ),
 
-    # APIs 10-13: Roadmap, Queries, Export
-    path("roadmap/<str:student_id>/", views.RoadmapView.as_view(), name="roadmap"),
-    path("roadmap/<str:student_id>/history/", views.RoadmapHistoryView.as_view(), name="roadmap-history"),
+    # Queries and export (roadmap is unavailable until a planner is implemented)
     path("queries/pending/", views.PendingQueriesView.as_view(), name="pending-queries"),
     path("queries/answer/", views.AnswerPendingQueryView.as_view(), name="answer-pending-query"),
     path("queries/<int:query_id>/edit/", views.EditPendingQueryView.as_view(), name="edit-pending-query"),
