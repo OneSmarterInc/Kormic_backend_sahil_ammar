@@ -6,7 +6,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 from django.contrib.auth.models import User
 from django.test import TestCase, TransactionTestCase
-from django.db import connection, close_old_connections
+from django.db import connection, connections, close_old_connections
 from django.utils import timezone
 from rest_framework.test import APIClient
 from accounts.models import Account, TOTPDevice
@@ -225,7 +225,7 @@ class ChatAdmissionConcurrencyTests(TransactionTestCase):
             try:
                 return client.post("/api/chat/agent/", {"message": "Hi"}).status_code
             finally:
-                close_old_connections()
+                connections.close_all()
         with patch("django_api.chat_tasks.generate_chat.apply_async"), ThreadPoolExecutor(max_workers=2) as pool:
             statuses = list(pool.map(lambda _: post(), range(2)))
         self.assertEqual(sorted(statuses), [202, 429])
