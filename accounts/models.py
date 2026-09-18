@@ -42,6 +42,8 @@ class Account(models.Model):
     )
 
     # Preferences are separate from evidence/verification and actual connections.
+    last_active_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
     onboarding_preferences = models.JSONField(default=dict, blank=True)
 
     class UniversityRole(models.TextChoices):

@@ -196,6 +196,8 @@ class UniversityKnowledgeBase:
                 group_id=row.group_id,
             )
             entry.db_id = row.id
+            entry.active = row.active
+            entry.last_verified_at = row.last_verified_at
             self.entries.append(entry)
 
     def _persist_entry(self, entry: KnowledgeEntry, create: bool = False) -> None:
@@ -223,6 +225,15 @@ class UniversityKnowledgeBase:
             if entry.group_id is not None:
                 update_fields["group_id"] = entry.group_id
             UniversityKnowledgeEntry.objects.filter(id=entry.db_id).update(**update_fields)
+
+        from knowledge.retrieval import sync_chunks, HUMAN
+        from django.utils import timezone
+        row = UniversityKnowledgeEntry.objects.get(pk=entry.db_id)
+        if entry.source_type in HUMAN and row.last_verified_at is None:
+            row.last_verified_at = timezone.now()
+            row.save(update_fields=["last_verified_at"])
+        entry.last_verified_at = row.last_verified_at
+        sync_chunks(row)
 
     # ------------------------------------------------------------------
     # Storage
@@ -368,57 +379,11 @@ class UniversityKnowledgeBase:
         return score
 
     def search(self, query: str, limit: int = 8) -> List[KnowledgeEntry]:
-        """
-        Improved keyword search.
-
-        Uses:
-        - stop word removal
-        - important keyword boosting
-        - exact phrase boosting
-        - topic/content scoring
-        - confidence score
-        - source priority
-        - usage score
-        """
-        query_words = self._tokenize(query)
-
-        if not query_words:
-            return []
-
-        matches: List[KnowledgeEntry] = []
-
-        for entry in self.entries:
-            score = self._phrase_score(query, entry.topic, entry.content)
-
-            topic = entry.topic.lower()
-            content = entry.content.lower()
-
-            for word in query_words:
-                if word in topic:
-                    score += 10 if word in self.IMPORTANT_WORDS else 3
-
-                if word in content:
-                    score += 5 if word in self.IMPORTANT_WORDS else 1
-
-            source_boost = self.SOURCE_PRIORITY.get(entry.source_type, 0.5)
-
-            score *= entry.confidence
-            score *= source_boost
-            score += entry.times_used * 0.1
-
-            if score > 0:
-                entry.search_score = round(score, 4)
-                matches.append(entry)
-
-        matches.sort(key=lambda entry: entry.search_score, reverse=True)
-
-        results = matches[:limit]
-
+        from knowledge.retrieval import hybrid_search
+        results = hybrid_search(self, query, limit)
         for entry in results:
             entry.times_used += 1
-
         self._persist_usage_bump(results)
-
         return results
 
     def _persist_usage_bump(self, entries: List[KnowledgeEntry]) -> None:
@@ -446,8 +411,10 @@ class UniversityKnowledgeBase:
         - frequently used entries
         - stronger source types
         """
+        from knowledge.retrieval import available, source_metadata
+        sources = source_metadata(self.university_id)
         sorted_entries = sorted(
-            self.entries,
+            [e for e in self.entries if available(e, sources)],
             key=lambda entry: (
                 self.SOURCE_PRIORITY.get(entry.source_type, 0.5) * 2
                 + entry.confidence * 2
@@ -523,3 +490,4 @@ class UniversityKnowledgeBase:
                 kb.entries.append(KnowledgeEntry.from_dict(entry_data))
 
         return kb
+

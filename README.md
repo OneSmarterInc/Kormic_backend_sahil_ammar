@@ -30,3 +30,5 @@ python scripts/test_configure_environment.py
 ```
 
 Tests require a dedicated test database and Redis cache. CI exercises the complete suite in normal and shuffled order, plus schema and Compose configuration checks. Do not point test commands at production.
+
+See [Knowledge, telemetry and privacy operations](KNOWLEDGE_PRIVACY_OPERATIONS.md) for pgvector migration, embedding configuration, source freshness, model pricing, data export/deletion and retention rollout.

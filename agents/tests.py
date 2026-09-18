@@ -93,6 +93,7 @@ class PendingQueryConfidenceTests(TestCase):
     def setUp(self):
         u = University.objects.create(name="Hard State", agent_name="Nova3")
         self.agent = UniversityAgent(str(u.uuid), auto_scrape=False)
+        self.agent.kb.store(topic="GRE cutoff and scholarship", content="GRE and scholarship criteria vary by program; no exact cutoff is listed.", source_type="seed")
 
     @mock.patch("agents.university_agent._get_anthropic_client")
     def test_different_confidence_scores_persist_distinctly_on_the_escalation(self, mock_client):
@@ -318,3 +319,4 @@ class AgentIdentityAndConversationLogTests(TestCase):
         second.refresh_from_db()
         self.assertEqual(second.agent_name, "Nova")
         self.assertEqual(AgentIdentity.objects.filter(owner_id="student_xyz").count(), 1)
+

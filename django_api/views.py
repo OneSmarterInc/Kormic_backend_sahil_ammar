@@ -1615,6 +1615,9 @@ def university_agent_chat(request, university_id: str):
             assistant_message=reply,
             meta={
                 "confidence": result.get("confidence"),
+                "sources": result.get("sources", []),
+                "last_verified_at": result.get("last_verified_at"),
+                "human_verified": result.get("human_verified", False),
                 "trust": result.get("trust"),
                 "pending": result.get("pending", False),
                 "pending_query": result.get("pending_query"),
@@ -1625,12 +1628,16 @@ def university_agent_chat(request, university_id: str):
         return Response({
             "university_id": university_id,
             "agent_name": result.get("agent_name"),
+            "answer": reply,
             "reply": reply,
             "pending": result.get("pending", False),
             "pending_query": result.get("pending_query"),
             "knowledge_gap": result.get("knowledge_gap", False),
             "unsupported_topics": result.get("unsupported_topics"),
             "confidence": result.get("confidence"),
+                "sources": result.get("sources", []),
+                "last_verified_at": result.get("last_verified_at"),
+                "human_verified": result.get("human_verified", False),
             "trust": result.get("trust"),
         })
     except Exception as exc:

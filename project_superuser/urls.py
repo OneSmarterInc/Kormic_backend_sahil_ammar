@@ -2,7 +2,10 @@ from django.urls import path
 
 from project_superuser import views
 
+from django_api.telemetry import ModelTelemetryView
+
 urlpatterns = [
+    path("metrics/models/", ModelTelemetryView.as_view()),
     path("students/", views.AdminStudentListCreateAPIView.as_view(), name="superuser-students"),
     path("students/<str:student_id>/", views.AdminStudentDetailAPIView.as_view(), name="superuser-student-detail"),
     path("universities/", views.AdminUniversityListCreateAPIView.as_view(), name="superuser-universities"),
@@ -47,3 +50,4 @@ urlpatterns = [
         name="superuser-metrics-escalations",
     ),
 ]
+

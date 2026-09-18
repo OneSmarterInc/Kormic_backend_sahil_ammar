@@ -480,3 +480,12 @@ LOGGING = {
 CELERY_TASK_ROUTES = {"django_api.chat_tasks.generate_chat": {"queue": "chat"}}
 CELERY_BROKER_CONNECTION_TIMEOUT = 3
 CELERY_BROKER_TRANSPORT_OPTIONS = {"socket_connect_timeout": 3, "socket_timeout": 3}
+
+# Registered explicitly because knowledge/privacy are service modules, not Django apps.
+CELERY_IMPORTS = ("knowledge.tasks", "accounts.privacy_tasks")
+CELERY_BEAT_SCHEDULE.update({
+    "knowledge-recrawl": {"task": "knowledge.tasks.refresh_knowledge", "schedule": 300.0},
+    "knowledge-embeddings": {"task": "knowledge.tasks.embed_knowledge", "schedule": 60.0},
+    "student-deletion": {"task": "accounts.privacy_tasks.process_deletions", "schedule": 60.0},
+    "data-retention": {"task": "accounts.privacy_tasks.apply_retention", "schedule": 86400.0},
+})

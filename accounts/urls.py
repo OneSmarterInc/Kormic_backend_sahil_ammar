@@ -4,7 +4,13 @@ from accounts.onboarding import OnboardingPreferencesView
 
 from accounts import views
 
+from accounts.privacy import StudentExportView, StudentDeleteView, DeletionStatusView, RetentionPolicyView
+
 urlpatterns = [
+    path("privacy/export/", StudentExportView.as_view()),
+    path("privacy/delete/", StudentDeleteView.as_view()),
+    path("privacy/deletions/<uuid:receipt>/", DeletionStatusView.as_view()),
+    path("privacy/retention/", RetentionPolicyView.as_view()),
     path("onboarding/preferences/", OnboardingPreferencesView.as_view(), name="onboarding-preferences"),
     path("web/csrf/", web_auth.WebCSRFView.as_view()),
     path("web/login/", web_auth.WebLoginView.as_view()),

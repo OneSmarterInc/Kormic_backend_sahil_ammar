@@ -193,7 +193,7 @@ class UniversityAgent:
                 continue
 
             saved_norm = self._normalize_text(saved_question)
-            result = {"answer": saved_answer, "query_id": record.query_id}
+            result = {"answer": saved_answer, "query_id": record.query_id, "id": record.pk, "last_verified_at": record.created_at.isoformat()}
 
             if question_norm == saved_norm:
                 return result
@@ -213,8 +213,9 @@ class UniversityAgent:
     # Prompt builders
     # --------------------------------------------------
 
-    def _build_system_prompt(self, caller_role: str = "student") -> str:
-        knowledge_context = self.kb.get_full_context()
+    def _build_system_prompt(self, caller_role: str = "student", knowledge_context=None) -> str:
+        if knowledge_context is None:
+            knowledge_context = self.kb.get_full_context()
 
         response_style = """
 
@@ -291,8 +292,9 @@ university or program; you already know it.
 
         for entry in results[:limit]:
             chunks.append(
-                "Topic: {topic}\nContent: {content}\nConfidence: {confidence}\n"
+                "Source ID: knowledge:{entry_id}\nTopic: {topic}\nContent: {content}\nConfidence: {confidence}\n"
                 "Source Type: {source_type}\n".format(
+                    entry_id=self._entry_value(entry, "db_id", ""),
                     topic=self._entry_value(entry, "topic", "Unknown topic"),
                     content=self._entry_value(entry, "content", ""),
                     confidence=self._entry_value(entry, "confidence", "unknown"),
@@ -761,6 +763,9 @@ Return ONLY the reformatted answer text. No JSON, no preamble.
                 "answer": verified.get("answer"),
                 "pending": False,
                 "source": "human_verified",
+                "human_verified": True,
+                "last_verified_at": verified.get("last_verified_at"),
+                "sources": [{"id": f"verified:{verified.get('id')}", "title": "University-verified answer", "url": None, "source_type": "human_verified", "human_verified": True, "last_verified_at": verified.get("last_verified_at")}],
                 "query_id": verified.get("query_id"),
                 "confidence": 1.0,
                 "trust": self._build_trust_context(
@@ -775,9 +780,7 @@ Return ONLY the reformatted answer text. No JSON, no preamble.
         # 2. Search regular knowledge base.
         kb_context, results = self._build_relevant_kb_context(question)
 
-        if not results and caller_role == "officer" and self.kb.entries:
-            kb_context = self.kb.get_full_context()
-            results = self.kb.entries
+
 
         student_ctx = self._build_student_context(student_context)
 
@@ -825,8 +828,10 @@ Format:
 {{
   "answer": "your answer here",
   "confidence": 0.0,
-  "unsupported_topics": []
+  "unsupported_topics": [],
+  "source_ids": ["knowledge:123"]
 }}
+Only include source_ids explicitly provided in the context that support your answer. Never invent IDs or URLs.
 
 Confidence Guide (for the topics you DID answer -- an unsupported topic
 listed separately doesn't need to drag this down):
@@ -851,7 +856,7 @@ QUESTION:
             response = anthropic_create(client, 
                 model=MODEL,
                 max_tokens=1000,
-                system=self._build_system_prompt(caller_role=caller_role),
+                system=self._build_system_prompt(caller_role=caller_role, knowledge_context=kb_context or "No matching knowledge found."),
                 messages=[{"role": "user", "content": prompt}],
             )
 
@@ -867,7 +872,12 @@ QUESTION:
             )
 
             answer_text = str(parsed.get("answer", "")).strip()
-            confidence = float(parsed.get("confidence", 0.0) or 0.0)
+            confidence = max(0.0, min(1.0, float(parsed.get("confidence", 0.0) or 0.0)))
+            from knowledge.retrieval import citations
+            allowed_sources = citations(results[:5], self.university_id)
+            selected = parsed.get("source_ids", [])
+            selected = selected if isinstance(selected, list) else []
+            answer_sources = [s for s in allowed_sources if s["id"] in selected]
             unsupported_topics = [
                 str(topic).strip()
                 for topic in (parsed.get("unsupported_topics") or [])
@@ -879,7 +889,10 @@ QUESTION:
             answer_text = "I could not generate an answer from the available university knowledge."
             confidence = 0.0
             unsupported_topics = []
+            answer_sources = []
 
+        if not results:
+            confidence = 0.0
 
         if not results:
             failure_reason = "No matching knowledge found in the knowledge base."
@@ -911,6 +924,9 @@ QUESTION:
                     "confidence": confidence,
                     "trust": trust,
                     "kb_size": self.kb.stats()["total_entries"],
+                "sources": answer_sources if confidence >= self.MIN_CONFIDENCE else [],
+                "human_verified": False,
+                "last_verified_at": None,
                 }
 
             pending_query = self.create_pending_query(
@@ -932,6 +948,9 @@ QUESTION:
                 "confidence": confidence,
                 "trust": trust,
                 "kb_size": self.kb.stats()["total_entries"],
+                "sources": answer_sources if confidence >= self.MIN_CONFIDENCE else [],
+                "human_verified": False,
+                "last_verified_at": None,
             }
 
         # Deliberately NOT writing this Q&A back into self.kb
@@ -943,6 +962,9 @@ QUESTION:
             "confidence": confidence,
             "trust": trust,
             "kb_size": self.kb.stats()["total_entries"],
+                "sources": answer_sources if confidence >= self.MIN_CONFIDENCE else [],
+                "human_verified": False,
+                "last_verified_at": None,
         }
 
         # The overall confidence above only reflects the topics that WERE

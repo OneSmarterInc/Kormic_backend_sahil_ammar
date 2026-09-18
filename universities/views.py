@@ -771,7 +771,13 @@ class KnowledgeFactDetailAPIView(APIView):
         if not update_fields:
             return _error("Provide at least one of topic, content, confidence, group to update.")
 
+        from django.utils import timezone
+        from knowledge.retrieval import sync_chunks
+        if entry.source_type in {"human_verified", "verified"}:
+            entry.last_verified_at = timezone.now()
+            update_fields.append("last_verified_at")
         entry.save(update_fields=update_fields)
+        sync_chunks(entry)
         return Response(_serialize_knowledge_entry(entry))
 
     def delete(self, request, fact_id: int):

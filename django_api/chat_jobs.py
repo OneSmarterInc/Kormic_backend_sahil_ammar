@@ -99,6 +99,7 @@ def submit(request, message_id=None):
                     attachments.append(save_chat_attachment(student_id, target, f))
                 job_payload = {}
             job = ChatGeneration.objects.create(student_id=student_id, message_id=target.pk,
+                account_id=request.user.account.pk, request_id=getattr(request, "request_id", ""),
                 edit=message_id is not None, result=job_payload,
                 expires_at=timezone.now() + timedelta(seconds=LEASE_SECONDS))
     except ChatPolicyError as exc:

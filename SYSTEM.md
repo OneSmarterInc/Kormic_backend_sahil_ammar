@@ -79,3 +79,5 @@ Student chat submits an asynchronous generation job and polls its status; dedica
 4. Verify browser CSRF/login/TOTP, claim links, student resume/notification/back behavior, source skip persistence, chat jobs, owner/staff/viewer access and cross-tenant denial in staging.
 
 Run the checks in each repository README. The backend suite tests authorization, canonical errors, preferences and migrations; the student suite covers actual navigator transitions, safe persistence and feature flows. CI performs native/web export and browser checks. Production model latency, provider billing and device notification delivery still require deployment observation. See [DEPLOYMENT.md](DEPLOYMENT.md) for the Compose services and operational commands.
+
+See [Knowledge, telemetry and privacy operations](KNOWLEDGE_PRIVACY_OPERATIONS.md) for pgvector migration, embedding configuration, source freshness, model pricing, data export/deletion and retention rollout.

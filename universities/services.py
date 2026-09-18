@@ -59,25 +59,11 @@ def _kb_for(university_id: str):
 
 
 def _already_scraped_urls(university_id: str) -> set[str]:
-    """Normalized source_url values already represented in this
-    university's knowledge base. Used to skip re-scraping a page whose
-    content is already captured -- without this, clicking "scrape now" or
-    approving the same cluster twice re-fetches the page and asks Claude to
-    re-extract facts, which (worded slightly differently each time) slip
-    past the exact-match dedup in UniversityKnowledgeBase.store() and pile
-    up as near-duplicate facts in the same section."""
-    from url_discovery.url_normalizer import normalize_url
-
-    from django_api.models import UniversityKnowledgeEntry
-
-    raw_urls = (
-        UniversityKnowledgeEntry.objects.filter(university_id=university_id)
-        .exclude(source_url__isnull=True)
-        .exclude(source_url="")
-        .values_list("source_url", flat=True)
-    )
-
-    return {normalized for u in raw_urls if (normalized := normalize_url(u))}
+    """Skip only sources not yet due; never permanently skip a known URL."""
+    from django_api.models import KnowledgeSource
+    from django.utils import timezone
+    return set(KnowledgeSource.objects.filter(university__uuid=university_id,
+        health="healthy", next_fetch_at__gt=timezone.now()).values_list("url", flat=True))
 
 
 def _dedupe_urls(urls: List[str]) -> List[str]:
@@ -191,9 +177,8 @@ def serialize_scrape_job(job: "ScrapeJob") -> Dict[str, Any]:
 
 
 _ALREADY_SCRAPED_REASON = (
-    "Skipped -- this URL's content is already captured in the knowledge base. "
-    "Edit or delete the existing fact(s) first if the page has changed and "
-    "needs to be re-scraped."
+    "Skipped -- this source is healthy and its next recrawl is not due. "
+    "Use Knowledge freshness to queue an earlier recrawl."
 )
 
 
@@ -368,3 +353,4 @@ def university_setup_status(university_id: str) -> Dict[str, Any]:
         "completion_percentage": completion_percentage,
         "missing_steps": missing_steps,
     }
+

@@ -48,7 +48,18 @@ class APIRequestIdMiddleware:
 
     def __call__(self, request):
         request.request_id = str(uuid.uuid4())
-        response = self.get_response(request)
+        from django_api.telemetry import current_request
+        token = current_request.set(request)
+        try:
+            response = self.get_response(request)
+            if getattr(request.user, "is_authenticated", False):
+                from accounts.models import Account
+                from django.utils import timezone
+                from django.core.cache import cache
+                if cache.add(f"account-activity:{request.user.pk}", True, 300):
+                    Account.objects.filter(user=request.user).update(last_active_at=timezone.now())
+        finally:
+            current_request.reset(token)
         if request.path.startswith("/api/"):
             response["X-Request-ID"] = request.request_id
             # DRF already used APIJSONRenderer. Normalize Django errors (404,

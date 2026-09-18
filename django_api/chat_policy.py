@@ -10,7 +10,7 @@ import time
 from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
-from django_api.models import ChatGate, ChatLease, ChatModelCall, StudentProfile
+from django_api.models import ChatGate, ChatLease, ChatModelCall, StudentProfile, ChatGeneration
 
 
 def limit(name, default):
@@ -76,6 +76,7 @@ def university_slot(university_id):
 class TurnBudget:
     def __init__(self, job):
         self.job_id, self.student_id = job.pk, job.student_id
+        self.account_id, self.request_id = job.account_id, job.request_id
         self.deadline = time.monotonic() + TURN_SECONDS
         self.lock = threading.Lock()
         self.tool_count = 0
@@ -90,6 +91,7 @@ class TurnBudget:
         self.check()
         with self.lock:
             self.tool_count += 1
+            ChatGeneration.objects.filter(pk=self.job_id).update(tool_calls=self.tool_count)
             if self.tool_count > limit("CHAT_MAX_TOOL_CALLS", 8):
                 raise TurnStopped("CHAT_TOOL_LIMIT", "This request needs too many steps. Please narrow your question.")
 
@@ -97,6 +99,7 @@ class TurnBudget:
         ids = list(dict.fromkeys(ids))
         with self.lock:
             self.university_count += len(ids)
+            ChatGeneration.objects.filter(pk=self.job_id).update(university_fanout=self.university_count)
             if self.university_count > limit("CHAT_MAX_UNIVERSITIES_PER_TURN", 4):
                 raise TurnStopped("CHAT_FANOUT_LIMIT", "Please compare at most four universities in one question.")
         return ids
@@ -124,7 +127,7 @@ class TurnBudget:
             if ((totals["tokens"] or 0) + token_bound > limit("CHAT_DAILY_TOKENS", 250000) or
                 (totals["cost"] or 0) + cost > Decimal(os.environ.get("CHAT_DAILY_USD", "5"))):
                 raise TurnStopped("CHAT_DAILY_BUDGET", "Your daily AI allowance has been reached. Please try again tomorrow.")
-            call = ChatModelCall.objects.create(generation_id=self.job_id, model=model,
+            call = ChatModelCall.objects.create(generation_id=self.job_id, model=model, account_id=self.account_id, request_id=self.request_id,
                 charged_tokens=token_bound, estimated_cost_usd=cost)
         return call, input_rate, output_rate
 
@@ -132,7 +135,8 @@ class TurnBudget:
 def metered_call(model, payload, max_tokens, invoke, counted_input=None):
     budget = current_budget.get()
     if budget is None:
-        return invoke()
+        from django_api.telemetry import standalone_call
+        return standalone_call(model, invoke)
     call, input_rate, output_rate = budget.reserve(model, payload, max_tokens, counted_input)
     started = time.monotonic()
     try:
@@ -147,6 +151,8 @@ def metered_call(model, payload, max_tokens, invoke, counted_input=None):
             output_tokens = int(data.get("output_tokens", 0))
             cache_tokens = int(data.get("cache_creation_input_tokens", 0)) + int(data.get("cache_read_input_tokens", 0))
             call.input_tokens, call.output_tokens = input_tokens + cache_tokens, output_tokens
+            from django_api.telemetry import approximate_cost
+            call.actual_cost_usd = approximate_cost(call.input_tokens, output_tokens, model)
             # Keep the conservative reservation charged. Unknown/time-out costs
             # never get refunded; telemetry records provider-reported usage.
             call.status = "completed"
@@ -154,7 +160,8 @@ def metered_call(model, payload, max_tokens, invoke, counted_input=None):
             call.status = "usage_unknown"
         budget.check()
         return response
-    except BaseException:
+    except BaseException as exc:
+        call.error_category = "timeout" if "timeout" in type(exc).__name__.lower() or isinstance(exc, TurnStopped) else "provider_error"
         call.status = "failed_or_unknown"
         raise
     finally:

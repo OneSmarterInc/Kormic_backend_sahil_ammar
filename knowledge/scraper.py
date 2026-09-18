@@ -1,4 +1,4 @@
-﻿# knowledge/scraper.py
+# knowledge/scraper.py
 # Scrapes university websites and extracts structured knowledge.
 # Uses requests + BeautifulSoup for page fetching.
 # Uses Claude to extract meaningful facts, with a safe fallback when Claude is unavailable.
@@ -12,6 +12,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 import anthropic
+from django_api.chat_policy import anthropic_create
 import requests
 from bs4 import BeautifulSoup
 from rich.console import Console
@@ -31,8 +32,8 @@ HEADERS = {
 
 
 # Bounds each extraction call so a hung upstream request can't hold a
-# worker/Celery task indefinitely -- max_retries=1 
-ANTHROPIC_CLIENT_TIMEOUT_SECONDS = 240.0
+# worker/Celery task indefinitely -- max_retries=0 
+ANTHROPIC_CLIENT_TIMEOUT_SECONDS = 20.0
 
 
 def _get_anthropic_client() -> anthropic.Anthropic:
@@ -46,7 +47,7 @@ def _get_anthropic_client() -> anthropic.Anthropic:
             "ANTHROPIC_API_KEY not found. Claude fact extraction is unavailable."
         )
 
-    return anthropic.Anthropic(timeout=ANTHROPIC_CLIENT_TIMEOUT_SECONDS, max_retries=1)
+    return anthropic.Anthropic(timeout=ANTHROPIC_CLIENT_TIMEOUT_SECONDS, max_retries=0)
 
 
 def _clean_whitespace(text: str) -> str:
@@ -317,7 +318,7 @@ PAGE CONTENT:
     try:
         client = _get_anthropic_client()
 
-        response = client.messages.create(
+        response = anthropic_create(client,
             model=MODEL,
             max_tokens=1200,
             messages=[{"role": "user", "content": prompt}],
@@ -425,56 +426,19 @@ def scrape_university(
 
     Returns the total number of facts stored.
     """
-    total_facts = 0
-    seen = set()
-
-    if not urls:
-        return 0
-
-    for index, url in enumerate(urls):
-        console.print(
-            f"  [dim]Scraping ({index + 1}/{len(urls)}): {url[:80]}...[/dim]"
-        )
-
-        page_text = fetch_page(url)
-
-        if not page_text:
-            continue
-
-        facts = extract_facts_from_page(
-            url=url,
-            page_text=page_text,
-            university_name=university_name,
-        )
-
-        for fact in facts:
-            topic = _clean_whitespace(fact.get("topic", ""))
-            content = _clean_whitespace(fact.get("content", ""))
-
-            if not topic or not content:
-                continue
-
-            dedupe_key = (topic.lower(), content[:250].lower())
-
-            if dedupe_key in seen:
-                continue
-
-            seen.add(dedupe_key)
-
-            fact["topic"] = topic
-            fact["content"] = content
-
-            try:
-                if _store_fact(kb, fact, url, group_id=group_id):
-                    total_facts += 1
-            except Exception as exc:
-                console.print(f"[yellow]Could not store scraped fact from {url}: {exc}[/yellow]")
-
-        # Be respectful to university servers.
-        time.sleep(1.5)
-
-    console.print(
-        f"  [green]Scraping completed for {university_id}: {total_facts} fact(s) stored.[/green]"
-    )
-
-    return total_facts
+    from django_api.models import KnowledgeSource
+    from universities.models import University
+    from knowledge.freshness import recrawl
+    university = University.objects.get(uuid=university_id)
+    total = 0
+    for url in dict.fromkeys(urls or []):
+        source, _ = KnowledgeSource.objects.get_or_create(university=university, url=url)
+        if group_id is not None:
+            from universities.models import KnowledgeGroup
+            if not KnowledgeGroup.objects.filter(pk=group_id, university=university).exists():
+                raise ValueError("Source group must belong to this university.")
+            source.group_id = group_id
+            source.save(update_fields=["group_id"])
+        total += recrawl(source.pk)
+    kb.reload()
+    return total
