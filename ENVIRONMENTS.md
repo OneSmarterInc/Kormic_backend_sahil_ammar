@@ -32,3 +32,8 @@ app. GitHub OAuth redirect, claim URL, allowed hosts and CORS are generated from
 Register the generated callback URL with GitHub OAuth for each environment. Compose exposes
 8000:8000 and the local template uses that same port. For physical mobile devices use a reachable
 host via a `--matrix` local override, since the phone's loopback is not the developer machine.
+
+Native staging app-link hosts also require app association files and a matching signed mobile
+build (Expo/native domain allowlists); configuring a web claim URL alone does not establish a
+verified Android/iOS link. Provision these after choosing the staging domain, or use the staging
+web claim flow. Localhost hosts remain allowed for container health checks in every environment.

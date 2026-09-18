@@ -25,9 +25,10 @@ def render(environment, values):
     api = values["api"]
     result = {role: {"VITE_API_BASE_URL": api, "VITE_APP_ENV": environment}
               for role in ("superuser", "university", "institute")}
-    result["student"] = {"EXPO_PUBLIC_API_BASE_URL": api + "/api", "EXPO_PUBLIC_APP_ENV": environment}
+    result["student"] = {"EXPO_PUBLIC_API_BASE_URL": api + "/api", "EXPO_PUBLIC_APP_ENV": environment,
+                         "EXPO_PUBLIC_APP_LINK_ORIGIN": values["student"]}
     result["backend"] = {"KORMIC_ENVIRONMENT": environment,
-        "DJANGO_ALLOWED_HOSTS": urlparse(api).hostname,
+        "DJANGO_ALLOWED_HOSTS": ",".join(dict.fromkeys([urlparse(api).hostname, "localhost", "127.0.0.1"])),
         "DJANGO_CORS_ALLOWED_ORIGINS": ",".join(values[r] for r in ("student", "superuser", "university", "institute")),
         "GITHUB_OAUTH_REDIRECT_URI": api + "/api/auth/github/callback/",
         "CLAIM_PAGE_URL": values["student"] + "/claim"}
