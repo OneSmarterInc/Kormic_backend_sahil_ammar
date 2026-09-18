@@ -10,10 +10,10 @@ class EnvironmentTests(unittest.TestCase):
     def test_all_apps_share_one_local_api(self):
         matrix = json.loads((Path(__file__).resolve().parents[1] / "deploy/environments.json").read_text())
         result = config.render("local", config.resolve("local", matrix))
-        self.assertEqual(result["student"]["EXPO_PUBLIC_API_BASE_URL"], "http://localhost:8000/api")
+        self.assertEqual(result["student"]["EXPO_PUBLIC_API_BASE_URL"], "http://localhost:8000/api/v1")
         for role in ("superuser", "university", "institute"):
             self.assertEqual(result[role]["VITE_API_BASE_URL"], "http://localhost:8000")
-        self.assertEqual(result["backend"]["GITHUB_OAUTH_REDIRECT_URI"], "http://localhost:8000/api/auth/github/callback/")
+        self.assertEqual(result["backend"]["GITHUB_OAUTH_REDIRECT_URI"], "http://localhost:8000/api/v1/auth/github/callback/")
         origins = result["backend"]["DJANGO_CORS_ALLOWED_ORIGINS"].split(",")
         self.assertIn("http://localhost:8081", origins)
         self.assertIn("http://127.0.0.1:8081", origins)

@@ -795,7 +795,7 @@ def _serialize_attachment(request, attachment: "ChatAttachment") -> Dict[str, An
         "filename": attachment.original_filename,
         "content_type": attachment.content_type,
         "size_bytes": attachment.size_bytes,
-        "url": request.build_absolute_uri(reverse("chat-attachment-detail", args=[attachment.id])),
+        "url": request.build_absolute_uri(reverse("v1:chat-attachment-detail" if request.resolver_match and request.resolver_match.namespace == "v1" else "chat-attachment-detail", args=[attachment.id])),
     }
 
 

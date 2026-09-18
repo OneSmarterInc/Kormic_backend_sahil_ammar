@@ -13,12 +13,12 @@ cp .env.template .env
 # Fill in the required settings before starting.
 docker compose config
 docker compose up --build -d
-curl http://127.0.0.1:8000/api/health/
+curl http://127.0.0.1:8000/api/v1/health/
 ```
 
-Compose runs migrations before web and workers. API: `http://localhost:8000/api`; PostgreSQL from the host: `localhost:5438`, inside Compose: `postgres:5432`. See `.env.template` for supported settings.
+Compose runs migrations before web and workers. API: `http://localhost:8000/api/v1`; PostgreSQL from the host: `localhost:5438`, inside Compose: `postgres:5432`. See `.env.template` for supported settings.
 
-Local clients use `VITE_API_BASE_URL=http://localhost:8000` (web portals) and `EXPO_PUBLIC_API_BASE_URL=http://localhost:8000/api` (student). Generate these consistently using the system guide; physical devices need a reachable development host.
+Local clients use `VITE_API_BASE_URL=http://localhost:8000` (web portals) and `EXPO_PUBLIC_API_BASE_URL=http://localhost:8000/api/v1` (student). Generate these consistently using the system guide; physical devices need a reachable development host.
 
 ## Verify
 
@@ -32,3 +32,5 @@ python scripts/test_configure_environment.py
 Tests require a dedicated test database and Redis cache. CI exercises the complete suite in normal and shuffled order, plus schema and Compose configuration checks. Do not point test commands at production.
 
 See [Knowledge, telemetry and privacy operations](KNOWLEDGE_PRIVACY_OPERATIONS.md) for pgvector migration, embedding configuration, source freshness, model pricing, data export/deletion and retention rollout.
+
+New clients use `/api/v1/`; `/api/` remains a compatibility alias. See [API version policy](API_VERSIONING.md).

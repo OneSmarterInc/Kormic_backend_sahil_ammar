@@ -149,7 +149,7 @@ jobs:
 
           health_test = web.get('healthcheck', {}).get('test', [])
           health_text = ' '.join(str(part) for part in health_test)
-          assert 'localhost:8000/api/health/' in health_text, (
+          assert 'localhost:8000/api/v1/health/' in health_text, (
               f'web healthcheck must use port 8000: {health_text!r}'
           )
 
@@ -160,9 +160,9 @@ jobs:
 
           assert 'EXPOSE 8000' in dockerfile
           assert 'VITE_API_BASE_URL=http://localhost:8000' in readme
-          assert 'EXPO_PUBLIC_API_BASE_URL=http://localhost:8000/api' in readme
+          assert 'EXPO_PUBLIC_API_BASE_URL=http://localhost:8000/api/v1' in readme
           assert 'proxy_pass http://127.0.0.1:8000;' in deployment
-          assert 'http://127.0.0.1:8000/api/health/' in readme
+          assert 'http://127.0.0.1:8000/api/v1/health/' in readme
 
           # Documentation may mention "8030" only to say it is unsupported.
           # Reject actual stale runtime/url patterns instead of explanatory text.

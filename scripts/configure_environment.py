@@ -34,12 +34,12 @@ def render(environment, values):
     origins = list(dict.fromkeys(origins))
     result = {role: {"VITE_API_BASE_URL": api, "VITE_APP_ENV": environment}
               for role in ("superuser", "university", "institute")}
-    result["student"] = {"EXPO_PUBLIC_API_BASE_URL": api + "/api", "EXPO_PUBLIC_APP_ENV": environment,
+    result["student"] = {"EXPO_PUBLIC_API_BASE_URL": api + "/api/v1", "EXPO_PUBLIC_APP_ENV": environment,
                          "EXPO_PUBLIC_APP_LINK_ORIGIN": values["student"]}
     result["backend"] = {"KORMIC_ENVIRONMENT": environment,
         "DJANGO_ALLOWED_HOSTS": ",".join(dict.fromkeys([urlparse(api).hostname, "localhost", "127.0.0.1"])),
         "DJANGO_CORS_ALLOWED_ORIGINS": ",".join(origins),
-        "GITHUB_OAUTH_REDIRECT_URI": api + "/api/auth/github/callback/",
+        "GITHUB_OAUTH_REDIRECT_URI": api + "/api/v1/auth/github/callback/",
         "CLAIM_PAGE_URL": values["student"] + "/claim"}
     return result
 

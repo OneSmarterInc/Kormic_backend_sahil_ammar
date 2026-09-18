@@ -86,6 +86,22 @@ class FreshnessTests(TestCase):
     def test_changed_page_extraction_failure_withholds_old_facts(self, extract):
         self.s.content_hash="old"; self.s.last_success_at=timezone.now(); self.s.save()
         self.crawl(); self.assertEqual(self.s.health,"changed_pending")
+    @patch("knowledge.scraper.extract_facts_from_page", return_value=[{"topic":"Deadline", "content":"January 1"}])
+    def test_recrawl_keeps_department_and_concurrent_owner_disable(self, extract):
+        from universities.models import KnowledgeGroup
+        group=KnowledgeGroup.objects.create(university=self.u, slug="admissions")
+        self.s.group=group; self.s.save()
+        def fetched(url):
+            KnowledgeSource.objects.filter(pk=self.s.pk).update(enabled=False)
+            return 200, {"content-type":"text/html"}, "<p>Deadline January 1</p>"
+        with patch("knowledge.freshness.fetch_public", side_effect=fetched): recrawl(self.s.pk)
+        self.s.refresh_from_db(); self.assertFalse(self.s.enabled)
+        self.assertEqual(UniversityKnowledgeEntry.objects.get(source_url=self.s.url).group_id,group.pk)
+    def test_legacy_non_uuid_source_does_not_block_crawler(self):
+        from knowledge.freshness import track_sources
+        UniversityKnowledgeEntry.objects.create(university_id="legacy_school", topic="Old", content="Old", source_type="scraped", source_url="https://legacy.example.edu")
+        track_sources()
+        self.assertEqual(KnowledgeSource.objects.count(),1)
     def test_private_network_blocked_before_connection(self):
         with patch("socket.getaddrinfo", return_value=[(2,1,6,"",("127.0.0.1",443))]), patch("socket.create_connection") as connect:
             with self.assertRaises(ValueError): fetch_public("https://example.edu/")

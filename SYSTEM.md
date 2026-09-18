@@ -32,9 +32,9 @@ Export the named environment variables with the actual deployed HTTPS origins be
 
 ## Authentication and API errors
 
-Web portals and the student web build use an HttpOnly refresh cookie and a CSRF bootstrap token from `/api/auth/web/csrf/`; native uses secure token storage. TOTP gates protected APIs. Follow [WEB_AUTH.md](WEB_AUTH.md) for cookie, origin, and reverse-proxy configuration.
+Web portals and the student web build use an HttpOnly refresh cookie and a CSRF bootstrap token from `/api/v1/auth/web/csrf/`; native uses secure token storage. TOTP gates protected APIs. Follow [WEB_AUTH.md](WEB_AUTH.md) for cookie, origin, and reverse-proxy configuration.
 
-HTTP status indicates success or failure. Every `/api/` HTTP error has this wire shape, including validation, permission, throttling, and Django middleware failures:
+HTTP status indicates success or failure. Every `/api/v1/` HTTP error has this wire shape, including validation, permission, throttling, and Django middleware failures:
 
 ```json
 {"error":{"code":"PROFILE_NOT_FOUND","message":"Profile not found.","details":{},"request_id":"server-generated-uuid"}}
@@ -48,7 +48,7 @@ React Navigation native stack owns history and Android back behavior. Guest, TOT
 
 Route restoration stores only version, user ID and a safe Profile/BotScreen destination in AsyncStorage. It never persists tokens, claim codes, reset state, form data or arbitrary navigation parameters; logout clears it. Existing session restoration and claim-link precedence remain authoritative.
 
-`PATCH /api/auth/onboarding/preferences/` accepts `github_onboarding_state` and/or `linkedin_onboarding_state` with `skipped` or `required`. Preferences belong to the authenticated student and survive sign-in/device changes. Login and `/api/auth/me/` onboarding payloads derive `connected`/`uploaded` from actual source data, taking precedence over skipped preferences. A client cannot claim a connection by writing preference metadata. Skipping does not verify a profile; verification UI uses the backend verification result. Onboarding may finish with sources skipped while still showing missing sources.
+`PATCH /api/v1/auth/onboarding/preferences/` accepts `github_onboarding_state` and/or `linkedin_onboarding_state` with `skipped` or `required`. Preferences belong to the authenticated student and survive sign-in/device changes. Login and `/api/v1/auth/me/` onboarding payloads derive `connected`/`uploaded` from actual source data, taking precedence over skipped preferences. A client cannot claim a connection by writing preference metadata. Skipping does not verify a profile; verification UI uses the backend verification result. Onboarding may finish with sources skipped while still showing missing sources.
 
 ## University staff
 
@@ -65,7 +65,7 @@ Each staff member has a separate login and authenticator. Existing university ac
 
 Owners use **University staff** in the Staff navigation section to create individual accounts, assign roles and deactivate access. Department users and viewers land in **Department workspace**. Authorization is enforced on the server, including group ownership and tenant boundaries; hiding navigation is only a usability measure.
 
-`GET/POST /api/university-admin/staff/` lists/creates staff. `PATCH /api/university-admin/staff/{user_id}/` changes role or active status. Creation requires a validated initial password, never returns it, and does not mark TOTP enrolled. Deliver that password securely; this version does not send invitations. At least one active owner must remain. Updates serialize on the university row and recheck the actor's authority; deactivation blacklists refresh tokens and disables authentication. Role changes apply on subsequent requests. `StaffAuditEvent` records actor, subject and non-secret changes. Department staff cannot change escalation email destinations or manage other groups.
+`GET/POST /api/v1/university-admin/staff/` lists/creates staff. `PATCH /api/v1/university-admin/staff/{user_id}/` changes role or active status. Creation requires a validated initial password, never returns it, and does not mark TOTP enrolled. Deliver that password securely; this version does not send invitations. At least one active owner must remain. Updates serialize on the university row and recheck the actor's authority; deactivation blacklists refresh tokens and disables authentication. Role changes apply on subsequent requests. `StaffAuditEvent` records actor, subject and non-secret changes. Department staff cannot change escalation email destinations or manage other groups.
 
 ## Chat and incomplete features
 
@@ -81,3 +81,5 @@ Student chat submits an asynchronous generation job and polls its status; dedica
 Run the checks in each repository README. The backend suite tests authorization, canonical errors, preferences and migrations; the student suite covers actual navigator transitions, safe persistence and feature flows. CI performs native/web export and browser checks. Production model latency, provider billing and device notification delivery still require deployment observation. See [DEPLOYMENT.md](DEPLOYMENT.md) for the Compose services and operational commands.
 
 See [Knowledge, telemetry and privacy operations](KNOWLEDGE_PRIVACY_OPERATIONS.md) for pgvector migration, embedding configuration, source freshness, model pricing, data export/deletion and retention rollout.
+
+New clients use `/api/v1/`; `/api/` remains a compatibility alias. See [API version policy](API_VERSIONING.md).

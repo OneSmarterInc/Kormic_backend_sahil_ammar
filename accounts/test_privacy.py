@@ -5,7 +5,7 @@ import zipfile
 from pathlib import Path
 from datetime import timedelta
 from unittest.mock import patch
-from django.test import TestCase, override_settings
+from django.test import TransactionTestCase, override_settings
 from django.core.cache import cache
 from django.utils import timezone
 from django.contrib.auth.models import User
@@ -16,7 +16,7 @@ from accounts.privacy_tasks import process_deletions, apply_retention
 from accounts.models import Account, TOTPDevice
 from rest_framework.test import APIClient
 
-class PrivacyTests(TestCase):
+class PrivacyTests(TransactionTestCase):
     def setUp(self):
         cache.clear()
         self.user, self.profile, self.client=fixture()

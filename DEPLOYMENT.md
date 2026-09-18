@@ -11,7 +11,7 @@ docker compose config
 docker compose up --build -d
 docker compose ps
 docker compose logs --tail=100 migrate web chat_worker
-curl http://127.0.0.1:8000/api/health/
+curl http://127.0.0.1:8000/api/v1/health/
 ```
 
 | Service | Purpose |
@@ -56,3 +56,5 @@ docker compose logs --tail=100 celery_worker chat_worker celery_beat
 A healthy web process alone does not prove queue processing, email or provider connectivity. Run staging login/TOTP, CSRF refresh, staff permission, upload and chat smoke tests. Monitor worker failures and latency percentiles under representative traffic. On upgrade, retain secrets and volumes, rebuild all services, and confirm the migration job completes before accepting traffic. Restore a tested backup if a schema rollback is necessary; do not assume reversing a migration preserves user data.
 
 See [Knowledge, telemetry and privacy operations](KNOWLEDGE_PRIVACY_OPERATIONS.md) for pgvector migration, embedding configuration, source freshness, model pricing, data export/deletion and retention rollout.
+
+New clients use `/api/v1/`; `/api/` remains a compatibility alias. See [API version policy](API_VERSIONING.md).

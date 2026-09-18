@@ -17,7 +17,7 @@ def envelope(data, status, request, code=None):
     nested = data.get("error") if isinstance(data.get("error"), dict) else {}
     proposed = code or nested.get("code") or data.get("code")
     error_code = proposed if isinstance(proposed, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{1,79}", proposed) else CODES.get(status, "REQUEST_FAILED")
-    if status == 404 and getattr(request, "path", "").startswith("/api/profile/"):
+    if status == 404 and getattr(request, "path", "").startswith(("/api/profile/", "/api/v1/profile/")):
         error_code = "PROFILE_NOT_FOUND"
     message = nested.get("message") or data.get("message") or data.get("detail")
     if status < 500 and not message and isinstance(data.get("error"), str):
@@ -62,6 +62,11 @@ class APIRequestIdMiddleware:
             current_request.reset(token)
         if request.path.startswith("/api/"):
             response["X-Request-ID"] = request.request_id
+            versioned = request.path.startswith("/api/v1/")
+            response["X-API-Version"] = "v1" if versioned else "legacy"
+            if not versioned and not re.match(r"^/api/v[0-9]+/", request.path):
+                successor = "/api/v1/" + request.get_full_path()[5:]
+                response["Link"] = f'<{successor}>; rel="successor-version"' 
             # DRF already used APIJSONRenderer. Normalize Django errors (404,
             # CSRF middleware, request-size limits) without exposing HTML/debug pages.
             if response.status_code >= 400 and not hasattr(response, "accepted_renderer"):

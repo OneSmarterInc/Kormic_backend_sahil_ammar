@@ -10,6 +10,7 @@ from urllib.robotparser import RobotFileParser
 from email.utils import parsedate_to_datetime
 from bs4 import BeautifulSoup
 from django.core.cache import cache
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 from django_api.models import KnowledgeSource, UniversityKnowledgeEntry
@@ -140,7 +141,7 @@ def recrawl(source_id):
         source.lease_until = None
         if source.next_fetch_at <= now:
             source.next_fetch_at = now + timedelta(hours=min(source.recrawl_hours, 6) if source.failures else source.recrawl_hours)
-        source.save()
+        source.save(update_fields=["lease_until", "next_fetch_at", "last_fetched_at", "last_success_at", "changed_at", "content_hash", "health", "http_status", "failures"])
     return count
 
 
@@ -154,7 +155,7 @@ def track_sources():
     for university_id, url in UniversityKnowledgeEntry.objects.filter(source_type__in=SCRAPED).exclude(source_url__isnull=True).exclude(source_url="").values_list("university_id", "source_url").distinct():
         try:
             university = University.objects.filter(uuid=university_id).first()
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, ValidationError):
             continue
         if university:
             group_id = UniversityKnowledgeEntry.objects.filter(university_id=university_id, source_url=url, group__isnull=False).values_list("group_id", flat=True).first()
