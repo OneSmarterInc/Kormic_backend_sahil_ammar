@@ -74,8 +74,8 @@ Student chat submits an asynchronous generation job and polls its status; dedica
 ## Rollout and verification
 
 1. Back up the database and uploads; configure public origins, secrets, Redis and workers.
-2. Apply backend migrations, including account onboarding/staff fields and staff audit events; deploy the backend and workers.
-3. Build and deploy the web portals and student app with generated origins. React Navigation adds native dependencies: rebuild native binaries; an OTA JavaScript-only update is insufficient for older installed binaries.
+2. Stage compatible student binaries and web clients before switching chat to job responses, following [CHAT_OPERATIONS.md](CHAT_OPERATIONS.md). React Navigation adds native dependencies: rebuild native binaries; an OTA JavaScript-only update is insufficient for older installed binaries. Older mobile versions need an upgrade before the chat contract changes.
+3. Coordinate the client/backend cutover: apply all migrations, including account onboarding/staff fields and staff audit events, and start the backend and workers. The new durable-skip and staff features require this backend; until it is available, skip saves fail visibly without advancing. Use a maintenance window if the clients and backend cannot be released together.
 4. Verify browser CSRF/login/TOTP, claim links, student resume/notification/back behavior, source skip persistence, chat jobs, owner/staff/viewer access and cross-tenant denial in staging.
 
 Run the checks in each repository README. The backend suite tests authorization, canonical errors, preferences and migrations; the student suite covers actual navigator transitions, safe persistence and feature flows. CI performs native/web export and browser checks. Production model latency, provider billing and device notification delivery still require deployment observation. See [DEPLOYMENT.md](DEPLOYMENT.md) for the Compose services and operational commands.

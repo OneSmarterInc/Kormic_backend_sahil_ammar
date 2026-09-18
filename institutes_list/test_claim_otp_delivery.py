@@ -90,8 +90,8 @@ class ClaimOtpDeliveryTests(TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertTrue(response["Content-Type"].startswith("application/json"))
         self.assertEqual(
-            response.json(),
-            {"error": "Verification code could not be sent. Please try again."},
+            response.json()["error"]["code"],
+            "SERVICE_UNAVAILABLE",
         )
 
         self.student.refresh_from_db()
@@ -154,8 +154,8 @@ class ClaimOtpDeliveryTests(TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertTrue(response["Content-Type"].startswith("application/json"))
         self.assertEqual(
-            response.json(),
-            {"error": "No claimable invitation found for that information."},
+            response.json()["error"]["message"],
+            "No claimable invitation found for that information.",
         )
 
 
@@ -195,3 +195,4 @@ class ClaimOtpRouteIsolationTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         mock_delay.assert_called_once()
+

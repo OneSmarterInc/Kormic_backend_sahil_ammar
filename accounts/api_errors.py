@@ -20,6 +20,8 @@ def envelope(data, status, request, code=None):
     if status == 404 and getattr(request, "path", "").startswith("/api/profile/"):
         error_code = "PROFILE_NOT_FOUND"
     message = nested.get("message") or data.get("message") or data.get("detail")
+    if status < 500 and not message and isinstance(data.get("error"), str):
+        message = data["error"]
     if status == 400 and not message and isinstance(data.get("non_field_errors"), list):
         message = next((item for item in data["non_field_errors"] if isinstance(item, str)), None)
     if status >= 500 or not isinstance(message, str):
