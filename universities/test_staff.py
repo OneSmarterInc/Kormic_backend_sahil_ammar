@@ -82,3 +82,12 @@ class UniversityStaffTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.client.force_authenticate(User.objects.get(pk=staff.pk))
         self.assertEqual(self.client.get("/api/university-admin/staff/").status_code, 403)
+
+    def test_superuser_primary_admin_tracks_an_active_owner(self):
+        from project_superuser.views import _serialize_university
+        replacement = self.make_user("owner", self.uni)
+        response = self.client.patch(f"/api/university-admin/staff/{self.owner.pk}/", {"role": "viewer"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        data = _serialize_university(self.uni)
+        self.assertEqual(data["admin_user_id"], replacement.pk)
+        self.assertEqual(data["officer_count"], 2)
