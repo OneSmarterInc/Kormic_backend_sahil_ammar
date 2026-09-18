@@ -159,7 +159,8 @@ jobs:
           deployment = Path('DEPLOYMENT.md').read_text()
 
           assert 'EXPOSE 8000' in dockerfile
-          assert 'VITE_API_BASE_URL=http://127.0.0.1:8000' in readme
+          assert 'VITE_API_BASE_URL=http://localhost:8000' in readme
+          assert 'EXPO_PUBLIC_API_BASE_URL=http://localhost:8000/api' in readme
           assert 'proxy_pass http://127.0.0.1:8000;' in deployment
           assert 'http://127.0.0.1:8000/api/health/' in readme
 
