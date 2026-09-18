@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import anthropic
+from django_api.chat_policy import anthropic_create
 from rich.console import Console
 
 console = Console()
@@ -19,7 +20,7 @@ console = Console()
 # Bounds the extraction call so a hung upstream request can't hold the
 # request worker indefinitely (see LinkedInAnalyzeAPIView).
 ANTHROPIC_CLIENT_TIMEOUT_SECONDS = 120.0
-client = anthropic.Anthropic(timeout=ANTHROPIC_CLIENT_TIMEOUT_SECONDS, max_retries=1)
+client = anthropic.Anthropic(timeout=ANTHROPIC_CLIENT_TIMEOUT_SECONDS, max_retries=0)
 
 MODEL = "claude-haiku-4-5-20251001"
 MAX_TOKENS = 1200
@@ -149,7 +150,7 @@ class LinkedInAgent:
         )
 
         try:
-            response = client.messages.create(
+            response = anthropic_create(client, 
                 model=MODEL,
                 max_tokens=MAX_TOKENS,
                 messages=[{"role": "user", "content": self._build_content(paths)}],
@@ -195,3 +196,4 @@ class LinkedInAgent:
         if notes:
             console.print(f"  [dim]{notes}[/dim]")
         console.print()
+

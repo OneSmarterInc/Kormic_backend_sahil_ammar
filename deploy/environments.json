@@ -1,0 +1,23 @@
+{
+  "local": {
+    "api": "http://127.0.0.1:8000",
+    "student": "http://localhost:8081",
+    "superuser": "http://localhost:5173",
+    "university": "http://localhost:5174",
+    "institute": "http://localhost:5175"
+  },
+  "staging": {
+    "api": "${KORMIC_STAGING_API_ORIGIN}",
+    "student": "${KORMIC_STAGING_STUDENT_ORIGIN}",
+    "superuser": "${KORMIC_STAGING_SUPERUSER_ORIGIN}",
+    "university": "${KORMIC_STAGING_UNIVERSITY_ORIGIN}",
+    "institute": "${KORMIC_STAGING_INSTITUTE_ORIGIN}"
+  },
+  "production": {
+    "api": "https://backend.kormic.ai",
+    "student": "https://app.kormic.ai",
+    "superuser": "${KORMIC_PRODUCTION_SUPERUSER_ORIGIN}",
+    "university": "${KORMIC_PRODUCTION_UNIVERSITY_ORIGIN}",
+    "institute": "${KORMIC_PRODUCTION_INSTITUTE_ORIGIN}"
+  }
+}

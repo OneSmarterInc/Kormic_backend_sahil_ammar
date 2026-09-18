@@ -125,6 +125,12 @@ services:
       retries: 3
       start_period: 20s
 
+  chat_worker:
+    <<: *app
+    container_name: kormic_chat_worker
+    # Prefork is required: hard time limits terminate blocking model/tool I/O.
+    command: celery -A kormic_backend worker -l info -Q chat --pool=prefork --concurrency=2 --prefetch-multiplier=1 -n chat@%h
+
   celery_beat:
     <<: *app
     container_name: kormic_celery_beat
@@ -139,3 +145,4 @@ volumes:
   postgres_data:
   static_data:
   uploads_data:
+

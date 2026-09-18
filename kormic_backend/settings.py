@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Load ANTHROPIC_API_KEY / GITHUB_TOKEN / etc. from .env before any agent code runs.
+load_dotenv(BASE_DIR / ".env.urls")
 load_dotenv(BASE_DIR / ".env")
 
 # First key encrypts new TOTP seeds; all configured keys can decrypt. Supply
@@ -280,18 +281,7 @@ CACHES = {
 }
 
 
-# Celery -- background delivery for push notifications (see notifications/).
-# Chat/agent processing itself stays synchronous: a student's app is waiting
-# on the HTTP response for their reply, so there's no natural place to hand
-# the turn off to a background worker without also building a poll/push
-# mechanism on the client. pure_multi_agent.runtime's LangGraph checkpointer
-# is durable and shared (Postgres-backed, not in-process) precisely so this
-# synchronous-per-request model is safe to run behind more than one gunicorn
-# worker -- see pure_multi_agent/runtime.py's _build_checkpointer(). Celery
-# is used for the "send this push" side-effect, which is safely
-# fire-and-forget, plus other genuinely background jobs (see
-# institutes_list/tasks.py, universities/tasks.py).
-
+# Celery: chat generation runs on an isolated prefork queue with per-task limits.
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://localhost:6379/1")
 CELERY_ACCEPT_CONTENT = ["json"]
@@ -485,3 +475,8 @@ LOGGING = {
         },
     },
 }
+
+
+CELERY_TASK_ROUTES = {"django_api.chat_tasks.generate_chat": {"queue": "chat"}}
+CELERY_BROKER_CONNECTION_TIMEOUT = 3
+CELERY_BROKER_TRANSPORT_OPTIONS = {"socket_connect_timeout": 3, "socket_timeout": 3}

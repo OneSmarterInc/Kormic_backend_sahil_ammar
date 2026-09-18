@@ -84,3 +84,7 @@ jobs:
 
       - name: Run complete pure_multi_agent suite
         run: python manage.py test pure_multi_agent --verbosity 1
+
+
+      - name: Run chat jobs and shared quota regression gate
+        run: python manage.py test django_api.test_chat_jobs django_api.tests.ChatHistoryTests django_api.tests.ChatEditAndAttachmentTests --verbosity 2

@@ -313,7 +313,7 @@ def _assessment_failed(assessment: Any) -> bool:
     return False
 
 
-def generate_fit_assessment(student_id: str, university_id: str, force: bool = False) -> Dict[str, Any]:
+def _generate_fit_assessment(student_id: str, university_id: str, force: bool = False) -> Dict[str, Any]:
     """
     Generate (or return the cached) fit assessment for one student/university
     pair. This is the only way a fit assessment gets produced -- there is no
@@ -402,3 +402,13 @@ def status() -> str:
     lines.append(f"{'=' * 60}\n")
 
     return "\n".join(lines)
+
+
+
+def generate_fit_assessment(student_id, university_id, force=False):
+    from django_api.chat_policy import university_slot, current_budget
+    budget = current_budget.get()
+    if budget:
+        budget.universities([university_id])
+    with university_slot(university_id):
+        return _generate_fit_assessment(student_id, university_id, force=force)

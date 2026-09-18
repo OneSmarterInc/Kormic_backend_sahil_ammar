@@ -5,6 +5,7 @@ import os
 from typing import Dict, List, Optional, Any
 
 import anthropic
+from django_api.chat_policy import anthropic_create
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -17,7 +18,7 @@ if not api_key:
 # Bounds every call so a hung upstream request can't hold the request
 # worker indefinitely.
 ANTHROPIC_CLIENT_TIMEOUT_SECONDS = 120.0
-client = anthropic.Anthropic(api_key=api_key, timeout=ANTHROPIC_CLIENT_TIMEOUT_SECONDS, max_retries=1)
+client = anthropic.Anthropic(api_key=api_key, timeout=ANTHROPIC_CLIENT_TIMEOUT_SECONDS, max_retries=0)
 
 MODEL = os.getenv("PROFILE_PRESENTER_MODEL", "claude-haiku-4-5-20251001")
 
@@ -173,7 +174,7 @@ class ProfilePresenterAgent:
         try:
             self._log_question(question, profile)
 
-            response = client.messages.create(
+            response = anthropic_create(client, 
                 model=MODEL,
                 max_tokens=350,
                 system=(

@@ -10,6 +10,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 import anthropic
+from django_api.chat_policy import anthropic_create
 from rich.console import Console
 
 from knowledge.scraper import scrape_university
@@ -34,7 +35,7 @@ def _get_anthropic_client() -> anthropic.Anthropic:
             "ANTHROPIC_API_KEY not found. Add it to your .env file before using university agents."
         )
 
-    return anthropic.Anthropic(timeout=ANTHROPIC_CLIENT_TIMEOUT_SECONDS, max_retries=1)
+    return anthropic.Anthropic(timeout=ANTHROPIC_CLIENT_TIMEOUT_SECONDS, max_retries=0)
 
 
 class UniversityAgent:
@@ -409,7 +410,7 @@ STUDENT CONTEXT:
 
             client = _get_anthropic_client()
 
-            response = client.messages.create(
+            response = anthropic_create(client, 
                 model=MODEL,
                 max_tokens=200,
                 system="Return only valid JSON. No markdown.",
@@ -707,7 +708,7 @@ Return ONLY the reformatted answer text. No JSON, no preamble.
 """
         try:
             client = _get_anthropic_client()
-            response = client.messages.create(
+            response = anthropic_create(client, 
                 model=MODEL,
                 max_tokens=600,
                 system="Return only the reformatted plain-text answer. No markdown, no preamble, no JSON.",
@@ -847,7 +848,7 @@ QUESTION:
         try:
             client = _get_anthropic_client()
 
-            response = client.messages.create(
+            response = anthropic_create(client, 
                 model=MODEL,
                 max_tokens=1000,
                 system=self._build_system_prompt(caller_role=caller_role),
@@ -1031,7 +1032,7 @@ STUDENT PROFILE:
         try:
             client = _get_anthropic_client()
 
-            response = client.messages.create(
+            response = anthropic_create(client, 
                 model=MODEL,
                 max_tokens=1000,
                 system=self._build_system_prompt(),
@@ -1072,3 +1073,4 @@ STUDENT PROFILE:
 
         # Deliberately NOT written to self.kb -- to prevent cross-student leak 
         return assessment
+

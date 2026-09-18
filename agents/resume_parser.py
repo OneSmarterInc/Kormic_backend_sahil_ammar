@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import anthropic
+from django_api.chat_policy import anthropic_create
 from rich.console import Console
 
 console = Console()
@@ -100,7 +101,7 @@ def _get_anthropic_client() -> anthropic.Anthropic:
             "ANTHROPIC_API_KEY not found. Add it to your .env file before parsing resumes."
         )
 
-    return anthropic.Anthropic(timeout=ANTHROPIC_CLIENT_TIMEOUT_SECONDS, max_retries=1)
+    return anthropic.Anthropic(timeout=ANTHROPIC_CLIENT_TIMEOUT_SECONDS, max_retries=0)
 
 
 def read_pdf(file_path: str) -> Dict[str, Any]:
@@ -236,7 +237,7 @@ class ResumeParserAgent:
             document_content = read_pdf(file_path)
             client = _get_anthropic_client()
 
-            response = client.messages.create(
+            response = anthropic_create(client, 
                 model=MODEL,
                 max_tokens=1500,
                 messages=[
@@ -279,7 +280,7 @@ class ResumeParserAgent:
         try:
             client = _get_anthropic_client()
 
-            response = client.messages.create(
+            response = anthropic_create(client, 
                 model=MODEL,
                 max_tokens=1500,
                 messages=[
@@ -563,3 +564,4 @@ class ResumeParserAgent:
             console.print(f'  [yellow]Gaps: {", ".join(str(gap) for gap in gaps)}[/yellow]')
 
         console.print()
+

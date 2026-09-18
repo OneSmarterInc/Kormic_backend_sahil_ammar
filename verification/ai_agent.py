@@ -5,6 +5,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 import anthropic
+from django_api.chat_policy import anthropic_create
 
 from verification.verification_agent import (
     ALL_SOURCES,
@@ -99,7 +100,7 @@ ANTHROPIC_CLIENT_TIMEOUT_SECONDS = 120.0
 def _get_anthropic_client() -> anthropic.Anthropic:
     if not os.getenv("ANTHROPIC_API_KEY"):
         raise RuntimeError("ANTHROPIC_API_KEY not found. Falling back to rule-based verification.")
-    return anthropic.Anthropic(timeout=ANTHROPIC_CLIENT_TIMEOUT_SECONDS, max_retries=1)
+    return anthropic.Anthropic(timeout=ANTHROPIC_CLIENT_TIMEOUT_SECONDS, max_retries=0)
 
 
 def _clean_model_json_array(raw: str) -> str:
@@ -214,7 +215,7 @@ class AIVerificationAgent:
             open_items_context=open_items_context or [],
         )
 
-        response = client.messages.create(
+        response = anthropic_create(client, 
             model=MODEL,
             max_tokens=1500,
             temperature=0,
@@ -227,3 +228,4 @@ class AIVerificationAgent:
         candidates = self._parse_candidates(findings)
 
         return {"missing_sources": missing_sources, "candidates": candidates}
+

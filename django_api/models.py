@@ -551,3 +551,44 @@ class AgentAuditLog(models.Model):
 
     def __str__(self) -> str:
         return f"AgentAuditLog({self.actor_agent}, {self.action_type}, {self.timestamp})"
+
+
+
+class ChatGeneration(models.Model):
+    """Durable job; no prompt/credential copies in Celery messages."""
+    import uuid as _uuid
+    id = models.UUIDField(primary_key=True, default=_uuid.uuid4, editable=False)
+    student_id = models.CharField(max_length=100, db_index=True)
+    message_id = models.BigIntegerField(null=True)
+    edit = models.BooleanField(default=False)
+    status = models.CharField(max_length=20, default="queued", db_index=True)
+    result = models.JSONField(default=dict)
+    error_code = models.CharField(max_length=50, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    started_at = models.DateTimeField(null=True)
+    finished_at = models.DateTimeField(null=True)
+    expires_at = models.DateTimeField()
+    latency_ms = models.PositiveIntegerField(null=True)
+
+
+class ChatGate(models.Model):
+    """Database mutex shared by all web/worker processes."""
+    key = models.CharField(max_length=200, primary_key=True)
+
+
+class ChatLease(models.Model):
+    gate = models.ForeignKey(ChatGate, on_delete=models.CASCADE)
+    generation = models.ForeignKey(ChatGeneration, on_delete=models.CASCADE)
+    expires_at = models.DateTimeField(db_index=True)
+
+
+class ChatModelCall(models.Model):
+    generation = models.ForeignKey(ChatGeneration, on_delete=models.CASCADE, related_name="model_calls")
+    model = models.CharField(max_length=100)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    input_tokens = models.PositiveIntegerField(null=True)
+    output_tokens = models.PositiveIntegerField(null=True)
+    charged_tokens = models.PositiveIntegerField()
+    estimated_cost_usd = models.DecimalField(max_digits=12, decimal_places=6)
+    status = models.CharField(max_length=20, default="reserved")
+    latency_ms = models.PositiveIntegerField(null=True)

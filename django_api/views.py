@@ -835,148 +835,6 @@ def _escalation_meta(pending_query: Optional["PendingQuery"]) -> Dict[str, Any]:
     }
 
 
-@api_view(["POST"])
-@permission_classes(STUDENT_PERMISSIONS)
-def agent_chat(request):
-    from pure_multi_agent.runtime import run_turn
-
-    student_id = request.user.account.student_uuid
-    message = str(request.data.get("message") or "")
-    uploaded_files = request.FILES.getlist("attachments")
-
-    if not message.strip() and not uploaded_files:
-        return api_error("message or at least one attachment is required.")
-    if len(uploaded_files) > CHAT_ATTACHMENT_MAX_PER_MESSAGE:
-        return api_error(f"You can attach at most {CHAT_ATTACHMENT_MAX_PER_MESSAGE} files per message.")
-
-    user_msg = ChatMessage.objects.create(
-        channel=ChatMessage.Channel.AGENT,
-        student_id=student_id,
-        sender=ChatMessage.Sender.USER,
-        content=message,
-    )
-
-    attachments = []
-    try:
-        for uploaded_file in uploaded_files:
-            attachments.append(save_chat_attachment(student_id, user_msg, uploaded_file))
-    except ValueError as exc:
-        user_msg.delete()
-        return api_error(str(exc))
-
-    image_blocks = build_image_content_blocks(attachments)
-    # A message made up of only attachments still needs some text for the
-    # model turn -- describe what was shared instead of sending empty content.
-    effective_message = message.strip() or (
-        "(Shared file(s) with no additional message: "
-        + ", ".join(a.original_filename for a in attachments) + ")"
-    )
-
-    try:
-        _existing_pq_ids = _existing_pending_query_ids(student_id)
-        agent_name, reply = run_turn(student_id, effective_message, image_blocks=image_blocks or None)
-
-        _pq = _new_pending_query(student_id, _existing_pq_ids)
-        ChatMessage.objects.create(
-            channel=ChatMessage.Channel.AGENT,
-            student_id=student_id,
-            sender=ChatMessage.Sender.ASSISTANT,
-            content=reply or "",
-            meta=_escalation_meta(_pq),
-        )
-        _notify_agent_reply(student_id, agent_name, reply or "")
-
-        return Response({
-            "agent": agent_name,
-            "student_id": student_id,
-            "reply": reply,
-            "message_id": user_msg.id,
-            "pending": bool(_pq),
-            "query_id": _pq.id if _pq else None,
-            "attachments": [_serialize_attachment(request, a) for a in attachments],
-        })
-    except Exception as exc:
-        return api_error(f"Agent chat failed: {exc}", status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@api_view(["PATCH"])
-@permission_classes(STUDENT_PERMISSIONS)
-def agent_chat_edit(request, message_id):
-    """
-    PATCH /api/chat/agent/<message_id>/edit/
-    Edits a previously-sent user message and regenerates the AI reply from
-    that point: the old reply and everything sent after it are discarded --
-    they were responding to a question that no longer exists once the
-    message is changed -- and the in-process LangGraph conversation state is
-    rebuilt to match (see pure_multi_agent.runtime.seed_conversation) before
-    asking the model again. Attachments already on the message are left
-    alone and are still sent to the model along with the edited text.
-    """
-    from django.utils import timezone
-
-    from pure_multi_agent.runtime import run_turn, seed_conversation
-
-    student_id = request.user.account.student_uuid
-    new_message = str(request.data.get("message", "")).strip()
-
-    if not new_message:
-        return api_error("message is required.")
-
-    target = ChatMessage.objects.filter(
-        pk=message_id,
-        channel=ChatMessage.Channel.AGENT,
-        student_id=student_id,
-        sender=ChatMessage.Sender.USER,
-    ).first()
-    if target is None:
-        return api_error("Message not found.", status.HTTP_404_NOT_FOUND)
-
-    prior_turns = list(
-        ChatMessage.objects.filter(channel=ChatMessage.Channel.AGENT, student_id=student_id, pk__lt=target.pk)
-        .order_by("created_at")
-        .values_list("sender", "content")
-    )
-
-    # Everything after the edited message is now stale -- it was generated
-    # in response to a question that no longer exists.
-    ChatMessage.objects.filter(
-        channel=ChatMessage.Channel.AGENT, student_id=student_id, pk__gt=target.pk
-    ).delete()
-
-    image_blocks = build_image_content_blocks(target.attachments.all())
-
-    target.content = new_message
-    target.edited_at = timezone.now()
-    target.save(update_fields=["content", "edited_at"])
-
-    seed_conversation(student_id, prior_turns)
-
-    try:
-        _existing_pq_ids = _existing_pending_query_ids(student_id)
-        agent_name, reply = run_turn(student_id, new_message, image_blocks=image_blocks or None)
-        _pq = _new_pending_query(student_id, _existing_pq_ids)
-        ChatMessage.objects.create(
-            channel=ChatMessage.Channel.AGENT,
-            student_id=student_id,
-            sender=ChatMessage.Sender.ASSISTANT,
-            content=reply or "",
-            meta=_escalation_meta(_pq),
-        )
-        _notify_agent_reply(student_id, agent_name, reply or "")
-
-        return Response({
-            "agent": agent_name,
-            "student_id": student_id,
-            "reply": reply,
-            "message_id": target.id,
-            "edited_at": target.edited_at,
-            "pending": bool(_pq),
-            "query_id": _pq.id if _pq else None,
-        })
-    except Exception as exc:
-        return api_error(f"Agent chat failed: {exc}", status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
 class ChatAttachmentDetailAPIView(APIView):
     """
     GET /api/chat/agent/attachments/<attachment_id>/
@@ -1059,31 +917,6 @@ def agent_chat_history(request):
             for m in _msgs
         ],
     })
-
-
-@api_view(["POST"])
-@permission_classes(STUDENT_PERMISSIONS)
-def agent_chat_new(request):
-    """
-    POST /api/chat/agent/new/
-    Starts a new conversation with the student's personal agent: deletes the
-    persisted transcript (what chat/agent/history/ returns) and resets the
-    in-process LangGraph conversation state (pure_multi_agent.runtime's
-    checkpointer), so the next chat/agent/ turn begins with no prior turns
-    in context. Deliberately does not touch AriaMemory or the student's
-    profile -- durable facts learned about the student (GPA, universities
-    discussed, etc.) survive a "new chat" the same way they'd survive the
-    student opening a new tab; only the turn-by-turn conversation resets.
-    """
-    from pure_multi_agent.runtime import reset_conversation
-
-    student_id = request.user.account.student_uuid
-    deleted_count, _ = ChatMessage.objects.filter(
-        channel=ChatMessage.Channel.AGENT, student_id=student_id
-    ).delete()
-    reset_conversation(student_id)
-
-    return Response({"status": "ok", "student_id": student_id, "messages_deleted": deleted_count})
 
 
 class AssessmentHistoryView(APIView):
@@ -2096,3 +1929,4 @@ class DeletePendingQueryView(APIView):
         selected_query.delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
+
