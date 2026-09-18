@@ -33,7 +33,7 @@ Defaults are application retention limits, not a claim of legal compliance. Revi
 | AI conversation checkpoints, derived memory | At most transcript/memory retention; reset when old turns expire | Checkpoint, long-term memory, intake and conversation insights erased |
 | Verification checks/items | 365 days; earlier when source evidence expires | Erased |
 | Notification tokens/logs | 90 days since token update / log creation | Erased with account |
-| Institute source rosters | 365 days, or shorter institute policy | Student rows erased; any containing verbatim roster file removed, other structured rows preserved |
+| Institute source rosters | 365 days, or shorter institute policy | Rows linked to the claimed student identity erased; any containing verbatim roster file removed, other structured rows preserved |
 | Model telemetry | 90 days | Student-linked calls/jobs erased |
 | GitHub OAuth grant | Active account lifetime | Provider authorization revoked before completion, encrypted local grant erased |
 | Profile and remaining derived analyses | Account lifetime; inactive account deletion after 730 days | Erased with account |
@@ -46,7 +46,7 @@ Deletion immediately disables login, blacklists refresh tokens and cancels queue
 
 AI memory has an independent reset clock, so editing a profile or clearing visible chat history cannot keep older memory indefinitely. Expiry resets the whole checkpoint and derived memory; this can also remove newer context. Existing reset clocks begin at migration; expired transcripts can trigger an earlier reset.
 
-The old presenter/question logs were keyed by names; deletion conservatively removes matching entries because stronger attribution is unavailable. Institution source files are removed wholesale when they contain a deleted student's row. Keep these limitations in support guidance. Source facts originating from a student's escalated question are removed with that question; reviewed public university facts remain public institutional knowledge.
+The old presenter/question logs were keyed by names; deletion conservatively removes matching entries because stronger attribution is unavailable. Institution source files are removed wholesale when they contain a deleted student's row. Unclaimed roster rows are not matched solely by email: removing those requires the institution's verified identity process, or scheduled roster expiry. Keep these limitations in support guidance. Source facts originating from a student's escalated question are removed with that question; reviewed public university facts remain public institutional knowledge.
 
 Backup snapshots, externally delivered email/push payloads, provider-side logs and student-downloaded exports are outside database/file deletion. Configure backup/log expiry and provider retention separately, document them in the published privacy policy, and replay deletion requests before serving any restored backup. Application completion refers to live application storage and confirmed GitHub revocation, not erasure from external backups. Institutional contracts and privacy notices must describe these boundaries.
 

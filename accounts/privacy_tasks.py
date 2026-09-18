@@ -51,7 +51,8 @@ def erase_student(job):
     from project_superuser.models import ActivityLog
     # Verbatim roster files cannot be selectively redacted safely. Remove the
     # file containing this student's row; retain other students' structured rows.
-    roster_rows = ListedStudent.objects.filter(Q(claimed_student_id=sid) | Q(email__iexact=user.email)) if sid else ListedStudent.objects.filter(email__iexact=user.email)
+    # An email string is not proof of ownership of an unclaimed institute row.
+    roster_rows = ListedStudent.objects.filter(claimed_student_id=sid) if sid else ListedStudent.objects.none()
     for source in UniversityStudentList.objects.filter(students__in=roster_rows).distinct():
         remove_file(source.source_file_path)
         source.source_file_path = source.source_file_name = source.source_file_content_type = ""

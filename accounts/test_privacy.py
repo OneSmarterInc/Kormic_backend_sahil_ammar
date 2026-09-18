@@ -77,3 +77,21 @@ class PrivacyTests(TransactionTestCase):
             apply_retention(); reset.assert_any_call(str(self.profile.uuid))
         self.assertFalse(m.AriaMemory.objects.filter(student_id=str(self.profile.uuid)).exists())
         self.profile.refresh_from_db(); self.assertGreater(self.profile.memory_reset_at,timezone.now()-timedelta(minutes=1))
+
+    def test_deletion_does_not_claim_ownership_of_rosters_by_email(self):
+        from institutes.models import Institute
+        from institutes_list.models import UniversityStudentList, ListedStudent
+        institute=Institute.objects.create(name="Institute")
+        source=UniversityStudentList.objects.create(institute=institute,contact_name="Contact",contact_email="contact@example.test")
+        own=ListedStudent.objects.create(source_list=source,institute_id=str(institute.uuid),full_name="Own",email=self.user.email,claimed_student_id=str(self.profile.uuid),status="claimed")
+        second=UniversityStudentList.objects.create(institute=institute,contact_name="Contact",contact_email="contact@example.test")
+        third=UniversityStudentList.objects.create(institute=institute,contact_name="Contact",contact_email="contact@example.test")
+        unclaimed=ListedStudent.objects.create(source_list=second,institute_id=str(institute.uuid),full_name="Unclaimed",email=self.user.email)
+        other=ListedStudent.objects.create(source_list=third,institute_id=str(institute.uuid),full_name="Other",email=self.user.email,claimed_student_id=str(self.other_profile.uuid),status="claimed")
+        job=queue_deletion(self.user); job.not_before=timezone.now(); job.save()
+        with patch('accounts.privacy_tasks.revoke_github'), patch('pure_multi_agent.runtime.reset_conversation'):
+            process_deletions()
+        job.refresh_from_db(); self.assertEqual(job.status,"completed")
+        self.assertFalse(ListedStudent.objects.filter(pk=own.pk).exists())
+        self.assertTrue(ListedStudent.objects.filter(pk=unclaimed.pk).exists())
+        self.assertTrue(ListedStudent.objects.filter(pk=other.pk).exists())
