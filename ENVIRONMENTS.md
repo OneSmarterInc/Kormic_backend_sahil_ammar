@@ -7,7 +7,7 @@ credentials in URLs, non-origin URLs and non-HTTPS deployed origins.
 
 | Environment | API origin | Student / claim link origin | Superuser | University | Institute |
 |---|---|---|---|---|---|
-| Local | http://127.0.0.1:8000 | http://localhost:8081 | http://localhost:5173 | http://localhost:5174 | http://localhost:5175 |
+| Local | http://localhost:8000 | http://localhost:8081 | http://localhost:5173 | http://localhost:5174 | http://localhost:5175 |
 | Staging | KORMIC_STAGING_API_ORIGIN | KORMIC_STAGING_STUDENT_ORIGIN | KORMIC_STAGING_SUPERUSER_ORIGIN | KORMIC_STAGING_UNIVERSITY_ORIGIN | KORMIC_STAGING_INSTITUTE_ORIGIN |
 | Production | https://backend.kormic.ai | https://app.kormic.ai | KORMIC_PRODUCTION_SUPERUSER_ORIGIN | KORMIC_PRODUCTION_UNIVERSITY_ORIGIN | KORMIC_PRODUCTION_INSTITUTE_ORIGIN |
 

@@ -32,9 +32,9 @@ These are two distinct concepts and are not meant to converge:
 Kormic uses **port 8000** for the Django/Gunicorn backend everywhere:
 
 - Docker container application port: `8000`
-- Local Docker host URL: `http://127.0.0.1:8000`
+- Local Docker host URL: `http://localhost:8000`
 - Health endpoint: `http://127.0.0.1:8000/api/health/`
-- Local browser frontends: `VITE_API_BASE_URL=http://127.0.0.1:8000`
+- Local browser frontends: `VITE_API_BASE_URL=http://localhost:8000`
 - Production Nginx upstream: `http://127.0.0.1:8000`
 
 Do not use port `8030` for this backend.
@@ -76,14 +76,16 @@ curl http://127.0.0.1:8000/api/health/
 The API is available locally at:
 
 ```text
-http://127.0.0.1:8000
+http://localhost:8000
 ```
 
 For a browser-based Kormic frontend running on the same computer, use:
 
 ```ini
-VITE_API_BASE_URL=http://127.0.0.1:8000
+VITE_API_BASE_URL=http://localhost:8000
 ```
+
+Open the browser frontend on `localhost` too. For the student app, use `EXPO_PUBLIC_API_BASE_URL=http://localhost:8000/api`. Mixing `localhost` and `127.0.0.1` prevents SameSite authentication cookies from being sent.
 
 For a physical phone or another computer on your LAN, `127.0.0.1` refers to that device itself. Use the backend computer's LAN IP instead, for example `http://192.168.1.50:8000` (and include that host/origin in the appropriate Django local-development settings).
 
@@ -96,3 +98,4 @@ docker compose exec web python manage.py migrate
 ## Deployment
 
 Production uses the same application port, `8000`; Nginx proxies HTTPS traffic to `127.0.0.1:8000` on the server. For the complete production instructions, see [DEPLOYMENT.md](DEPLOYMENT.md).
+
