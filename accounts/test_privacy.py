@@ -69,3 +69,11 @@ class PrivacyTests(TransactionTestCase):
         self.assertEqual(self.client.patch('/api/auth/privacy/retention/', {'roster_days':1},format='json').status_code,400)
         response=self.client.patch('/api/auth/privacy/retention/', {'transcript_days':30},format='json')
         self.assertEqual(response.status_code,200); self.assertEqual(response.data['scope'],f'university:{university.uuid}')
+
+    def test_memory_expires_even_if_profile_is_active_and_transcripts_were_cleared(self):
+        m.StudentProfile.objects.filter(pk=self.profile.pk).update(memory_reset_at=timezone.now()-timedelta(days=181))
+        m.AriaMemory.objects.create(student_id=str(self.profile.uuid), important_points=["old private point"])
+        with patch('pure_multi_agent.runtime.reset_conversation') as reset:
+            apply_retention(); reset.assert_any_call(str(self.profile.uuid))
+        self.assertFalse(m.AriaMemory.objects.filter(student_id=str(self.profile.uuid)).exists())
+        self.profile.refresh_from_db(); self.assertGreater(self.profile.memory_reset_at,timezone.now()-timedelta(minutes=1))

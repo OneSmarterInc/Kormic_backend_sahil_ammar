@@ -107,6 +107,7 @@ class StudentProfile(models.Model):
 
     extra_data = models.JSONField(default=dict, blank=True)
 
+    memory_reset_at = models.DateTimeField(default=timezone.now)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

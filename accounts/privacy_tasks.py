@@ -131,7 +131,9 @@ def apply_retention():
     expire_rows(m.ResumeUpload.objects.filter(created_at__lt=before(policy.upload_days)), "file_path")
     expire_rows(m.LinkedInAnalysis.objects.filter(created_at__lt=before(policy.upload_days)), "image_paths")
     # Derived verification cannot continue certifying evidence that was removed.
-    VerificationCheck.objects.filter(Q(student_id__in=affected) | Q(updated_at__lt=before(policy.verification_days))).delete()
+    expired_checks = VerificationCheck.objects.filter(Q(student_id__in=affected) | Q(updated_at__lt=before(policy.verification_days)))
+    m.StudentProfile.objects.filter(pk__in=expired_checks.values("student_id")).update(verified=False)
+    expired_checks.delete()
     for profile in m.StudentProfile.objects.exclude(profile_image_path="").filter(updated_at__lt=before(policy.upload_days)):
         remove_file(profile.profile_image_path); profile.profile_image_path = ""; profile.save(update_fields=["profile_image_path"])
     from pure_multi_agent.runtime import reset_conversation
@@ -144,11 +146,13 @@ def apply_retention():
             m.ChatGate.objects.select_for_update().get(key="student:" + sid)
             if m.ChatGeneration.objects.filter(student_id=sid, status__in=["queued", "running"]).exists(): continue
             stale = m.ChatMessage.objects.filter(student_id=sid, created_at__lt=before(min(policy.memory_days, policy.transcript_days)))
-            if not stale.exists() and profile.updated_at >= before(policy.memory_days): continue
+            if not stale.exists() and profile.memory_reset_at >= before(policy.memory_days): continue
             reset_conversation(sid)
             m.AriaMemory.objects.filter(student_id=sid).delete()
             m.IntakeSession.objects.filter(Q(student_id=sid) | Q(student_key=sid)).delete()
-            profile.conversation_insights = []; profile.save(update_fields=["conversation_insights"])
+            profile.conversation_insights = []
+            profile.memory_reset_at = now
+            profile.save(update_fields=["conversation_insights", "memory_reset_at"])
             expire_rows(m.ChatAttachment.objects.filter(message__in=stale), "file_path")
             stale.delete()
     m.AgentConversationLog.objects.filter(created_at__lt=before(policy.transcript_days)).delete()
