@@ -42,7 +42,12 @@ class ClaimEmailRateThrottle(ClaimRateSettingsMixin, SimpleRateThrottle):
 class ClaimIPThrottle(ClaimRateSettingsMixin, SimpleRateThrottle):
     # Also applies when an authenticated caller uses this public flow.
     def get_cache_key(self, request, view):
-        return self.cache_format % {"scope": self.scope, "ident": self.get_ident(request)}
+        # TrustedProxyMiddleware drops this header for direct/untrusted peers.
+        # The controlled proxy appends the real connecting client last; never
+        # key on an attacker-controlled prefix of an X-Forwarded-For chain.
+        forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
+        ident = forwarded.split(",")[-1].strip() if forwarded else request.META.get("REMOTE_ADDR", "")
+        return self.cache_format % {"scope": self.scope, "ident": ident}
 
 
 class ClaimStartIPThrottle(ClaimIPThrottle):

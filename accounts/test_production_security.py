@@ -29,3 +29,16 @@ class ProductionSecurityTests(SimpleTestCase):
         trusted = app(factory.get('/api/v1/auth/me/', REMOTE_ADDR='192.0.2.10', HTTP_X_FORWARDED_PROTO='https'))
         self.assertEqual(trusted.status_code, 200)
         self.assertIn('max-age=3600', trusted['Strict-Transport-Security'])
+
+
+    @override_settings(TRUSTED_PROXY_CIDRS=('192.0.2.10/32',))
+    def test_claim_ip_budget_ignores_spoofed_forwarding_prefix(self):
+        from institutes_list.throttling import ClaimConfirmIPThrottle
+        throttle = ClaimConfirmIPThrottle()
+        app = TrustedProxyMiddleware(lambda r: throttle.get_cache_key(r, None))
+        factory = RequestFactory()
+        first = app(factory.get('/', REMOTE_ADDR='192.0.2.10', HTTP_X_FORWARDED_FOR='attacker-one, 198.51.100.2'))
+        second = app(factory.get('/', REMOTE_ADDR='192.0.2.10', HTTP_X_FORWARDED_FOR='attacker-two, 198.51.100.2'))
+        self.assertEqual(first, second)
+        direct = app(factory.get('/', REMOTE_ADDR='198.51.100.2', HTTP_X_FORWARDED_FOR='forged'))
+        self.assertEqual(first, direct)

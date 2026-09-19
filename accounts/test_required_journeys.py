@@ -56,7 +56,7 @@ class RequiredStudentJourneys(TestCase):
         # New anonymous client reproduces following a link, without reusing login state.
         anonymous = APIClient()
         start = self.post('claim/start/', {'token': row.claim_token}, client=anonymous)
-        self.assertEqual(set(start), {'masked_email'})
+        self.assertEqual(set(start), {'masked_email', 'message'})
         row.refresh_from_db()
         otp = cache.get(claim_otp_cache_key(row.pk, row.otp_hash))
         self.assertTrue(otp)
@@ -65,7 +65,7 @@ class RequiredStudentJourneys(TestCase):
         payload = {'claim_session': verified['claim_session'], 'fields': {'field_of_study': 'Mathematics'}}
         result = self.post('claim/confirm/', payload, client=anonymous)
         self.post('claim/confirm/', payload, code=400, client=anonymous)
-        self.post('claim/start/', {'token': row.claim_token}, code=404, client=anonymous)
+        self.assertEqual(self.post('claim/start/', {'token': row.claim_token}, client=anonymous), start)
         return result
 
     def assert_canonical(self, row, expected_id):
