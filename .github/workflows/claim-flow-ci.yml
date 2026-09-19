@@ -92,7 +92,7 @@ jobs:
               'POSTGRES_PASSWORD': 'compose-ci-secret-password',
           }
 
-          for service_name in ('postgres', 'migrate', 'web', 'celery_worker', 'celery_beat'):
+          for service_name in ('postgres', 'migrate', 'web', 'celery_worker', 'chat_worker', 'celery_beat'):
               env = services[service_name].get('environment', {})
               for key, expected in expected_credentials.items():
                   actual = env.get(key)
@@ -100,7 +100,7 @@ jobs:
                       f'{service_name}.{key}={actual!r}; expected {expected!r}'
                   )
 
-          for service_name in ('migrate', 'web', 'celery_worker', 'celery_beat'):
+          for service_name in ('migrate', 'web', 'celery_worker', 'chat_worker', 'celery_beat'):
               env = services[service_name].get('environment', {})
               assert env.get('POSTGRES_HOST') == 'postgres', (
                   f'{service_name}.POSTGRES_HOST must be postgres'
@@ -109,6 +109,11 @@ jobs:
                   f'{service_name}.POSTGRES_PORT must be 5432'
               )
 
+          for name in ('web', 'celery_worker', 'chat_worker', 'celery_beat', 'migrate'):
+              assert not any(v.get('type') == 'bind' and v.get('target') == '/app' for v in services[name].get('volumes', []))
+          assert services['postgres']['ports'][0]['host_ip'] == '127.0.0.1'
+          assert services['web']['ports'][0]['host_ip'] == '127.0.0.1'
+          assert '--appendonly' in services['redis']['command']
           compose_source = Path('docker-compose.yml').read_text()
           assert 'POSTGRES_PASSWORD: kormic' not in compose_source
           assert 'POSTGRES_PASSWORD: "kormic"' not in compose_source
@@ -206,3 +211,60 @@ jobs:
       - name: Verify full-suite test-order independence
         run: python manage.py test --shuffle 20260917 --verbosity 1
 
+
+  dependency-security:
+    name: Dependency security scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Audit full resolved application dependency tree
+        run: |
+          python -m pip install pip-audit==2.10.1
+          python -m pip_audit --strict -r requirements.txt --format json -o pip-audit.json
+      - name: Retain security scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-security-report
+          path: pip-audit.json
+          retention-days: 14
+
+  docker-build:
+    name: Docker build and pilot smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare isolated pilot environment
+        run: |
+          cp .env.template .env
+          python - <<'PY'
+          import secrets
+          with open('.env', 'a') as env:
+              env.write('\nPOSTGRES_PASSWORD=' + secrets.token_urlsafe(32) + '\n')
+              env.write('DJANGO_SECRET_KEY=' + secrets.token_urlsafe(48) + '\n')
+              env.write('EMAIL_MODE=dev\nDJANGO_ALLOWED_HOSTS=localhost,127.0.0.1\n')
+          PY
+      - name: Build deployment image
+        run: docker compose build
+      - name: Generate isolated encryption keys
+        run: docker compose run --rm --no-deps -T web python -c "from cryptography.fernet import Fernet; print('TOTP_SECRET_KEYS=' + Fernet.generate_key().decode()); print('GITHUB_OAUTH_TOKEN_KEY=' + Fernet.generate_key().decode())" >> .env
+      - name: Start pilot services and await health checks
+        run: docker compose up -d --wait --wait-timeout 240
+      - name: Verify API and workers
+        run: |
+          curl --fail --retry 5 --retry-delay 3 http://127.0.0.1:8000/api/v1/health/
+          docker compose exec -T web python manage.py check
+          docker compose exec -T celery_worker celery -A kormic_backend inspect ping --timeout 10
+          test "$(docker compose ps --status running -q | wc -l)" -eq 6
+      - name: Collect pilot diagnostics
+        if: failure()
+        run: docker compose logs --no-color --tail=100
+      - name: Stop ephemeral pilot
+        if: always()
+        run: docker compose down -v

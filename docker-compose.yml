@@ -1,15 +1,7 @@
 x-app: &app
   build: .
   volumes:
-    - .:/app
-    # Named volume, not the .:/app bind mount above -- on a Linux host the
-    # bind mount is created (and owned) by whatever ran `docker compose up`,
-    # which is usually root, and that clobbers the app:app ownership the
-    # Dockerfile set on /app/staticfiles and /app/uploads. A named volume is
-    # seeded from the image on first use, so it keeps the image's ownership
-    # instead. uploads is real user data (student chat attachments etc, see
-    # MEDIA_ROOT in settings.py) so this also makes it persist independently
-    # of whatever the host checkout looks like.
+    # Run the built image; a host checkout must not replace deployed code.
     - static_data:/app/staticfiles
     - uploads_data:/app/uploads
   env_file:
@@ -41,6 +33,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: kormic_redis
+    command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
     healthcheck:
@@ -58,7 +51,7 @@ services:
       POSTGRES_USER: "${POSTGRES_USER:-kormic}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
     ports:
-      - "5438:5432"
+      - "127.0.0.1:5438:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -77,8 +70,6 @@ services:
     build: .
     container_name: kormic_migrate
     command: python manage.py migrate --noinput
-    volumes:
-      - .:/app
     env_file:
       - .env
     environment:
@@ -106,7 +97,7 @@ services:
     # command: python manage.py runserver 0.0.0.0:8000
     command: sh -c "python manage.py collectstatic --noinput && exec gunicorn kormic_backend.wsgi:application --bind 0.0.0.0:8000 --workers ${GUNICORN_WORKERS:-3} --timeout ${GUNICORN_TIMEOUT:-120} --access-logfile - --error-logfile - ${GUNICORN_EXTRA_ARGS:-}"
     ports:
-      - "8000:8000"
+      - "${API_BIND_ADDRESS:-127.0.0.1}:8000:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/api/v1/health/', timeout=3)"]
       interval: 30s
@@ -138,6 +129,8 @@ services:
     # unprivileged `app` user, see Dockerfile) instead of the default relative
     # path in /app. /app is the .:/app bind mount and is root-owned on a Linux
     # host, so beat could not create its schedule file there and crash-looped.
+    volumes:
+      - beat_data:/home/app
     command: celery -A kormic_backend beat -l info --schedule /home/app/celerybeat-schedule
 
 volumes:
@@ -145,4 +138,5 @@ volumes:
   postgres_data:
   static_data:
   uploads_data:
+  beat_data:
 
