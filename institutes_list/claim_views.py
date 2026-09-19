@@ -78,6 +78,8 @@ def start_claim(request):
     # plaintext OTP is stored in the database or serialized into task args.
     try:
         with transaction.atomic():
+            locked = ListedStudent.objects.select_for_update().get(pk=row.pk)
+            previous_hash = locked.otp_hash
             updated = ListedStudent.objects.filter(
                 id=row.id,
                 status=ListedStudent.Status.UNCLAIMED,
@@ -97,6 +99,8 @@ def start_claim(request):
                 timeout=OTP_TTL_SECONDS,
             ):
                 raise RuntimeError("The OTP delivery cache did not accept the verification code.")
+            if previous_hash:
+                discard_claim_otp_code(row.id, previous_hash)
     except ClaimInvitationUnavailable:
         discard_claim_otp_code(row.id, otp_hash)
         return Response(
@@ -127,3 +131,4 @@ def start_claim(request):
         {"masked_email": _mask_email(row.email)},
         status=status.HTTP_200_OK,
     )
+

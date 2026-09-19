@@ -95,12 +95,10 @@ def fetch_page(url: str, timeout: int = 15) -> str:
     Returns an empty string if the page cannot be fetched or parsed.
     """
     try:
-        response = requests.get(
-            url,
-            headers=HEADERS,
-            timeout=timeout,
-            allow_redirects=True,
-        )
+        from url_discovery.domain_policy import DomainPolicy
+        from url_discovery.safe_http import PublicClient
+        with PublicClient(policy=DomainPolicy(url), headers=HEADERS, timeout=timeout) as client:
+            response = client.get(url)
         response.raise_for_status()
 
         content_type = response.headers.get("Content-Type", "").lower()

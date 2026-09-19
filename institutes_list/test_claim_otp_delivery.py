@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-import hashlib
 from unittest import mock
 
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 from django.core import mail
 from django.core.cache import cache
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
-from accounts.models import Account
+from accounts.models import Account, TOTPDevice
+from django.core.files.uploadedfile import SimpleUploadedFile
 from institutes.services import register_institute
 from institutes_list.models import ListedStudent, UniversityStudentList
 from institutes_list.tasks import (
@@ -62,7 +63,8 @@ class ClaimOtpDeliveryTests(TestCase):
 
         code = cache.get(claim_otp_cache_key(self.student.id, self.student.otp_hash))
         self.assertRegex(code, r"^\d{6}$")
-        self.assertEqual(hashlib.sha256(code.encode("utf-8")).hexdigest(), self.student.otp_hash)
+        from .otp import check_otp
+        self.assertTrue(check_otp(code, self.student.otp_hash))
         self.assertEqual(mail.outbox, [])
 
     @mock.patch("institutes_list.claim_views.send_claim_otp_email_task.delay")
@@ -186,6 +188,7 @@ class ClaimOtpRouteIsolationTests(TestCase):
             password="test-password",
         )
         Account.objects.create(user=user, role=Account.Role.INSTITUTE, institute=institute)
+        TOTPDevice.objects.create(user=user, secret="JBSWY3DPEHPK3PXP", confirmed_at=timezone.now())
 
         response = APIClient().post(
             "/api/claim/start/",

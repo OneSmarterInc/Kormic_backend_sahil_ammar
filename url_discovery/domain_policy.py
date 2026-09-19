@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-from functools import lru_cache
 from urllib.parse import urlsplit
 
 try:
@@ -42,14 +41,13 @@ def is_private_or_local_host(hostname: str) -> bool:
         return False
 
 
-@lru_cache(maxsize=512)
 def resolves_to_public_ip(hostname: str) -> bool:
     if is_private_or_local_host(hostname):
         return False
     try:
         addresses = socket.getaddrinfo(hostname, None)
-    except socket.gaierror:
-        return True  # DNS may be unavailable during project creation; crawler will report failures.
+    except OSError:
+        return False
     if not addresses:
         return False
     for address in addresses:
@@ -66,6 +64,8 @@ def validate_public_base_url(url: str) -> tuple[str, str]:
     parts = urlsplit(url)
     if parts.scheme.lower() not in {"http", "https"}:
         raise ValueError("Only HTTP and HTTPS URLs are supported")
+    if parts.username or parts.password or parts.port not in {None, 80, 443}:
+        raise ValueError("Credentials and non-standard ports are not allowed")
     host = (parts.hostname or "").lower()
     if not host:
         raise ValueError("The base URL must contain a hostname")
@@ -92,7 +92,12 @@ class DomainPolicy:
         }
 
     def is_allowed(self, url: str) -> bool:
-        parts = urlsplit(url)
+        try:
+            parts = urlsplit(url)
+            if parts.username or parts.password or parts.port not in {None, 80, 443}:
+                return False
+        except ValueError:
+            return False
         if parts.scheme.lower() not in {"http", "https"}:
             return False
         host = (parts.hostname or "").lower().rstrip(".")
@@ -103,3 +108,4 @@ class DomainPolicy:
         if self.include_subdomains:
             return root_domain(host) == self.root
         return host == self.base_host
+

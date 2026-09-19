@@ -169,6 +169,13 @@ def apply_retention():
     for source in UniversityStudentList.objects.all().iterator():
         override = m.RetentionPolicy.objects.filter(scope=f"institute:{source.institute.uuid}").first()
         days = min(policy.roster_days, override.roster_days) if override else policy.roster_days
+        from django.conf import settings
+        raw_days = min(days, settings.INSTITUTE_SOURCE_FILE_RETENTION_DAYS)
+        if source.source_file_path and source.created_at < now - timedelta(days=raw_days):
+            remove_file(source.source_file_path)
+            source.source_file_path = source.source_file_name = source.source_file_content_type = ""
+            source.source_file_size = 0
+            source.save(update_fields=["source_file_path", "source_file_name", "source_file_content_type", "source_file_size"])
         if source.created_at < before(days):
             remove_file(source.source_file_path); source.delete()
     for university in University.objects.all().iterator():

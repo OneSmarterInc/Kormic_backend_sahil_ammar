@@ -5,7 +5,6 @@
 # into an HTML 500 page or hold a web worker open.
 from __future__ import annotations
 
-import hashlib
 import logging
 
 from celery import shared_task
@@ -42,7 +41,7 @@ def cache_claim_otp_code(
     relying on a backend-specific return value.
     """
     key = claim_otp_cache_key(listed_student_id, otp_hash)
-    cache.set(key, code, timeout=timeout)
+    cache.set(key, code, timeout=min(timeout, 120))
     return cache.get(key) == code
 
 
@@ -128,7 +127,8 @@ def send_claim_otp_email_task(
         )
         return
 
-    if hashlib.sha256(code.encode("utf-8")).hexdigest() != expected_otp_hash:
+    from .otp import check_otp
+    if not check_otp(code, expected_otp_hash):
         logger.error(
             "send_claim_otp_email_task: cached OTP integrity check failed for ListedStudent %s.",
             listed_student_id,
@@ -181,3 +181,4 @@ def send_claim_otp_email_task(
     # had a transient problem; the cache entry has the same short TTL as the
     # OTP and cannot be used after the row expires or is replaced.
     discard_claim_otp_code(listed_student_id, expected_otp_hash)
+

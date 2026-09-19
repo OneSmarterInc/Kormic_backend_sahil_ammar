@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import gzip
 import hashlib
 import json
 import logging
@@ -13,6 +12,7 @@ from urllib import robotparser
 from urllib.parse import urljoin, urlsplit
 
 import httpx
+from .safe_http import PublicClient, FetchRejected, decompress_gzip
 from bs4 import BeautifulSoup, Tag
 from django.db import IntegrityError
 from django.db.models import Count, F
@@ -328,15 +328,14 @@ class DirectUniversityCrawler:
         try:
             self._prepare_robots()
             self._seed()
-            with httpx.Client(
+            with PublicClient(
+                policy=self.domain_policy,
                 headers={
                     "User-Agent": self.user_agent,
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf;q=0.8,*/*;q=0.5",
                     "Accept-Language": "en-US,en;q=0.8",
                 },
-                follow_redirects=True,
-                timeout=httpx.Timeout(self.timeout),
-                limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+                timeout=self.timeout,
             ) as client:
                 while self.queue:
                     job_status = self._job_status()
@@ -413,13 +412,21 @@ class DirectUniversityCrawler:
         parser = robotparser.RobotFileParser()
         parser.set_url(robots_url)
         try:
-            parser.read()
+            with PublicClient(policy=self.domain_policy, headers={"User-Agent": self.user_agent}, timeout=self.timeout) as client:
+                response = client.get(robots_url)
+            if response.status_code in {404, 410}:
+                parser.parse(["User-agent: *", "Allow: /"])
+            elif response.status_code == 200:
+                parser.parse(response.text.splitlines())
+            else:
+                raise FetchRejected("ROBOTS_UNAVAILABLE: robots.txt could not be loaded.")
             self.robot_parser = parser
             for sitemap in parser.site_maps() or []:
                 self._discover(sitemap, robots_url, "Sitemap from robots.txt", 0, force_queue=True)
-        except Exception as exc:  # network/SSL/parser issues must not kill crawling
-            LOGGER.info("robots.txt unavailable for %s: %s", self.base_url, exc)
-            self.robot_parser = None
+        except Exception as exc:
+            self._mark_fetch_failure(robots_url, str(exc) if isinstance(exc, FetchRejected) else "ROBOTS_UNAVAILABLE")
+            parser.parse(["User-agent: *", "Disallow: /"])
+            self.robot_parser = parser
 
     def _robots_allowed(self, url: str) -> bool:
         if not self.robot_parser:
@@ -616,19 +623,11 @@ class DirectUniversityCrawler:
     ) -> None:
         try:
             response = client.get(url)
-        except httpx.TransportError as exc:
-            if "certificate" in str(exc).lower() or "ssl" in str(exc).lower():
-                try:
-                    with httpx.Client(headers=client.headers, follow_redirects=True, timeout=self.timeout, verify=False) as insecure:
-                        response = insecure.get(url)
-                except Exception as retry_exc:  # noqa: BLE001
-                    self._mark_fetch_failure(url, str(retry_exc))
-                    return
-            else:
-                self._mark_fetch_failure(url, str(exc))
-                return
-        except Exception as exc:  # noqa: BLE001
+        except FetchRejected as exc:
             self._mark_fetch_failure(url, str(exc))
+            return
+        except Exception:
+            self._mark_fetch_failure(url, "FETCH_FAILED: source could not be fetched securely.")
             return
 
         content_type = response.headers.get("content-type", "").split(";", 1)[0].lower().strip()
@@ -820,8 +819,8 @@ class DirectUniversityCrawler:
 
     def _parse_sitemap(self, body: bytes, sitemap_url: str, depth: int) -> None:
         try:
-            if sitemap_url.lower().endswith(".gz") or body[:2] == b"\x1f\x8b":
-                body = gzip.decompress(body)
+            if body[:2] == b"\x1f\x8b":
+                body = decompress_gzip(body)
             text = body.decode("utf-8", errors="ignore")
             locations = re.findall(r"<loc[^>]*>\s*(.*?)\s*</loc>", text, flags=re.I | re.S)
             for raw in locations:
@@ -946,3 +945,4 @@ class DirectUniversityCrawler:
 
     def _pages_crawled(self) -> int:
         return DiscoveryJob.objects.filter(id=self.job_id).values_list("pages_crawled", flat=True).first() or 0
+

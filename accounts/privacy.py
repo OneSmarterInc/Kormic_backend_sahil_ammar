@@ -33,7 +33,8 @@ def authenticate_action(request):
 
 def safe_path(value):
     root = Path(settings.MEDIA_ROOT).resolve()
-    path = Path(value).resolve()
+    supplied = Path(value)
+    path = (supplied if supplied.is_absolute() else root / supplied).resolve()
     if not path.is_relative_to(root) or path == root:
         raise ValueError("UNSAFE_STORED_FILE_PATH")
     return path

@@ -35,17 +35,15 @@ TOTP_SECRET_KEYS = tuple(
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-# Falls back to the original dev-only value so local setups are unaffected;
-# set DJANGO_SECRET_KEY in .env for any server that's reachable off localhost.
-SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY") or \
-    'django-insecure-0zav109$orgckjm3w+%%8v!lxt&4)qv68d^w*f%@fid@_y!c83'
-
-# SECURITY WARNING: don't run with debug turned on in production!
-# Defaults to False (fail closed): an unset/misconfigured DJANGO_DEBUG in a
-# deploy environment must never silently open a debug server to the
-# internet. Local dev sets DJANGO_DEBUG=true explicitly in .env.
+# Missing production signing keys must prevent startup, not select a public key.
 DEBUG = os.environ.get("DJANGO_DEBUG", "false").lower() == "true"
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "").strip()
+if not SECRET_KEY:
+    if not DEBUG:
+        raise ImproperlyConfigured("DJANGO_SECRET_KEY must be set when DJANGO_DEBUG is false.")
+    # Local debug sessions may use an ephemeral key; restart invalidates their tokens.
+    from django.core.management.utils import get_random_secret_key
+    SECRET_KEY = get_random_secret_key()
 
 # Defaults to localhost only (fail closed) so a missing env var on a real
 # server rejects Host headers instead of accepting anything ("*"). Any
@@ -489,3 +487,8 @@ CELERY_BEAT_SCHEDULE.update({
     "student-deletion": {"task": "accounts.privacy_tasks.process_deletions", "schedule": 60.0},
     "data-retention": {"task": "accounts.privacy_tasks.apply_retention", "schedule": 86400.0},
 })
+
+# Bounded institute intake; raw source files have a shorter life than roster rows.
+INSTITUTE_ROSTER_MAX_BYTES = int(os.getenv("INSTITUTE_ROSTER_MAX_BYTES", "5242880"))
+INSTITUTE_ROSTER_MAX_ROWS = int(os.getenv("INSTITUTE_ROSTER_MAX_ROWS", "5000"))
+INSTITUTE_SOURCE_FILE_RETENTION_DAYS = int(os.getenv("INSTITUTE_SOURCE_FILE_RETENTION_DAYS", "30"))
