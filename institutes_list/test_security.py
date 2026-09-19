@@ -5,7 +5,7 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase, override_settings
+from django.test import TransactionTestCase, override_settings
 from django.urls import URLPattern, URLResolver, get_resolver
 from django.utils import timezone
 from rest_framework.permissions import IsAuthenticated
@@ -22,7 +22,7 @@ from .tasks import cache_claim_otp_code, claim_otp_cache_key
 CSV = b'full_name,email,field_of_study,degree_level,expected_graduation\nAda,ada@example.test,Physics,Bachelor,2028\n'
 
 
-class InstituteSecurityTests(TestCase):
+class InstituteSecurityTests(TransactionTestCase):
     def setUp(self):
         cache.clear()
         self.media = tempfile.TemporaryDirectory()

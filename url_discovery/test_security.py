@@ -94,3 +94,30 @@ class SecureDiscoveryTests(SimpleTestCase):
     def test_compressed_sitemap_limit(self):
         with self.assertRaisesRegex(FetchRejected, 'RESPONSE_TOO_LARGE'):
             decompress_gzip(gzip.compress(b'x' * 10000), limit=100)
+
+    def test_crawler_records_tls_failure_without_parsing_content(self):
+        from .crawler import DirectUniversityCrawler
+        crawler = DirectUniversityCrawler.__new__(DirectUniversityCrawler)
+        crawler._mark_fetch_failure = Mock()
+        crawler._record_page = Mock()
+        client = Mock()
+        client.get.side_effect = FetchRejected('TLS_VERIFICATION_FAILED: certificate rejected')
+        crawler._fetch_and_parse(client, 'https://example.edu/', None, '', 0, None)
+        crawler._mark_fetch_failure.assert_called_once_with('https://example.edu/', 'TLS_VERIFICATION_FAILED: certificate rejected')
+        crawler._record_page.assert_not_called()
+        self.assertEqual(client.get.call_count, 1)
+
+    def test_robots_uses_same_secure_fetch_boundary_and_fails_closed(self):
+        from .crawler import DirectUniversityCrawler
+        crawler = DirectUniversityCrawler.__new__(DirectUniversityCrawler)
+        crawler.respect_robots = True
+        crawler.base_url = 'https://example.edu/'
+        crawler.domain_policy = DomainPolicy(crawler.base_url)
+        crawler.user_agent = 'KormicTest'
+        crawler.timeout = 5
+        crawler._mark_fetch_failure = Mock()
+        with patch('url_discovery.crawler.PublicClient') as transport:
+            transport.return_value.__enter__.return_value.get.side_effect = FetchRejected('TLS_VERIFICATION_FAILED')
+            crawler._prepare_robots()
+        self.assertFalse(crawler._robots_allowed('https://example.edu/private'))
+        crawler._mark_fetch_failure.assert_called_once()
