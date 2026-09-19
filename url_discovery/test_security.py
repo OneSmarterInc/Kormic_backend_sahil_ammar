@@ -118,6 +118,7 @@ class SecureDiscoveryTests(SimpleTestCase):
         crawler._mark_fetch_failure = Mock()
         with patch('url_discovery.crawler.PublicClient') as transport:
             transport.return_value.__enter__.return_value.get.side_effect = FetchRejected('TLS_VERIFICATION_FAILED')
-            crawler._prepare_robots()
+            with self.assertRaisesRegex(FetchRejected, "TLS_VERIFICATION_FAILED"):
+                crawler._prepare_robots()
         self.assertFalse(crawler._robots_allowed('https://example.edu/private'))
         crawler._mark_fetch_failure.assert_called_once()

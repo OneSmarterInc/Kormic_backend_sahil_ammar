@@ -427,6 +427,8 @@ class DirectUniversityCrawler:
             self._mark_fetch_failure(robots_url, str(exc) if isinstance(exc, FetchRejected) else "ROBOTS_UNAVAILABLE")
             parser.parse(["User-agent: *", "Disallow: /"])
             self.robot_parser = parser
+            # run() records this as the job error shown to the university.
+            raise FetchRejected(str(exc) if isinstance(exc, FetchRejected) else "ROBOTS_UNAVAILABLE: robots.txt could not be fetched securely.") from exc
 
     def _robots_allowed(self, url: str) -> bool:
         if not self.robot_parser:
