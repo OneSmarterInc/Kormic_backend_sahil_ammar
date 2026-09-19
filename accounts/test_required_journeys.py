@@ -13,7 +13,8 @@ from django_api.models import StudentProfile
 from institutes.services import register_institute
 from institutes_list.models import ListedStudent, UniversityStudentList
 from institutes_list.tasks import claim_otp_cache_key
-from notifications.models import NotificationLog, PushToken
+from notifications.models import PushToken
+from notifications.services import send_agent_message
 
 
 class RequiredStudentJourneys(TestCase):
@@ -132,11 +133,15 @@ class RequiredStudentJourneys(TestCase):
         self.assertEqual(account.student_profile.evidence['manual_profile_api']['city'], 'Dayton')
         token = 'ExponentPushToken[journey-device]'
         self.post('notifications/register-token/', {'token': token, 'platform': 'android'}, client=fresh)
-        NotificationLog.objects.create(account=account, event_type='agent_reply', title='Aria',
-                    body='Your answer', data={'student_id': me['student_id'], 'screen': 'BotScreen'})
+        with patch('notifications.services.send_push_notification_task.delay') as deliver:
+            notification = send_agent_message(student_id=me['student_id'], content='Your answer')
+            deliver.assert_called_once_with(notification.pk)
         polled = fresh.get('/api/v1/notifications/poll/')
         self.assertEqual(polled.status_code, 200)
-        self.assertEqual(polled.data['results'][0]['data']['student_id'], me['student_id'])
+        self.assertEqual(polled.data['results'][0]['data']['type'], 'agent_initiated')
+        history = fresh.get('/api/v1/chat/agent/history/')
+        self.assertEqual(history.status_code, 200)
+        self.assertEqual(history.data['messages'][-1]['content'], 'Your answer')
         self.post('notifications/unregister-token/', {'token': token}, client=fresh)
         self.assertFalse(PushToken.objects.get(token=token).is_active)
         self.post('auth/logout/', {'refresh': refreshed.get('refresh', tokens['refresh'])}, code=205, client=fresh)
