@@ -32,3 +32,5 @@ Patches_Fixed
 Issues_to_fix_before_deployment.md
 staticfiles/
 .env.prod
+
+.env.urls

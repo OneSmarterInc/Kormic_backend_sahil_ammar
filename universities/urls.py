@@ -1,8 +1,14 @@
+from universities.knowledge_sources import KnowledgeSourcesView
 from django.urls import path
 
 from universities import views
+from universities.staff import UniversityStaffList, UniversityStaffDetail
+
 
 urlpatterns = [
+    path("knowledge-sources/", KnowledgeSourcesView.as_view()),
+    path("staff/", UniversityStaffList.as_view(), name="university-staff"),
+    path("staff/<int:user_id>/", UniversityStaffDetail.as_view(), name="university-staff-detail"),
     path("profile/", views.UniversityProfileAPIView.as_view(), name="university-admin-profile"),
     path(
         "profile/completion/",
@@ -94,3 +100,4 @@ urlpatterns = [
         name="university-admin-knowledge-group-escalations-notify",
     ),
 ]
+

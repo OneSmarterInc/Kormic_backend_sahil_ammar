@@ -48,3 +48,16 @@ class StudentProfileSchemaAPIView(SpectacularAPIView):
     """OpenAPI document intentionally scoped to the student-profile contract."""
 
     urlconf = "django_api.contract_urls"
+
+
+
+from accounts.views import CurrentUserView
+from accounts.serializers import PortalUserSerializer
+
+
+class DocumentedCurrentUserView(CurrentUserView):
+    schema = AutoSchema()
+
+    @extend_schema(operation_id="portal_current_user", responses={200: PortalUserSerializer}, tags=["portal-auth"])
+    def get(self, request):
+        return super().get(request)

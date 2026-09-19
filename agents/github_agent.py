@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import anthropic
+from django_api.chat_policy import anthropic_create
 import requests
 from rich.console import Console
 
@@ -37,7 +38,7 @@ def _get_anthropic_client() -> anthropic.Anthropic:
             "ANTHROPIC_API_KEY not found. Falling back to rule-based GitHub assessment."
         )
 
-    return anthropic.Anthropic(timeout=ANTHROPIC_CLIENT_TIMEOUT_SECONDS, max_retries=1)
+    return anthropic.Anthropic(timeout=ANTHROPIC_CLIENT_TIMEOUT_SECONDS, max_retries=0)
 
 
 class GitHubSkillsAgent:
@@ -608,7 +609,7 @@ GITHUB DATA:
         try:
             client = _get_anthropic_client()
 
-            response = client.messages.create(
+            response = anthropic_create(client, 
                 model=MODEL,
                 max_tokens=1200,
                 messages=[{"role": "user", "content": prompt}],
@@ -791,3 +792,4 @@ GITHUB DATA:
             console.print(f"  [dim]{summary[:180]}...[/dim]")
 
         console.print()
+

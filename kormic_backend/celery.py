@@ -23,7 +23,12 @@ app.autodiscover_tasks(["pure_multi_agent"])
 # open past its CONN_MAX_AGE.
 @task_prerun.connect
 @task_postrun.connect
-def _close_old_db_connections(**kwargs):
+def _close_old_db_connections(task=None, **kwargs):
+    # Eager tasks borrow the caller's connection and may be inside its
+    # transaction (including Django TestCase). Do not close that connection.
+    if task is not None and getattr(task.request, "is_eager", False):
+        return
     from django.db import close_old_connections
 
     close_old_connections()
+

@@ -3,7 +3,7 @@ from unittest import mock
 import pyotp
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -178,6 +178,7 @@ class OwnershipTests(TestCase):
         self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
 
 
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True)
 class ChatHistoryTests(TestCase):
     def setUp(self):
         cache.clear()
@@ -243,6 +244,7 @@ class ChatHistoryTests(TestCase):
         self.assertEqual(other.get("/api/chat/agent/history/").data["count"], 1)
 
 
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True)
 class ChatEditAndAttachmentTests(TestCase):
     def setUp(self):
         cache.clear()
@@ -259,7 +261,7 @@ class ChatEditAndAttachmentTests(TestCase):
             "/api/chat/agent/", {"message": "Check this out", "attachments": [image]}, format="multipart"
         )
 
-        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
         self.assertEqual(len(resp.data["attachments"]), 1)
         self.assertEqual(resp.data["attachments"][0]["filename"], "screenshot.png")
 
@@ -308,8 +310,9 @@ class ChatEditAndAttachmentTests(TestCase):
         edit_resp = self.student.patch(
             f"/api/chat/agent/{first_user_msg.id}/edit/", {"message": "Edited question"}, format="json"
         )
-        self.assertEqual(edit_resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(edit_resp.data["reply"], "Regenerated reply")
+        self.assertEqual(edit_resp.status_code, status.HTTP_202_ACCEPTED)
+        result = self.student.get(f"/api/chat/agent/jobs/{edit_resp.data['job_id']}/")
+        self.assertEqual(result.data["reply"], "Regenerated reply")
 
         history = self.student.get("/api/chat/agent/history/").data["messages"]
         # The stale second question/reply pair is gone -- only the edited
@@ -499,3 +502,4 @@ class SubResourceHistoryTests(TestCase):
         self.assertEqual(franklin_view.data["assessments"][0]["university_id"], self.franklin_id)
 
         self.assertEqual(FitAssessment.objects.filter(student__uuid=self.student_id).count(), 2)
+

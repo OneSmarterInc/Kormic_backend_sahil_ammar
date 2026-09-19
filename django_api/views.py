@@ -34,7 +34,6 @@ from django_api.models import (
     LinkedInAnalysis,
     PendingQuery,
     ResumeUpload,
-    RoadmapVersion,
     StudentProfile,
     UniversityQuestionLog,
     VerifiedAnswer,
@@ -69,7 +68,7 @@ from institutes_list.models import ListedStudent
 
 logger = logging.getLogger(__name__)
 
-STUDENT_PERMISSIONS = [IsAuthenticated, IsTOTPEnrolled, IsStudentRole]
+from accounts.permissions import STUDENT_PERMISSIONS
 STUDENT_OWNER_PERMISSIONS = [IsAuthenticated, IsTOTPEnrolled, IsStudentRole, ScopedToOwnStudentId]
 UNIVERSITY_OWNER_PERMISSIONS = [IsAuthenticated, IsTOTPEnrolled, IsUniversityRole, ScopedToOwnUniversityId]
 
@@ -148,7 +147,6 @@ def api_home(request):
             "chat_attachment": "GET /api/chat/agent/attachments/<attachment_id>/",
         },
         "core_apis": {
-            "roadmap": "GET /api/roadmap/<student_id>/",
             "pending_queries": "GET /api/queries/pending/",
             "answer_query": "POST /api/queries/answer/",
             "edit_query": "POST /api/queries/<query_id>/edit/",
@@ -797,7 +795,7 @@ def _serialize_attachment(request, attachment: "ChatAttachment") -> Dict[str, An
         "filename": attachment.original_filename,
         "content_type": attachment.content_type,
         "size_bytes": attachment.size_bytes,
-        "url": request.build_absolute_uri(reverse("chat-attachment-detail", args=[attachment.id])),
+        "url": request.build_absolute_uri(reverse("v1:chat-attachment-detail" if request.resolver_match and request.resolver_match.namespace == "v1" else "chat-attachment-detail", args=[attachment.id])),
     }
 
 
@@ -833,148 +831,6 @@ def _escalation_meta(pending_query: Optional["PendingQuery"]) -> Dict[str, Any]:
         "query_id": pending_query.id,
         "university_id": pending_query.university_id,
     }
-
-
-@api_view(["POST"])
-@permission_classes(STUDENT_PERMISSIONS)
-def agent_chat(request):
-    from pure_multi_agent.runtime import run_turn
-
-    student_id = request.user.account.student_uuid
-    message = str(request.data.get("message") or "")
-    uploaded_files = request.FILES.getlist("attachments")
-
-    if not message.strip() and not uploaded_files:
-        return api_error("message or at least one attachment is required.")
-    if len(uploaded_files) > CHAT_ATTACHMENT_MAX_PER_MESSAGE:
-        return api_error(f"You can attach at most {CHAT_ATTACHMENT_MAX_PER_MESSAGE} files per message.")
-
-    user_msg = ChatMessage.objects.create(
-        channel=ChatMessage.Channel.AGENT,
-        student_id=student_id,
-        sender=ChatMessage.Sender.USER,
-        content=message,
-    )
-
-    attachments = []
-    try:
-        for uploaded_file in uploaded_files:
-            attachments.append(save_chat_attachment(student_id, user_msg, uploaded_file))
-    except ValueError as exc:
-        user_msg.delete()
-        return api_error(str(exc))
-
-    image_blocks = build_image_content_blocks(attachments)
-    # A message made up of only attachments still needs some text for the
-    # model turn -- describe what was shared instead of sending empty content.
-    effective_message = message.strip() or (
-        "(Shared file(s) with no additional message: "
-        + ", ".join(a.original_filename for a in attachments) + ")"
-    )
-
-    try:
-        _existing_pq_ids = _existing_pending_query_ids(student_id)
-        agent_name, reply = run_turn(student_id, effective_message, image_blocks=image_blocks or None)
-
-        _pq = _new_pending_query(student_id, _existing_pq_ids)
-        ChatMessage.objects.create(
-            channel=ChatMessage.Channel.AGENT,
-            student_id=student_id,
-            sender=ChatMessage.Sender.ASSISTANT,
-            content=reply or "",
-            meta=_escalation_meta(_pq),
-        )
-        _notify_agent_reply(student_id, agent_name, reply or "")
-
-        return Response({
-            "agent": agent_name,
-            "student_id": student_id,
-            "reply": reply,
-            "message_id": user_msg.id,
-            "pending": bool(_pq),
-            "query_id": _pq.id if _pq else None,
-            "attachments": [_serialize_attachment(request, a) for a in attachments],
-        })
-    except Exception as exc:
-        return api_error(f"Agent chat failed: {exc}", status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@api_view(["PATCH"])
-@permission_classes(STUDENT_PERMISSIONS)
-def agent_chat_edit(request, message_id):
-    """
-    PATCH /api/chat/agent/<message_id>/edit/
-    Edits a previously-sent user message and regenerates the AI reply from
-    that point: the old reply and everything sent after it are discarded --
-    they were responding to a question that no longer exists once the
-    message is changed -- and the in-process LangGraph conversation state is
-    rebuilt to match (see pure_multi_agent.runtime.seed_conversation) before
-    asking the model again. Attachments already on the message are left
-    alone and are still sent to the model along with the edited text.
-    """
-    from django.utils import timezone
-
-    from pure_multi_agent.runtime import run_turn, seed_conversation
-
-    student_id = request.user.account.student_uuid
-    new_message = str(request.data.get("message", "")).strip()
-
-    if not new_message:
-        return api_error("message is required.")
-
-    target = ChatMessage.objects.filter(
-        pk=message_id,
-        channel=ChatMessage.Channel.AGENT,
-        student_id=student_id,
-        sender=ChatMessage.Sender.USER,
-    ).first()
-    if target is None:
-        return api_error("Message not found.", status.HTTP_404_NOT_FOUND)
-
-    prior_turns = list(
-        ChatMessage.objects.filter(channel=ChatMessage.Channel.AGENT, student_id=student_id, pk__lt=target.pk)
-        .order_by("created_at")
-        .values_list("sender", "content")
-    )
-
-    # Everything after the edited message is now stale -- it was generated
-    # in response to a question that no longer exists.
-    ChatMessage.objects.filter(
-        channel=ChatMessage.Channel.AGENT, student_id=student_id, pk__gt=target.pk
-    ).delete()
-
-    image_blocks = build_image_content_blocks(target.attachments.all())
-
-    target.content = new_message
-    target.edited_at = timezone.now()
-    target.save(update_fields=["content", "edited_at"])
-
-    seed_conversation(student_id, prior_turns)
-
-    try:
-        _existing_pq_ids = _existing_pending_query_ids(student_id)
-        agent_name, reply = run_turn(student_id, new_message, image_blocks=image_blocks or None)
-        _pq = _new_pending_query(student_id, _existing_pq_ids)
-        ChatMessage.objects.create(
-            channel=ChatMessage.Channel.AGENT,
-            student_id=student_id,
-            sender=ChatMessage.Sender.ASSISTANT,
-            content=reply or "",
-            meta=_escalation_meta(_pq),
-        )
-        _notify_agent_reply(student_id, agent_name, reply or "")
-
-        return Response({
-            "agent": agent_name,
-            "student_id": student_id,
-            "reply": reply,
-            "message_id": target.id,
-            "edited_at": target.edited_at,
-            "pending": bool(_pq),
-            "query_id": _pq.id if _pq else None,
-        })
-    except Exception as exc:
-        return api_error(f"Agent chat failed: {exc}", status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class ChatAttachmentDetailAPIView(APIView):
@@ -1061,31 +917,6 @@ def agent_chat_history(request):
     })
 
 
-@api_view(["POST"])
-@permission_classes(STUDENT_PERMISSIONS)
-def agent_chat_new(request):
-    """
-    POST /api/chat/agent/new/
-    Starts a new conversation with the student's personal agent: deletes the
-    persisted transcript (what chat/agent/history/ returns) and resets the
-    in-process LangGraph conversation state (pure_multi_agent.runtime's
-    checkpointer), so the next chat/agent/ turn begins with no prior turns
-    in context. Deliberately does not touch AriaMemory or the student's
-    profile -- durable facts learned about the student (GPA, universities
-    discussed, etc.) survive a "new chat" the same way they'd survive the
-    student opening a new tab; only the turn-by-turn conversation resets.
-    """
-    from pure_multi_agent.runtime import reset_conversation
-
-    student_id = request.user.account.student_uuid
-    deleted_count, _ = ChatMessage.objects.filter(
-        channel=ChatMessage.Channel.AGENT, student_id=student_id
-    ).delete()
-    reset_conversation(student_id)
-
-    return Response({"status": "ok", "student_id": student_id, "messages_deleted": deleted_count})
-
-
 class AssessmentHistoryView(APIView):
     """
     GET /api/assessments/<student_id>/
@@ -1156,82 +987,6 @@ class AssessmentDetailView(APIView):
 # ---------------------------------------------------------------------
 # API 10: Roadmap
 # ---------------------------------------------------------------------
-
-class RoadmapView(APIView):
-    permission_classes = STUDENT_OWNER_PERMISSIONS
-
-    def get(self, request, student_id):
-        profile, error_response = load_profile_or_404(student_id)
-        if error_response:
-            return error_response
-
-        user_message = request.query_params.get("message", "").strip()
-        if not user_message:
-            user_message = "Generate a personalized roadmap for this student's application process or exam preparation based on the saved profile."
-
-        try:
-            try:
-                from roadmap.roadmap_planner import RoadmapPlanner
-            except ImportError:
-                from roadmap_planner import RoadmapPlanner
-
-            planner = RoadmapPlanner()
-            if hasattr(planner, "generate_application_roadmap"):
-                roadmap = planner.generate_application_roadmap(profile, user_message)
-            else:
-                roadmap = call_first_available_method(
-                    planner,
-                    ["generate", "generate_roadmap", "create_roadmap", "build_roadmap", "plan"],
-                    profile,
-                    user_message,
-                )
-
-            if isinstance(roadmap, dict):
-                profile["roadmap"] = roadmap
-                save_profile_data(student_id, profile)
-                # The profile JSON can exist before a StudentProfile row does
-                # -- don't 500 on the history write in that case.
-                student_row, _ = StudentProfile.objects.get_or_create(uuid=student_id)
-                RoadmapVersion.objects.create(
-                    student=student_row,
-                    request_message=user_message,
-                    roadmap=roadmap,
-                )
-
-            return Response({"status": "success", "student_id": student_id, "request": user_message, "roadmap": roadmap})
-        except ImportError as exc:
-            return Response(
-                {
-                    "status": "failed",
-                    "message": "Roadmap planner file not found.",
-                    "error": str(exc),
-                    "expected_file": "roadmap_planner.py or roadmap/roadmap_planner.py",
-                },
-                status=status.HTTP_501_NOT_IMPLEMENTED,
-            )
-        except Exception as exc:
-            return Response(
-                {"status": "failed", "message": "Roadmap generation failed.", "error": str(exc)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-
-class RoadmapHistoryView(APIView):
-    """GET /api/roadmap/<student_id>/history/ — every roadmap generated for this student."""
-
-    permission_classes = STUDENT_OWNER_PERMISSIONS
-
-    def get(self, request, student_id):
-        rows = RoadmapVersion.objects.filter(student__uuid=student_id)
-        return Response({
-            "student_id": student_id,
-            "count": rows.count(),
-            "versions": [
-                {"request_message": r.request_message, "roadmap": r.roadmap, "created_at": r.created_at}
-                for r in rows
-            ],
-        })
-
 
 # ---------------------------------------------------------------------
 # Persistent GET APIs for profile sub-resources (resume/GitHub/LinkedIn history)
@@ -1379,7 +1134,7 @@ class AnswerPendingQueryView(APIView):
     def post(self, request):
         query_id = request.data.get("query_id")
         answer = request.data.get("answer")
-        answered_by = request.data.get("answered_by", "Admin")
+        answered_by = (request.user.get_full_name() or request.user.email)
 
         if query_id is None:
             return Response({"status": "failed", "message": "query_id is required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -1860,6 +1615,9 @@ def university_agent_chat(request, university_id: str):
             assistant_message=reply,
             meta={
                 "confidence": result.get("confidence"),
+                "sources": result.get("sources", []),
+                "last_verified_at": result.get("last_verified_at"),
+                "human_verified": result.get("human_verified", False),
                 "trust": result.get("trust"),
                 "pending": result.get("pending", False),
                 "pending_query": result.get("pending_query"),
@@ -1870,12 +1628,16 @@ def university_agent_chat(request, university_id: str):
         return Response({
             "university_id": university_id,
             "agent_name": result.get("agent_name"),
+            "answer": reply,
             "reply": reply,
             "pending": result.get("pending", False),
             "pending_query": result.get("pending_query"),
             "knowledge_gap": result.get("knowledge_gap", False),
             "unsupported_topics": result.get("unsupported_topics"),
             "confidence": result.get("confidence"),
+                "sources": result.get("sources", []),
+                "last_verified_at": result.get("last_verified_at"),
+                "human_verified": result.get("human_verified", False),
             "trust": result.get("trust"),
         })
     except Exception as exc:
@@ -2004,7 +1766,7 @@ class EditPendingQueryView(APIView):
 
     def post(self, request, query_id: int):
         answer = request.data.get("answer")
-        answered_by = request.data.get("answered_by", "Admin")
+        answered_by = (request.user.get_full_name() or request.user.email)
 
         if not answer:
             return Response({"status": "failed", "message": "answer is required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -2051,7 +1813,7 @@ class IgnorePendingQueryView(APIView):
         from django.utils import timezone
 
         reason = request.data.get("reason", "")
-        ignored_by = request.data.get("ignored_by", "Admin")
+        ignored_by = (request.user.get_full_name() or request.user.email)
 
         selected_query, error = _get_scoped_pending_query(request, query_id)
         if error:
@@ -2096,3 +1858,4 @@ class DeletePendingQueryView(APIView):
         selected_query.delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
+

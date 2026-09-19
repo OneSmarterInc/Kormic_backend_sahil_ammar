@@ -17,7 +17,8 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from accounts.models import Account
+from accounts.models import Account, TOTPDevice
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django_api.models import StudentProfile
 from institutes.services import register_institute
 
@@ -72,11 +73,12 @@ class ClaimFlowTests(TestCase):
             username="officer@wsfi.edu", email="officer@wsfi.edu", password="x"
         )
         Account.objects.create(user=user, role=Account.Role.INSTITUTE, institute=self.institute)
+        TOTPDevice.objects.create(user=user, secret="JBSWY3DPEHPK3PXP", confirmed_at=timezone.now())
         self.client.force_authenticate(user=user)
         resp = self.client.post(
             "/api/institute-lists/upload/",
             {
-                "file": io.BytesIO(CSV.encode()),
+                "file": SimpleUploadedFile("roster.csv", CSV.encode(), content_type="text/csv"),
                 "institute_id": str(self.institute.uuid),
                 "contact_name": "Dr. John",
                 "contact_email": "john@wsfi.edu",
@@ -105,7 +107,7 @@ class ClaimFlowTests(TestCase):
         row = ListedStudent.objects.get(email="priya.sharma@gmail.com")
         resp = self.client.post("/api/claim/start/", {"token": row.claim_token}, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json(), {"masked_email": "p•••••@gmail.com"})
+        self.assertEqual(resp.json(), {"masked_email": "•••••@•••••", "message": "If an eligible invitation exists, a code will be sent. Check your email."})
 
         row.refresh_from_db()
         self.mock_claim_otp_delivery.assert_called_once_with(row.id, row.otp_hash)
@@ -113,7 +115,7 @@ class ClaimFlowTests(TestCase):
 
     def test_start_is_generic_for_unknown_email(self):
         resp = self.client.post("/api/claim/start/", {"email": "stranger@gmail.com"}, format="json")
-        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.status_code, 200)
         self.assertNotIn("stranger", str(resp.json()))
 
     # ------------------------------------------------------------ claim: verify
@@ -130,7 +132,7 @@ class ClaimFlowTests(TestCase):
         resp = self.client.post(
             "/api/claim/verify/", {"email": "priya.sharma@gmail.com", "code": "000000"}, format="json"
         )
-        self.assertEqual(resp.status_code, 429)
+        self.assertEqual(resp.status_code, 400)
 
     def test_correct_code_returns_prefill(self):
         self.client.post("/api/claim/start/", {"email": "priya.sharma@gmail.com"}, format="json")
@@ -185,7 +187,7 @@ class ClaimFlowTests(TestCase):
         # token now dead for start...
         row = ListedStudent.objects.get(email="priya.sharma@gmail.com")
         resp = self.client.post("/api/claim/start/", {"token": row.claim_token}, format="json")
-        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.status_code, 200)
         # ...and the session cannot confirm twice
         resp = self.client.post("/api/claim/confirm/", {"claim_session": session, "fields": {}}, format="json")
         self.assertEqual(resp.status_code, 400)
@@ -202,7 +204,7 @@ class ClaimFlowTests(TestCase):
         resp = self.client.post(
             "/api/institute-lists/upload/",
             {
-                "file": io.BytesIO(changed.encode()),
+                "file": SimpleUploadedFile("roster.csv", changed.encode(), content_type="text/csv"),
                 "institute_id": str(self.institute.uuid),
                 "contact_name": "Dr. John",
                 "contact_email": "john@wsfi.edu",
@@ -223,7 +225,7 @@ class ClaimFlowTests(TestCase):
         resp = self.client.post(
             "/api/institute-lists/upload/",
             {
-                "file": io.BytesIO(CSV.encode()),
+                "file": SimpleUploadedFile("roster.csv", CSV.encode(), content_type="text/csv"),
                 "institute_id": str(other.uuid),
                 "contact_name": "Dr. John",
                 "contact_email": "john@wsfi.edu",
@@ -248,6 +250,7 @@ class ClaimFlowTests(TestCase):
             username="officer@other.edu", email="officer@other.edu", password="x"
         )
         Account.objects.create(user=other_user, role=Account.Role.INSTITUTE, institute=other)
+        TOTPDevice.objects.create(user=other_user, secret="JBSWY3DPEHPK3PXP", confirmed_at=timezone.now())
         self.client.force_authenticate(user=other_user)
         resp = self.client.get(f"/api/institute-lists/lists/{self.upload['list_id']}/students/")
         self.assertEqual(resp.status_code, 403)
@@ -376,6 +379,7 @@ class ClaimFlowTests(TestCase):
             username="officer2@other.edu", email="officer2@other.edu", password="x"
         )
         Account.objects.create(user=other_user, role=Account.Role.INSTITUTE, institute=other)
+        TOTPDevice.objects.create(user=other_user, secret="JBSWY3DPEHPK3PXP", confirmed_at=timezone.now())
         self.client.force_authenticate(user=other_user)
         row = ListedStudent.objects.filter(source_list_id=self.upload["list_id"]).first()
 
@@ -426,11 +430,12 @@ class ClaimRateLimitTests(TestCase):
             username="officer@rli.edu", email="officer@rli.edu", password="x"
         )
         Account.objects.create(user=user, role=Account.Role.INSTITUTE, institute=self.institute)
+        TOTPDevice.objects.create(user=user, secret="JBSWY3DPEHPK3PXP", confirmed_at=timezone.now())
         self.client.force_authenticate(user=user)
         self.client.post(
             "/api/institute-lists/upload/",
             {
-                "file": io.BytesIO(CSV.encode()),
+                "file": SimpleUploadedFile("roster.csv", CSV.encode(), content_type="text/csv"),
                 "institute_id": str(self.institute.uuid),
                 "contact_name": "Dr. John",
                 "contact_email": "john@rli.edu",
@@ -473,3 +478,4 @@ class ClaimRateLimitTests(TestCase):
             "/api/claim/verify/", {"email": "priya.sharma@gmail.com", "code": "000000"}, format="json"
         )
         self.assertEqual(resp.status_code, 429)
+

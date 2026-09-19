@@ -50,3 +50,8 @@ def cleanup_old_audit_logs_task():
         logger.info(f"Cleaned up {deleted_count} old agent audit logs.")
     except Exception as e:
         logger.error(f"Failed to clean up old audit logs: {e}")
+
+
+
+# Register the dedicated generation task with Celery autodiscovery.
+from django_api.chat_tasks import generate_chat  # noqa: F401,E402

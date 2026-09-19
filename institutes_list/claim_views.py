@@ -17,7 +17,6 @@ import secrets
 
 from django.db import transaction
 from django.utils import timezone
-from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -29,9 +28,16 @@ from .tasks import (
     send_claim_otp_email_task,
 )
 from .throttling import ClaimStartEmailThrottle, ClaimStartIPThrottle
-from .views import OTP_TTL_SECONDS, _find_claimable, _hash_otp, _mask_email
+from .views import OTP_TTL_SECONDS, _find_claimable, _hash_otp
 
 logger = logging.getLogger(__name__)
+
+
+def _accepted():
+    # Identical for known, unknown, consumed and delivery-failure cases.
+    # Never derive this placeholder from the stored address or invitation.
+    return Response({"masked_email": "•••••@•••••", "message":
+        "If an eligible invitation exists, a code will be sent. Check your email."})
 
 
 class ClaimInvitationUnavailable(Exception):
@@ -57,18 +63,15 @@ def _clear_failed_otp_state(listed_student_id: int, expected_otp_hash: str) -> N
 def start_claim(request):
     """Queue a one-time verification code for a claimable invitation.
 
-    The response intentionally reveals only a masked email. Unknown or
-    already-consumed invitations use the same generic error as before.
+    Status and body never confirm roster membership. Delivery failures are
+    recorded internally, without creating an availability-dependent oracle.
     """
     row = _find_claimable(
         email=str(request.data.get("email") or ""),
         token=str(request.data.get("token") or ""),
     )
     if not row:
-        return Response(
-            {"error": "No claimable invitation found for that information."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return _accepted()
 
     code = f"{secrets.randbelow(10**6):06d}"
     otp_hash = _hash_otp(code)
@@ -78,6 +81,8 @@ def start_claim(request):
     # plaintext OTP is stored in the database or serialized into task args.
     try:
         with transaction.atomic():
+            locked = ListedStudent.objects.select_for_update().get(pk=row.pk)
+            previous_hash = locked.otp_hash
             updated = ListedStudent.objects.filter(
                 id=row.id,
                 status=ListedStudent.Status.UNCLAIMED,
@@ -97,33 +102,21 @@ def start_claim(request):
                 timeout=OTP_TTL_SECONDS,
             ):
                 raise RuntimeError("The OTP delivery cache did not accept the verification code.")
+            if previous_hash:
+                discard_claim_otp_code(row.id, previous_hash)
     except ClaimInvitationUnavailable:
         discard_claim_otp_code(row.id, otp_hash)
-        return Response(
-            {"error": "No claimable invitation found for that information."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return _accepted()
     except Exception:
         logger.exception("Unable to prepare claim OTP delivery for ListedStudent %s.", row.id)
         _clear_failed_otp_state(row.id, otp_hash)
-        return Response(
-            {"error": "Verification code could not be prepared. Please try again."},
-            status=status.HTTP_503_SERVICE_UNAVAILABLE,
-        )
+        return _accepted()
 
     try:
         send_claim_otp_email_task.delay(row.id, otp_hash)
     except Exception:
         logger.exception("Unable to queue claim OTP delivery for ListedStudent %s.", row.id)
         _clear_failed_otp_state(row.id, otp_hash)
-        return Response(
-            {"error": "Verification code could not be sent. Please try again."},
-            status=status.HTTP_503_SERVICE_UNAVAILABLE,
-        )
+        return _accepted()
 
-    # Preserve the established public response contract used by released
-    # student clients; delivery is an implementation detail.
-    return Response(
-        {"masked_email": _mask_email(row.email)},
-        status=status.HTTP_200_OK,
-    )
+    return _accepted()

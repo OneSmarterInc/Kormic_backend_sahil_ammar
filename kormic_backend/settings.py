@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Load ANTHROPIC_API_KEY / GITHUB_TOKEN / etc. from .env before any agent code runs.
+load_dotenv(BASE_DIR / ".env.urls")
 load_dotenv(BASE_DIR / ".env")
 
 # First key encrypts new TOTP seeds; all configured keys can decrypt. Supply
@@ -34,17 +35,15 @@ TOTP_SECRET_KEYS = tuple(
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-# Falls back to the original dev-only value so local setups are unaffected;
-# set DJANGO_SECRET_KEY in .env for any server that's reachable off localhost.
-SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY") or \
-    'django-insecure-0zav109$orgckjm3w+%%8v!lxt&4)qv68d^w*f%@fid@_y!c83'
-
-# SECURITY WARNING: don't run with debug turned on in production!
-# Defaults to False (fail closed): an unset/misconfigured DJANGO_DEBUG in a
-# deploy environment must never silently open a debug server to the
-# internet. Local dev sets DJANGO_DEBUG=true explicitly in .env.
+# Missing production signing keys must prevent startup, not select a public key.
 DEBUG = os.environ.get("DJANGO_DEBUG", "false").lower() == "true"
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "").strip()
+if not SECRET_KEY:
+    if not DEBUG:
+        raise ImproperlyConfigured("DJANGO_SECRET_KEY must be set when DJANGO_DEBUG is false.")
+    # Local debug sessions may use an ephemeral key; restart invalidates their tokens.
+    from django.core.management.utils import get_random_secret_key
+    SECRET_KEY = get_random_secret_key()
 
 # Defaults to localhost only (fail closed) so a missing env var on a real
 # server rejects Host headers instead of accepting anything ("*"). Any
@@ -56,7 +55,16 @@ ALLOWED_HOSTS = [
     if h.strip()
 ]
 
-SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+# Trust forwarding headers only from explicitly configured reverse proxies.
+TRUSTED_PROXY_CIDRS = tuple(x.strip() for x in os.getenv("DJANGO_TRUSTED_PROXY_CIDRS", "").split(",") if x.strip())
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https") if TRUSTED_PROXY_CIDRS else None
+SECURE_SSL_REDIRECT = os.getenv("DJANGO_SECURE_SSL_REDIRECT", str(not DEBUG)).lower() == "true"
+SECURE_REDIRECT_EXEMPT = [r"^api/(v1/)?health/$"]  # no credentials or application data
+SECURE_HSTS_SECONDS = int(os.getenv("DJANGO_SECURE_HSTS_SECONDS", "0" if DEBUG else "3600"))
+# Subdomains/preload need a separate DNS/TLS readiness decision.
+SECURE_HSTS_INCLUDE_SUBDOMAINS = os.getenv("DJANGO_HSTS_INCLUDE_SUBDOMAINS", "false").lower() == "true"
+SECURE_HSTS_PRELOAD = os.getenv("DJANGO_HSTS_PRELOAD", "false").lower() == "true"
+SESSION_COOKIE_SECURE = not DEBUG
 
 
 # Application definition
@@ -71,6 +79,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
 
     'rest_framework',
+    'drf_spectacular',
     'rest_framework_simplejwt',
     'rest_framework_simplejwt.token_blacklist',
     'accounts',
@@ -85,7 +94,9 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'accounts.api_errors.APIRequestIdMiddleware',
     "corsheaders.middleware.CorsMiddleware",
+    'accounts.proxy.TrustedProxyMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -124,7 +135,7 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': os.environ.get('POSTGRES_DB', 'kormic'),
         'USER': os.environ.get('POSTGRES_USER', 'kormic'),
-        'PASSWORD': os.environ.get('POSTGRES_PASSWORD', 'kormic'),
+        'PASSWORD': os.environ.get('POSTGRES_PASSWORD', ''),
         'HOST': os.environ.get('POSTGRES_HOST', 'localhost'),
         'PORT': os.environ.get('POSTGRES_PORT', '5432'),
       
@@ -219,8 +230,7 @@ CSRF_COOKIE_SAMESITE = 'Lax'
 REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "accounts.exceptions.auth_exception_handler",
     "DEFAULT_RENDERER_CLASSES": [
-        "rest_framework.renderers.JSONRenderer",
-        "rest_framework.renderers.BrowsableAPIRenderer",
+        "accounts.api_errors.APIJSONRenderer",
     ],
     "DEFAULT_PARSER_CLASSES": [
         "rest_framework.parsers.JSONParser",
@@ -247,6 +257,8 @@ REST_FRAMEWORK = {
         "claim_start_email": "3/min",
         "claim_verify_ip": "20/min",
         "claim_verify_email": "10/min",
+        "claim_confirm_ip": "20/min",
+        "claim_confirm_session": "5/min",
     },
 }
 
@@ -280,18 +292,7 @@ CACHES = {
 }
 
 
-# Celery -- background delivery for push notifications (see notifications/).
-# Chat/agent processing itself stays synchronous: a student's app is waiting
-# on the HTTP response for their reply, so there's no natural place to hand
-# the turn off to a background worker without also building a poll/push
-# mechanism on the client. pure_multi_agent.runtime's LangGraph checkpointer
-# is durable and shared (Postgres-backed, not in-process) precisely so this
-# synchronous-per-request model is safe to run behind more than one gunicorn
-# worker -- see pure_multi_agent/runtime.py's _build_checkpointer(). Celery
-# is used for the "send this push" side-effect, which is safely
-# fire-and-forget, plus other genuinely background jobs (see
-# institutes_list/tasks.py, universities/tasks.py).
-
+# Celery: chat generation runs on an isolated prefork queue with per-task limits.
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://localhost:6379/1")
 CELERY_ACCEPT_CONTENT = ["json"]
@@ -484,4 +485,29 @@ LOGGING = {
             "propagate": False,
         },
     },
+}
+
+
+CELERY_TASK_ROUTES = {"django_api.chat_tasks.generate_chat": {"queue": "chat"}}
+CELERY_BROKER_CONNECTION_TIMEOUT = 3
+CELERY_BROKER_TRANSPORT_OPTIONS = {"socket_connect_timeout": 3, "socket_timeout": 3}
+
+# Registered explicitly because knowledge/privacy are service modules, not Django apps.
+CELERY_IMPORTS = ("knowledge.tasks", "accounts.privacy_tasks")
+CELERY_BEAT_SCHEDULE.update({
+    "knowledge-recrawl": {"task": "knowledge.tasks.refresh_knowledge", "schedule": 300.0},
+    "knowledge-embeddings": {"task": "knowledge.tasks.embed_knowledge", "schedule": 60.0},
+    "student-deletion": {"task": "accounts.privacy_tasks.process_deletions", "schedule": 60.0},
+    "data-retention": {"task": "accounts.privacy_tasks.apply_retention", "schedule": 86400.0},
+})
+
+# Bounded institute intake; raw source files have a shorter life than roster rows.
+INSTITUTE_ROSTER_MAX_BYTES = int(os.getenv("INSTITUTE_ROSTER_MAX_BYTES", "5242880"))
+INSTITUTE_ROSTER_MAX_ROWS = int(os.getenv("INSTITUTE_ROSTER_MAX_ROWS", "5000"))
+INSTITUTE_SOURCE_FILE_RETENTION_DAYS = int(os.getenv("INSTITUTE_SOURCE_FILE_RETENTION_DAYS", "30"))
+
+# This service publishes explicit client contracts, not an inferred schema of
+# undocumented legacy endpoints. Deployment checks use that same URLconf.
+SPECTACULAR_SETTINGS = {
+    "DEFAULT_GENERATOR_CLASS": "django_api.schema_generator.ClientContractSchemaGenerator",
 }

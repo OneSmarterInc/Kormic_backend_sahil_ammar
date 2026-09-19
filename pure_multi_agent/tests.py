@@ -99,6 +99,8 @@ class AskUniversityToolConversationLoggingTests(TestCase):
         _reset_inprocess_agent_caches()
         u = University.objects.create(name="Tool Log University", agent_name="Nova5")
         self.university_id = str(u.uuid)
+        from django_api.models import UniversityKnowledgeEntry
+        UniversityKnowledgeEntry.objects.create(university_id=self.university_id, topic="Application deadline", content="The deadline is March 1.", source_type="seed")
         self.ctx = {
             "canonical_student_id": "student_tool_log",
             "student_profile": {"student_id": "student_tool_log", "name": "Tester"},
@@ -135,3 +137,4 @@ class AskUniversityToolConversationLoggingTests(TestCase):
 
         self.assertIn("Unknown university_id", result)
         self.assertEqual(AgentConversationLog.objects.count(), 0)
+

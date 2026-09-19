@@ -1,6 +1,6 @@
 from django.urls import path
 
-from django_api import schema_views, views
+from django_api import schema_views, views, chat_jobs
 
 urlpatterns = [
     path("", views.api_home, name="api-home"),
@@ -30,14 +30,15 @@ urlpatterns = [
     # chat endpoint. Verification/university-fit/university-chat happen only
     # as background orchestrator calls from inside agent_chat (see agents/commons.py).
     path("chat/intake/", views.profile_intake_chat, name="profile-intake-chat"),
-    path("chat/agent/", views.agent_chat, name="agent-chat"),
+    path("chat/agent/", chat_jobs.chat_submit, name="agent-chat"),
+    path("chat/agent/jobs/<uuid:job_id>/", chat_jobs.chat_status, name="chat-job-status"),
     path("chat/agent/history/", views.agent_chat_history, name="agent-chat-history"),
     # "New chat" and "clear chat" are the same action here -- there's no
     # multi-thread concept per student, so starting fresh always means
     # wiping the one conversation there is. Kept as a single canonical
     # endpoint rather than two aliases that could quietly drift apart.
-    path("chat/agent/new/", views.agent_chat_new, name="agent-chat-new"),
-    path("chat/agent/<int:message_id>/edit/", views.agent_chat_edit, name="agent-chat-edit"),
+    path("chat/agent/new/", chat_jobs.chat_new, name="agent-chat-new"),
+    path("chat/agent/<int:message_id>/edit/", chat_jobs.chat_edit, name="agent-chat-edit"),
     path(
         "chat/agent/attachments/<int:attachment_id>/",
         views.ChatAttachmentDetailAPIView.as_view(),
@@ -53,9 +54,7 @@ urlpatterns = [
         name="assessment-detail",
     ),
 
-    # APIs 10-13: Roadmap, Queries, Export
-    path("roadmap/<str:student_id>/", views.RoadmapView.as_view(), name="roadmap"),
-    path("roadmap/<str:student_id>/history/", views.RoadmapHistoryView.as_view(), name="roadmap-history"),
+    # Queries and export (roadmap is unavailable until a planner is implemented)
     path("queries/pending/", views.PendingQueriesView.as_view(), name="pending-queries"),
     path("queries/answer/", views.AnswerPendingQueryView.as_view(), name="answer-pending-query"),
     path("queries/<int:query_id>/edit/", views.EditPendingQueryView.as_view(), name="edit-pending-query"),
@@ -104,3 +103,4 @@ urlpatterns = [
         name="university-verified-knowledge",
     ),
 ]
+

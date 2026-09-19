@@ -1,0 +1,123 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Kormic client contract",
+    "version": "1.0.0"
+  },
+  "components": {
+    "schemas": {
+      "ProfileCreateUpdate": {
+        "type": "object",
+        "properties": {
+          "student_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "country": {
+            "type": "string"
+          },
+          "institution": {
+            "type": "string"
+          },
+          "major": {
+            "type": "string"
+          },
+          "program": {
+            "type": "string"
+          },
+          "graduation_year": {
+            "type": "integer",
+            "nullable": true
+          },
+          "phone": {
+            "type": "string"
+          },
+          "date_of_birth": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "region": {
+            "type": "string"
+          },
+          "year_in_college": {
+            "type": "string"
+          },
+          "interests": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "target_degree_or_field": {
+            "type": "string"
+          },
+          "gpa": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "gpa_scale": {
+            "type": "string"
+          },
+          "gre_quant": {
+            "type": "integer",
+            "nullable": true
+          },
+          "gre_verbal": {
+            "type": "integer",
+            "nullable": true
+          },
+          "toefl": {
+            "type": "integer",
+            "nullable": true
+          },
+          "ielts": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "english_score_text": {
+            "type": "string"
+          },
+          "budget": {
+            "type": "integer",
+            "nullable": true
+          },
+          "work_months": {
+            "type": "integer",
+            "nullable": true
+          },
+          "work_experience_summary": {
+            "type": "string"
+          },
+          "target_country": {
+            "type": "string"
+          },
+          "target_degree": {
+            "type": "string"
+          },
+          "preferred_specialization": {
+            "type": "string"
+          },
+          "github": {
+            "type": "string"
+          },
+          "linkedin_url": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

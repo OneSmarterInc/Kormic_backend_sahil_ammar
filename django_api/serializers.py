@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from .phone import normalize_phone
 
 # Numeric fields left blank by a form submit as "" rather than omitted/null.
 # IntegerField/FloatField's allow_null only tolerates JSON null, not "", so
@@ -54,6 +55,14 @@ class ProfileCreateUpdateSerializer(serializers.Serializer):
     linkedin_url = serializers.CharField(required=False, allow_blank=True)
     notes = serializers.CharField(required=False, allow_blank=True)
 
+    def validate(self, attrs):
+        if "phone" in attrs:
+            try:
+                attrs["phone"] = normalize_phone(attrs["phone"], attrs.get("country", ""))
+            except serializers.ValidationError as exc:
+                raise serializers.ValidationError({"phone": exc.detail})
+        return attrs
+
     def to_internal_value(self, data):
         data = data.copy() if hasattr(data, "copy") else dict(data)
         for field in NULLABLE_NUMERIC_FIELDS:
@@ -74,3 +83,4 @@ class ProfileCreateUpdateSerializer(serializers.Serializer):
 class ResumeUploadSerializer(serializers.Serializer):
     student_id = serializers.CharField(required=True)
     file = serializers.FileField(required=True)
+

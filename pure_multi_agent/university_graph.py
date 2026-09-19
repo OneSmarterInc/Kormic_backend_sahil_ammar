@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional, TypedDict
 from langgraph.graph import END, StateGraph
 
 from agents import commons
+from django_api.chat_policy import university_slot, current_budget
 
 
 class UniversityState(TypedDict, total=False):
@@ -39,7 +40,8 @@ def _answer_node(state: UniversityState) -> Dict[str, Any]:
         }
 
     try:
-        result = agent.answer(state["question"], state.get("student_context"))
+        with university_slot(university_id):
+            result = agent.answer(state["question"], state.get("student_context"))
     except Exception as exc:
         result = {
             "university": getattr(agent, "persona", {}).get("university", university_id),
@@ -72,6 +74,9 @@ def get_university_graph():
 
 
 def ask_one(university_id: str, question: str, student_context: Optional[dict] = None) -> Dict[str, Any]:
+    budget = current_budget.get()
+    if budget:
+        budget.universities([university_id])
     result = get_university_graph().invoke(
         {"university_id": university_id, "question": question, "student_context": student_context}
     )
@@ -89,6 +94,11 @@ def ask_all(
     (agents.commons.query_all) has since been deleted as dead code."""
     target_ids = university_ids if university_ids is not None else commons.list_university_ids()
 
+    budget = current_budget.get()
+    if budget:
+        target_ids = budget.universities(target_ids)
+    max_concurrency = min(max(1, max_concurrency), 2)
+
     inputs = [
         {"university_id": university_id, "question": question, "student_context": student_context}
         for university_id in target_ids
@@ -99,3 +109,4 @@ def ask_all(
 
     outputs = get_university_graph().batch(inputs, config={"max_concurrency": max_concurrency})
     return [output["result"] for output in outputs]
+

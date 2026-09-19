@@ -1,6 +1,8 @@
 import uuid
 
 from django.db import models
+from pgvector.django import VectorField, HnswIndex
+from django.utils import timezone
 
 
 class StudentProfile(models.Model):
@@ -105,6 +107,7 @@ class StudentProfile(models.Model):
 
     extra_data = models.JSONField(default=dict, blank=True)
 
+    memory_reset_at = models.DateTimeField(default=timezone.now)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -334,6 +337,9 @@ class UniversityKnowledgeEntry(models.Model):
     times_used = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    active = models.BooleanField(default=True, db_index=True)
+    last_verified_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ["-confidence", "-times_used"]
 
@@ -551,3 +557,113 @@ class AgentAuditLog(models.Model):
 
     def __str__(self) -> str:
         return f"AgentAuditLog({self.actor_agent}, {self.action_type}, {self.timestamp})"
+
+
+
+class ChatGeneration(models.Model):
+    """Durable job; no prompt/credential copies in Celery messages."""
+    import uuid as _uuid
+    id = models.UUIDField(primary_key=True, default=_uuid.uuid4, editable=False)
+    request_id = models.CharField(max_length=64, blank=True)
+    account_id = models.PositiveBigIntegerField(null=True)
+    tool_calls = models.PositiveIntegerField(default=0)
+    university_fanout = models.PositiveIntegerField(default=0)
+
+    student_id = models.CharField(max_length=100, db_index=True)
+    message_id = models.BigIntegerField(null=True)
+    edit = models.BooleanField(default=False)
+    status = models.CharField(max_length=20, default="queued", db_index=True)
+    result = models.JSONField(default=dict)
+    error_code = models.CharField(max_length=50, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    started_at = models.DateTimeField(null=True)
+    finished_at = models.DateTimeField(null=True)
+    expires_at = models.DateTimeField()
+    latency_ms = models.PositiveIntegerField(null=True)
+
+
+class ChatGate(models.Model):
+    """Database mutex shared by all web/worker processes."""
+    key = models.CharField(max_length=200, primary_key=True)
+
+
+class ChatLease(models.Model):
+    gate = models.ForeignKey(ChatGate, on_delete=models.CASCADE)
+    generation = models.ForeignKey(ChatGeneration, on_delete=models.CASCADE)
+    expires_at = models.DateTimeField(db_index=True)
+
+
+class ChatModelCall(models.Model):
+    generation = models.ForeignKey(ChatGeneration, on_delete=models.CASCADE, related_name="model_calls", null=True)
+    request_id = models.CharField(max_length=64, blank=True)
+    account_id = models.PositiveBigIntegerField(null=True)
+    error_category = models.CharField(max_length=40, blank=True)
+    actual_cost_usd = models.DecimalField(max_digits=12, decimal_places=6, null=True)
+    model = models.CharField(max_length=100)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    input_tokens = models.PositiveIntegerField(null=True)
+    output_tokens = models.PositiveIntegerField(null=True)
+    charged_tokens = models.PositiveIntegerField()
+    estimated_cost_usd = models.DecimalField(max_digits=12, decimal_places=6)
+    status = models.CharField(max_length=20, default="reserved")
+    latency_ms = models.PositiveIntegerField(null=True)
+
+
+class KnowledgeSource(models.Model):
+    group = models.ForeignKey("universities.KnowledgeGroup", null=True, blank=True, on_delete=models.SET_NULL)
+    university = models.ForeignKey("universities.University", on_delete=models.CASCADE, related_name="knowledge_sources")
+    url = models.URLField(max_length=1000)
+    content_hash = models.CharField(max_length=64, blank=True)
+    health = models.CharField(max_length=30, default="pending", db_index=True)
+    last_fetched_at = models.DateTimeField(null=True)
+    last_success_at = models.DateTimeField(null=True)
+    changed_at = models.DateTimeField(null=True)
+    next_fetch_at = models.DateTimeField(default=timezone.now, db_index=True)
+    lease_until = models.DateTimeField(null=True)
+    stale_days = models.PositiveIntegerField(default=30)
+    recrawl_hours = models.PositiveIntegerField(default=24)
+    http_status = models.PositiveIntegerField(null=True)
+    failures = models.PositiveIntegerField(default=0)
+    enabled = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["university", "url"], name="unique_university_source")]
+
+
+class KnowledgeChunk(models.Model):
+    entry = models.ForeignKey(UniversityKnowledgeEntry, on_delete=models.CASCADE, related_name="chunks")
+    ordinal = models.PositiveIntegerField()
+    text = models.TextField()
+    content_hash = models.CharField(max_length=64)
+    embedding = VectorField(dimensions=1024, null=True)
+    embedding_model = models.CharField(max_length=100, blank=True)
+    embedded_at = models.DateTimeField(null=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["entry", "ordinal"], name="unique_entry_chunk")]
+        indexes = [HnswIndex(name="knowledge_embedding_hnsw", fields=["embedding"], opclasses=["vector_cosine_ops"], m=16, ef_construction=64)]
+
+
+class StudentDeletion(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.OneToOneField("auth.User", on_delete=models.SET_NULL, null=True)
+    student_id = models.CharField(max_length=100, blank=True)
+    status = models.CharField(max_length=20, default="pending", db_index=True)
+    requested_at = models.DateTimeField(auto_now_add=True)
+    not_before = models.DateTimeField()
+    completed_at = models.DateTimeField(null=True)
+    error_code = models.CharField(max_length=50, blank=True)
+
+
+class RetentionPolicy(models.Model):
+    # Exactly one scope. Global policy supplies defaults; institutions may shorten.
+    scope = models.CharField(max_length=120, unique=True, default="global")
+    upload_days = models.PositiveIntegerField(default=365)
+    transcript_days = models.PositiveIntegerField(default=180)
+    memory_days = models.PositiveIntegerField(default=180)
+    verification_days = models.PositiveIntegerField(default=365)
+    notification_days = models.PositiveIntegerField(default=90)
+    roster_days = models.PositiveIntegerField(default=365)
+    telemetry_days = models.PositiveIntegerField(default=90)
+    inactive_account_days = models.PositiveIntegerField(default=730)
+    updated_at = models.DateTimeField(auto_now=True)

@@ -21,6 +21,7 @@ from accounts.web_auth import cookie_name
     CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}},
 )
 class WebAuthTests(TestCase):
+    api_prefix = "/api"
     def setUp(self):
         cache.clear()
         self.client = APIClient(enforce_csrf_checks=True)
@@ -28,11 +29,11 @@ class WebAuthTests(TestCase):
         Account.objects.create(user=self.user, role=Account.Role.UNIVERSITY)
         self.seed = pyotp.random_base32()
         TOTPDevice.objects.create(user=self.user, secret=self.seed, confirmed_at=timezone.now())
-        response = self.client.get('/api/auth/web/csrf/', secure=True)
+        response = self.client.get(self.api_prefix + '/auth/web/csrf/', secure=True)
         self.csrf = response.data['csrfToken']
 
     def post(self, path, data=None, **headers):
-        return self.client.post('/api/auth/web/' + path + '/',
+        return self.client.post(self.api_prefix + '/auth/web/' + path + '/',
                                 {'portal': 'university', **(data or {})}, format='json', secure=True,
                                 HTTP_X_CSRFTOKEN=self.csrf,
                                 HTTP_ORIGIN=headers.pop('HTTP_ORIGIN', 'https://university.kormic.ai'), **headers)
@@ -72,7 +73,7 @@ class WebAuthTests(TestCase):
 
     def test_missing_csrf_and_untrusted_origin_cannot_login_refresh_or_logout(self):
         for path in ['login', 'verify-totp', 'register', 'refresh', 'logout']:
-            response = self.client.post(f'/api/auth/web/{path}/', {'portal': 'university'}, format='json', secure=True)
+            response = self.client.post(f'{self.api_prefix}/auth/web/{path}/', {'portal': 'university'}, format='json', secure=True)
             self.assertEqual(response.status_code, 403)
             self.assertEqual(self.post(path, HTTP_ORIGIN='https://evil.example').status_code, 403)
 
@@ -90,12 +91,12 @@ class WebAuthTests(TestCase):
         raw = self.client.cookies[cookie_name('university')].value
         del self.client.cookies[cookie_name('university')]
         self.assertEqual(self.post('refresh', {'refresh': raw}).status_code, 401)
-        response = self.client.post('/api/auth/refresh/', {'refresh': raw}, format='json')
+        response = self.client.post(self.api_prefix + '/auth/refresh/', {'refresh': raw}, format='json')
         self.assertEqual(response.status_code, 401)
 
     def test_native_refresh_remains_supported_without_csrf_or_cookies(self):
         raw = str(RefreshToken.for_user(self.user))
-        response = self.client.post('/api/auth/refresh/', {'refresh': raw}, format='json')
+        response = self.client.post(self.api_prefix + '/auth/refresh/', {'refresh': raw}, format='json')
         self.assertEqual(response.status_code, 200)
         self.assertIn('access', response.data)
         self.assertFalse(response.cookies)
@@ -115,8 +116,52 @@ class WebAuthTests(TestCase):
             self.assertEqual(self.post('refresh').status_code, 401)
 
     def test_cors_only_trusted_origins_get_credentials(self):
-        allowed = self.client.get('/api/auth/web/csrf/', HTTP_ORIGIN='https://university.kormic.ai', secure=True)
+        allowed = self.client.get(self.api_prefix + '/auth/web/csrf/', HTTP_ORIGIN='https://university.kormic.ai', secure=True)
         self.assertEqual(allowed['Access-Control-Allow-Origin'], 'https://university.kormic.ai')
         self.assertEqual(allowed['Access-Control-Allow-Credentials'], 'true')
-        denied = self.client.get('/api/auth/web/csrf/', HTTP_ORIGIN='https://evil.example', secure=True)
+        denied = self.client.get(self.api_prefix + '/auth/web/csrf/', HTTP_ORIGIN='https://evil.example', secure=True)
         self.assertNotIn('Access-Control-Allow-Origin', denied)
+
+
+
+@override_settings(
+    DEBUG=True, CSRF_COOKIE_SECURE=False,
+    CSRF_TRUSTED_ORIGINS=['http://localhost:8081'],
+    CORS_ALLOWED_ORIGINS=['http://localhost:8081'],
+    PASSWORD_HASHERS=['django.contrib.auth.hashers.MD5PasswordHasher'],
+    CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}},
+)
+class StudentLocalCSRFTests(TestCase):
+    api_prefix = "/api"
+    def test_cookie_and_header_are_both_required_on_local_student_login(self):
+        client = APIClient(enforce_csrf_checks=True)
+        response = client.get(self.api_prefix + '/auth/web/csrf/', HTTP_HOST='localhost:8000', HTTP_ORIGIN='http://localhost:8081')
+        token = response.data['csrfToken']
+        self.assertEqual(response.cookies['csrftoken']['samesite'], 'Lax')
+        self.assertTrue(response.cookies['csrftoken']['httponly'])
+        headers = {'HTTP_HOST': 'localhost:8000', 'HTTP_ORIGIN': 'http://localhost:8081', 'HTTP_X_CSRFTOKEN': token}
+        # Empty credentials reach validation, proving CSRF passed without weakening it.
+        response = client.post(self.api_prefix + '/auth/web/login/', {'portal': 'student'}, format='json', **headers)
+        self.assertEqual(response.status_code, 400)
+        client.cookies.clear()
+        denied = client.post(self.api_prefix + '/auth/web/login/', {'portal': 'student'}, format='json', **headers)
+        self.assertEqual(denied.status_code, 403)
+        self.assertIn('CSRF cookie not set', str(denied.data))
+
+
+class VersionedWebAuthTests(WebAuthTests):
+    api_prefix = "/api/v1"
+
+    def test_legacy_cookie_refreshes_on_v1_and_version_headers(self):
+        self.api_prefix = "/api"
+        self.login()
+        self.api_prefix = "/api/v1"
+        response = self.post("refresh")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["X-API-Version"], "v1")
+        legacy = self.client.get("/api/health/")
+        self.assertEqual(legacy["X-API-Version"], "legacy")
+        self.assertEqual(legacy["Link"], '</api/v1/health/>; rel="successor-version"')
+
+class VersionedStudentLocalCSRFTests(StudentLocalCSRFTests):
+    api_prefix = "/api/v1"

@@ -263,13 +263,19 @@ def student_onboarding_status(student_id: str) -> dict:
         student__uuid=student_id
     ).exists()
 
+    account = Account.objects.filter(student_profile=profile).first() if profile else None
+    preferences = (account.onboarding_preferences or {}) if account else {}
+    github_state = "connected" if github_connected else preferences.get("github_onboarding_state", "required")
+    linkedin_state = "uploaded" if linkedin_connected else preferences.get("linkedin_onboarding_state", "required")
     return {
+        "github_onboarding_state": github_state,
+        "linkedin_onboarding_state": linkedin_state,
         "profile_exists": profile is not None,
         "basic_info_complete": basic_info_complete,
         "resume_uploaded": resume_uploaded,
         "github_connected": github_connected,
         "linkedin_connected": linkedin_connected,
-        "setup_complete": basic_info_complete and resume_uploaded and github_connected and linkedin_connected,
+        "setup_complete": basic_info_complete and resume_uploaded and github_state in ("connected", "skipped") and linkedin_state in ("uploaded", "skipped"),
     }
 
 
@@ -295,5 +301,20 @@ def serialize_user(user: User) -> dict:
         from universities.services import university_setup_status
 
         data["university_setup_status"] = university_setup_status(account.university_uuid)
+        from universities.staff_permissions import staff_capabilities
+        data["university_staff"] = staff_capabilities(account)
 
     return data
+
+
+
+class PortalUserSerializer(serializers.Serializer):
+    """Stable core shared by web login and /auth/me; role-specific extras remain additive."""
+    id = serializers.IntegerField()
+    email = serializers.EmailField(allow_blank=True)
+    name = serializers.CharField(allow_blank=True)
+    role = serializers.CharField(allow_null=True)
+    student_id = serializers.CharField(allow_null=True)
+    university_id = serializers.CharField(allow_null=True)
+    institute_id = serializers.CharField(allow_null=True)
+    totp_enrolled = serializers.BooleanField()

@@ -19,7 +19,7 @@ import logging
 console = Console()
 logger = logging.getLogger(__name__)
 
-VERBOSE = os.getenv("PURE_MULTI_AGENT_VERBOSE", "true").strip().lower() not in {"0", "false", "no"}
+VERBOSE = os.getenv("PURE_MULTI_AGENT_VERBOSE", "false").strip().lower() not in {"0", "false", "no"}
 
 
 def _truncate(text: Any, limit: int = 400) -> str:
@@ -207,3 +207,4 @@ class GraphTraceLogger(BaseCallbackHandler):
             )
         except Exception as e:
             logger.error(f"Failed to log tool error: {e}")
+

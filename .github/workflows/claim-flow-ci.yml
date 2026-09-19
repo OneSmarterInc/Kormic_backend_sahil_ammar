@@ -16,7 +16,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:16-alpine
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_DB: kormic_ci
           POSTGRES_USER: postgres
@@ -41,6 +41,7 @@ jobs:
     env:
       DJANGO_SECRET_KEY: claim-flow-ci-secret-key-32-bytes-minimum-value
       DJANGO_DEBUG: "false"
+      DJANGO_SECURE_SSL_REDIRECT: "false" # synthetic HTTP test requests only
       DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,testserver
       POSTGRES_DB: kormic_ci
       POSTGRES_USER: postgres
@@ -51,8 +52,8 @@ jobs:
       CELERY_BROKER_URL: redis://127.0.0.1:6379/0
       CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/1
       CELERY_TASK_ALWAYS_EAGER: "false"
+      REQUIRE_POSTGRES_CHECKPOINT_TEST: "true"
       EMAIL_MODE: dev
-      GITHUB_OAUTH_TOKEN_KEY: b6AZAbEEXdp7c9bD1dpHeOxrzr3jlos2qaYJxfVEOjs=
 
     steps:
       - name: Check out repository
@@ -65,10 +66,16 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+        run: python -m pip install --upgrade pip && python -m pip install --require-hashes -r requirements.txt
 
-      - name: Generate ephemeral TOTP encryption key for CI
-        run: python -c "from cryptography.fernet import Fernet; print('TOTP_SECRET_KEYS=' + Fernet.generate_key().decode())" >> "$GITHUB_ENV"
+      - name: Verify reproducible Python dependency lock
+        run: |
+          python -m pip install uv==0.12.15
+          uv pip compile requirements.in --python-version 3.11 --generate-hashes --no-strip-extras --output-file requirements.txt
+          git diff --exit-code -- requirements.txt
+
+      - name: Generate ephemeral encryption keys for CI
+        run: python -c "import secrets; from cryptography.fernet import Fernet; print('DJANGO_SECRET_KEY=' + secrets.token_urlsafe(64)); print('TOTP_SECRET_KEYS=' + Fernet.generate_key().decode()); print('GITHUB_OAUTH_TOKEN_KEY=' + Fernet.generate_key().decode())" >> "$GITHUB_ENV"
 
       - name: Validate Compose database environment contract
         env:
@@ -91,7 +98,7 @@ jobs:
               'POSTGRES_PASSWORD': 'compose-ci-secret-password',
           }
 
-          for service_name in ('postgres', 'migrate', 'web', 'celery_worker', 'celery_beat'):
+          for service_name in ('postgres', 'migrate', 'web', 'celery_worker', 'chat_worker', 'celery_beat'):
               env = services[service_name].get('environment', {})
               for key, expected in expected_credentials.items():
                   actual = env.get(key)
@@ -99,7 +106,7 @@ jobs:
                       f'{service_name}.{key}={actual!r}; expected {expected!r}'
                   )
 
-          for service_name in ('migrate', 'web', 'celery_worker', 'celery_beat'):
+          for service_name in ('migrate', 'web', 'celery_worker', 'chat_worker', 'celery_beat'):
               env = services[service_name].get('environment', {})
               assert env.get('POSTGRES_HOST') == 'postgres', (
                   f'{service_name}.POSTGRES_HOST must be postgres'
@@ -108,6 +115,11 @@ jobs:
                   f'{service_name}.POSTGRES_PORT must be 5432'
               )
 
+          for name in ('web', 'celery_worker', 'chat_worker', 'celery_beat', 'migrate'):
+              assert not any(v.get('type') == 'bind' and v.get('target') == '/app' for v in services[name].get('volumes', []))
+          assert services['postgres']['ports'][0]['host_ip'] == '127.0.0.1'
+          assert services['web']['ports'][0]['host_ip'] == '127.0.0.1'
+          assert '--appendonly' in services['redis']['command']
           compose_source = Path('docker-compose.yml').read_text()
           assert 'POSTGRES_PASSWORD: kormic' not in compose_source
           assert 'POSTGRES_PASSWORD: "kormic"' not in compose_source
@@ -149,7 +161,7 @@ jobs:
 
           health_test = web.get('healthcheck', {}).get('test', [])
           health_text = ' '.join(str(part) for part in health_test)
-          assert 'localhost:8000/api/health/' in health_text, (
+          assert 'localhost:8000/api/v1/health/' in health_text, (
               f'web healthcheck must use port 8000: {health_text!r}'
           )
 
@@ -159,9 +171,10 @@ jobs:
           deployment = Path('DEPLOYMENT.md').read_text()
 
           assert 'EXPOSE 8000' in dockerfile
-          assert 'VITE_API_BASE_URL=http://127.0.0.1:8000' in readme
+          assert 'VITE_API_BASE_URL=http://localhost:8000' in readme
+          assert 'EXPO_PUBLIC_API_BASE_URL=http://localhost:8000/api/v1' in readme
           assert 'proxy_pass http://127.0.0.1:8000;' in deployment
-          assert 'http://127.0.0.1:8000/api/health/' in readme
+          assert 'http://127.0.0.1:8000/api/v1/health/' in readme
 
           # Documentation may mention "8030" only to say it is unsupported.
           # Reject actual stale runtime/url patterns instead of explanatory text.
@@ -180,6 +193,16 @@ jobs:
           PY
           rm -f .env
 
+      - name: Validate shared environment generation
+        run: python scripts/test_configure_environment.py
+
+      - name: Production deployment security checks
+        env:
+          DJANGO_SECURE_SSL_REDIRECT: "true"
+          DJANGO_HSTS_INCLUDE_SUBDOMAINS: "true"
+          DJANGO_HSTS_PRELOAD: "true"
+        run: python manage.py check --deploy --fail-level WARNING
+
       - name: Django system check
         run: python manage.py check
 
@@ -195,8 +218,69 @@ jobs:
       - name: Run institute claim-flow regression tests
         run: python manage.py test institutes_list --verbosity 2
 
+      - name: Verify exported client contracts
+        run: python manage.py export_client_contracts --check
+
       - name: Run complete backend test suite
         run: python manage.py test --verbosity 1
 
       - name: Verify full-suite test-order independence
         run: python manage.py test --shuffle 20260917 --verbosity 1
+
+
+  dependency-security:
+    name: Dependency security scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Audit full resolved application dependency tree
+        run: |
+          python -m pip install pip-audit==2.10.1
+          python -m pip_audit --strict -r requirements.txt --format json -o pip-audit.json
+      - name: Retain security scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-security-report
+          path: pip-audit.json
+          retention-days: 14
+
+  docker-build:
+    name: Docker build and pilot smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare isolated pilot environment
+        run: |
+          cp .env.template .env
+          python - <<'PY'
+          import secrets
+          with open('.env', 'a') as env:
+              env.write('\nPOSTGRES_PASSWORD=' + secrets.token_urlsafe(32) + '\n')
+              env.write('DJANGO_SECRET_KEY=' + secrets.token_urlsafe(48) + '\n')
+              env.write('EMAIL_MODE=dev\nDJANGO_ALLOWED_HOSTS=localhost,127.0.0.1\n')
+          PY
+      - name: Build deployment image
+        run: docker compose build
+      - name: Generate isolated encryption keys
+        run: docker compose run --rm --no-deps -T web python -c "import secrets; from cryptography.fernet import Fernet; print('DJANGO_SECRET_KEY=' + secrets.token_urlsafe(64)); print('TOTP_SECRET_KEYS=' + Fernet.generate_key().decode()); print('GITHUB_OAUTH_TOKEN_KEY=' + Fernet.generate_key().decode())" >> .env
+      - name: Start pilot services and await health checks
+        run: docker compose up -d --wait --wait-timeout 240
+      - name: Verify API and workers
+        run: |
+          curl --fail --retry 5 --retry-delay 3 http://127.0.0.1:8000/api/v1/health/
+          docker compose exec -T web python manage.py check
+          docker compose exec -T celery_worker celery -A kormic_backend inspect ping --timeout 10
+          test "$(docker compose ps --status running -q | wc -l)" -eq 6
+      - name: Collect pilot diagnostics
+        if: failure()
+        run: docker compose logs --no-color --tail=100
+      - name: Stop ephemeral pilot
+        if: always()
+        run: docker compose down -v

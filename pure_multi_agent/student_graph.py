@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from langchain_anthropic import ChatAnthropic
+from pure_multi_agent.budget_model import BudgetedChatAnthropic as ChatAnthropic
+from django_api.chat_policy import CALL_SECONDS
 from langgraph.prebuilt import create_react_agent
 
 from pure_multi_agent.tools import build_all_tools
@@ -18,14 +19,8 @@ MODEL_NAME = "claude-haiku-4-5-20251001"
 _model = None
 
 
-# Every turn can chain up to `recursion_limit` (see runtime.run_turn) model
-# calls in a tool loop. With no timeout, a single hung upstream call ties up
-# a Django worker indefinitely -- on the highest-traffic endpoint in the
-# system, that's the fastest path to exhausting the whole worker pool.
-# timeout bounds each individual call; max_retries=1 keeps the worst case
-# for one call predictable (timeout + one retry) instead of the SDK's
-# default 2 retries compounding it further.
-CHAT_MODEL_TIMEOUT_SECONDS = 120.0
+# Overall execution is bounded by the dedicated chat worker.
+CHAT_MODEL_TIMEOUT_SECONDS = float(CALL_SECONDS)
 
 
 def _get_model() -> ChatAnthropic:
@@ -35,7 +30,7 @@ def _get_model() -> ChatAnthropic:
             model=MODEL_NAME,
             max_tokens=1200,
             timeout=CHAT_MODEL_TIMEOUT_SECONDS,
-            max_retries=1,
+            max_retries=0,
         )
     return _model
 
@@ -55,3 +50,4 @@ def build_student_agent(ctx: Dict[str, Any], system_prompt: str, checkpointer):
         prompt=system_prompt,
         checkpointer=checkpointer,
     )
+

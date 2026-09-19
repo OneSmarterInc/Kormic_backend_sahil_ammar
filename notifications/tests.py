@@ -2,7 +2,7 @@ from unittest import mock
 
 from django.core.cache import cache
 from django.core.management import call_command
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework import status
 
 from django.utils import timezone
@@ -374,6 +374,7 @@ class CheckPushReceiptsTaskTests(TestCase):
 # End-to-end wiring: the three student-facing trigger points.
 # ---------------------------------------------------------------------
 
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True)
 class AgentChatNotificationTests(TestCase):
     def setUp(self):
         cache.clear()
@@ -387,7 +388,7 @@ class AgentChatNotificationTests(TestCase):
 
         resp = self.student.post("/api/chat/agent/", {"message": "Tell me about MIT"}, format="json")
 
-        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
         log = NotificationLog.objects.get(account__student_profile__uuid=self.student_id)
         self.assertEqual(log.event_type, NotificationLog.EventType.AGENT_REPLY)
         self.assertIn("Sure, here's the info", log.body)
@@ -403,8 +404,10 @@ class AgentChatNotificationTests(TestCase):
 
         resp = self.student.post("/api/chat/agent/", {"message": "hi"}, format="json")
 
-        self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(resp.data["reply"], "Reply text")
+        self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
+        result = self.student.get(f"/api/chat/agent/jobs/{resp.data['job_id']}/")
+        self.assertEqual(result.data["status"], "completed")
+        self.assertEqual(result.data["reply"], "Reply text")
 
 
 class PendingQueryResolutionNotificationTests(TestCase):
@@ -823,3 +826,4 @@ class SendPushNotificationsBatchTaskTests(TestCase):
         sent_messages = mock_send.call_args[0][0]
         self.assertEqual(len(sent_messages), 1)
         self.assertEqual(sent_messages[0]["to"], self.token_b.token)
+

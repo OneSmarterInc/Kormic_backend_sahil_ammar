@@ -19,6 +19,8 @@ from rich.console import Console
 
 from pure_multi_agent import preprocessing, prompts
 from pure_multi_agent.student_graph import build_student_agent
+from pure_multi_agent.budget_model import BudgetCallbacks
+from django_api.chat_policy import TurnStopped, current_budget
 from pure_multi_agent.tracing import VERBOSE, GraphTraceLogger
 
 console = Console()
@@ -246,12 +248,19 @@ def run_turn(
             {"messages": [HumanMessage(content=human_content)]},
             config={
                 "configurable": {"thread_id": ctx["canonical_student_id"]},
-                "recursion_limit": 25,
-                "callbacks": [tracer],
+                "recursion_limit": 12,
+                "max_concurrency": 1,
+                "callbacks": [tracer, BudgetCallbacks()],
             },
         )
         reply = _extract_reply_text(result)
     except Exception as exc:
+        if current_budget.get() is not None:
+            from anthropic import APITimeoutError
+            from langgraph.errors import GraphRecursionError
+            if isinstance(exc, (APITimeoutError, TimeoutError, GraphRecursionError)):
+                raise TurnStopped() from exc
+            raise
         logger.exception("Agent turn failed for student %s", ctx["canonical_student_id"])
         console.print(f"[yellow]Agent turn failed: {exc}[/yellow]")
         # Ops-facing detail (which env var, which upstream, etc.) is for the
@@ -275,3 +284,4 @@ def run_turn(
         console.print(f"[bold magenta]=== turn complete ({tracer._step} model call(s)) ===[/bold magenta]\n")
 
     return ctx["agent_name"], reply
+

@@ -22,7 +22,13 @@ from pure_multi_agent import university_graph
 console = Console()
 
 
-def _format_result(result: Dict[str, Any], agent_label: str) -> str:
+def _format_result(result, agent_label):
+    import json
+    body = _format_result_body(result, agent_label)
+    return body + "\nSources (use these references; never invent URLs): " + json.dumps(result.get("sources", []))
+
+
+def _format_result_body(result: Dict[str, Any], agent_label: str) -> str:
     if result.get("source") == "human_verified":
         return f"[human-verified answer from {agent_label}]\n{result.get('answer', '')}"
 
@@ -184,3 +190,4 @@ def build_tools(ctx: Dict[str, Any]) -> List[Any]:
         compare_all_universities,
         get_fit_assessment_for_all_universities,
     ]
+

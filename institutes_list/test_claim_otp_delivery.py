@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-import hashlib
 from unittest import mock
 
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 from django.core import mail
 from django.core.cache import cache
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
-from accounts.models import Account
+from accounts.models import Account, TOTPDevice
+from django.core.files.uploadedfile import SimpleUploadedFile
 from institutes.services import register_institute
 from institutes_list.models import ListedStudent, UniversityStudentList
 from institutes_list.tasks import (
@@ -53,7 +54,7 @@ class ClaimOtpDeliveryTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response["Content-Type"].startswith("application/json"))
-        self.assertEqual(response.json(), {"masked_email": "m•••••@example.edu"})
+        self.assertEqual(response.json(), {"masked_email": "•••••@•••••", "message": "If an eligible invitation exists, a code will be sent. Check your email."})
 
         self.student.refresh_from_db()
         mock_delay.assert_called_once_with(self.student.id, self.student.otp_hash)
@@ -62,7 +63,8 @@ class ClaimOtpDeliveryTests(TestCase):
 
         code = cache.get(claim_otp_cache_key(self.student.id, self.student.otp_hash))
         self.assertRegex(code, r"^\d{6}$")
-        self.assertEqual(hashlib.sha256(code.encode("utf-8")).hexdigest(), self.student.otp_hash)
+        from .otp import check_otp
+        self.assertTrue(check_otp(code, self.student.otp_hash))
         self.assertEqual(mail.outbox, [])
 
     @mock.patch("institutes_list.claim_views.send_claim_otp_email_task.delay")
@@ -87,12 +89,9 @@ class ClaimOtpDeliveryTests(TestCase):
             format="json",
         )
 
-        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.status_code, 200)
         self.assertTrue(response["Content-Type"].startswith("application/json"))
-        self.assertEqual(
-            response.json(),
-            {"error": "Verification code could not be sent. Please try again."},
-        )
+        self.assertEqual(response.json()["masked_email"], "•••••@•••••")
 
         self.student.refresh_from_db()
         self.assertEqual(self.student.otp_hash, "")
@@ -151,12 +150,9 @@ class ClaimOtpDeliveryTests(TestCase):
             format="json",
         )
 
-        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.status_code, 200)
         self.assertTrue(response["Content-Type"].startswith("application/json"))
-        self.assertEqual(
-            response.json(),
-            {"error": "No claimable invitation found for that information."},
-        )
+        self.assertEqual(response.json()["masked_email"], "•••••@•••••")
 
 
 class ClaimOtpRouteIsolationTests(TestCase):
@@ -186,6 +182,7 @@ class ClaimOtpRouteIsolationTests(TestCase):
             password="test-password",
         )
         Account.objects.create(user=user, role=Account.Role.INSTITUTE, institute=institute)
+        TOTPDevice.objects.create(user=user, secret="JBSWY3DPEHPK3PXP", confirmed_at=timezone.now())
 
         response = APIClient().post(
             "/api/claim/start/",
@@ -195,3 +192,4 @@ class ClaimOtpRouteIsolationTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         mock_delay.assert_called_once()
+

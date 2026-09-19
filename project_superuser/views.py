@@ -55,11 +55,11 @@ def _serialize_account(account: Account) -> Dict[str, Any]:
 def _serialize_university(university: University) -> Dict[str, Any]:
     from universities.services import university_setup_status
 
-    # Exactly one officer login is created per university today (see
-    # AdminEnrollUniversitySerializer) -- surfaced here so a superadmin
-    # dashboard can show/contact the login without a separate /users/ call.
+    # Keep the legacy primary-admin fields, selecting an active owner now
+    # that universities can have multiple staff accounts and scoped roles.
     admin_account = (
-        Account.objects.filter(university=university, role=Account.Role.UNIVERSITY)
+        Account.objects.filter(university=university, role=Account.Role.UNIVERSITY,
+                               university_role=Account.UniversityRole.OWNER, user__is_active=True)
         .select_related("user")
         .order_by("created_at")
         .first()
@@ -754,3 +754,4 @@ class PilotEscalationMetricsAPIView(APIView):
             return _error("weeks must be an integer.")
 
         return Response(services.escalation_metrics(university_id=university_id, weeks=weeks))
+

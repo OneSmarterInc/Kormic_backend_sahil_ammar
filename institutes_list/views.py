@@ -2,18 +2,13 @@
 Institute-list intake and the student claim flow.
 
 """
-import csv
-import hashlib
-import io
-import secrets
-import uuid
 from pathlib import Path
 from urllib.parse import urlencode
 
 from django.conf import settings
 from django.core import signing
-from django.core.mail import send_mail
-from django.db.models import Count, Q
+from django.db import transaction
+from django.db.models import Count, Q, F
 from django.http import FileResponse
 from django.utils import timezone
 from rest_framework import status
@@ -22,16 +17,21 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from accounts.models import Account
+from accounts.permissions import IsTOTPEnrolled
+from .otp import hash_otp as _hash_otp, check_otp
+from .tasks import discard_claim_otp_code
 from institutes.models import Institute
 
 from .models import ListedStudent, UniversityStudentList
 from .tasks import send_invite_email_task
 from .throttling import (
-    ClaimStartEmailThrottle,
-    ClaimStartIPThrottle,
+    ClaimConfirmSessionThrottle,
+    ClaimConfirmIPThrottle,
     ClaimVerifyEmailThrottle,
     ClaimVerifyIPThrottle,
 )
+
+INSTITUTE_PERMISSIONS = [IsAuthenticated, IsTOTPEnrolled]
 
 OTP_TTL_SECONDS = 10 * 60
 OTP_MAX_ATTEMPTS = 5
@@ -49,10 +49,6 @@ def _mask_email(email: str) -> str:
         return "•••••"
     keep = local[0] if local else ""
     return f"{keep}•••••@{domain}"
-
-
-def _hash_otp(code: str) -> str:
-    return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
 
 def _prefill_payload(row: ListedStudent) -> dict:
@@ -85,34 +81,7 @@ def _find_claimable(email: str = "", token: str = ""):
     return None
 
 
-def _store_source_file(institute_id: str, upload) -> dict:
-    """
-    Persist the raw uploaded sheet verbatim under MEDIA_ROOT/institute_lists/
-    <institute_id>/ and return the fields to stamp on UniversityStudentList.
-    The filename is uuid-suffixed so re-uploading a same-named file doesn't
-    clobber an older list's copy.
-    """
-    target_dir = Path(settings.MEDIA_ROOT) / "institute_lists" / str(institute_id)
-    target_dir.mkdir(parents=True, exist_ok=True)
-
-    safe_name = Path(upload.name or "list.csv").name
-    unique_name = f"{Path(safe_name).stem}__{uuid.uuid4().hex[:8]}{Path(safe_name).suffix}"
-    file_path = target_dir / unique_name
-
-    try:
-        upload.seek(0)
-    except Exception:
-        pass
-    with open(file_path, "wb") as destination:
-        for chunk in upload.chunks():
-            destination.write(chunk)
-
-    return {
-        "source_file_path": str(file_path),
-        "source_file_name": safe_name,
-        "source_file_content_type": getattr(upload, "content_type", "") or "",
-        "source_file_size": file_path.stat().st_size,
-    }
+from .source_files import store_source as _store_source_file, source_path, validate_csv, csv_rows
 
 
 def _source_file_url(request, lst: UniversityStudentList):
@@ -128,7 +97,8 @@ def _source_file_url(request, lst: UniversityStudentList):
 # ---------------------------------------------------------------------------
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes(INSTITUTE_PERMISSIONS)
+@transaction.atomic
 def upload_list(request):
     """
     POST /api/institute-lists/upload/
@@ -167,77 +137,74 @@ def upload_list(request):
     if institute is None:
         return Response({"error": "no registered institute with that institute_id"}, status=status.HTTP_404_NOT_FOUND)
 
-    try:
-        text = upload.read().decode("utf-8-sig")
-        reader = csv.DictReader(io.StringIO(text))
-        header = [h.strip() for h in (reader.fieldnames or [])]
-    except Exception:
-        return Response({"error": "could not parse CSV"}, status=status.HTTP_400_BAD_REQUEST)
-
-    missing = [c for c in REQUIRED_COLUMNS if c not in header]
-    if missing:
-        return Response(
-            {"error": f"missing required columns: {', '.join(missing)}"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+    validate_csv(upload, REQUIRED_COLUMNS)
 
     source_file_fields = _store_source_file(institute.id, upload)
 
-    source_list = UniversityStudentList.objects.create(
-        institute=institute,
-        contact_name=contact_name,
-        contact_email=contact_email,
-        contact_verification=str(request.data.get("contact_verification") or "").strip(),
-        uploaded_by=getattr(request.user, "email", "") or str(request.user),
-        **source_file_fields,
-    )
-
-    accepted, rejected, skipped_claimed, seen = 0, [], [], set()
-    for i, raw in enumerate(reader, start=2):  # row 1 is the header
-        row = {k: str(raw.get(k) or "").strip() for k in REQUIRED_COLUMNS + OPTIONAL_COLUMNS}
-        email = row["email"].lower()
-        if not email or "@" not in email:
-            rejected.append({"row": i, "reason": "invalid email"})
-            continue
-        if any(not row[c] for c in REQUIRED_COLUMNS):
-            rejected.append({"row": i, "reason": "missing required field"})
-            continue
-        if email in seen:
-            rejected.append({"row": i, "reason": "duplicate email in file"})
-            continue
-        seen.add(email)
-
-        existing = (
-            ListedStudent.objects.filter(institute_id=str(institute.uuid), email__iexact=email)
-            .order_by("-created_at")
-            .first()
+    try:
+        source_list = UniversityStudentList.objects.create(
+            institute=institute,
+            contact_name=contact_name,
+            contact_email=contact_email,
+            contact_verification=str(request.data.get("contact_verification") or "").strip(),
+            uploaded_by=getattr(request.user, "email", "") or str(request.user),
+            **source_file_fields,
         )
-        if existing and existing.status == ListedStudent.Status.CLAIMED:
-            # Never overwrite a claimed profile from a list (spec S3); report
-            # list-side changes for human review instead.
-            skipped_claimed.append({"row": i, "email": _mask_email(email)})
-            continue
-        if existing and existing.status == ListedStudent.Status.UNCLAIMED:
-            for field in REQUIRED_COLUMNS + OPTIONAL_COLUMNS:
-                setattr(existing, field, row[field])
-            existing.source_list = source_list
-            existing.save()
-        else:
-            ListedStudent.objects.create(
-                source_list=source_list, institute_id=str(institute.uuid), **row
+    
+        reader = csv_rows(upload)
+        accepted, rejected, skipped_claimed, seen = 0, [], [], set()
+        for i, raw in enumerate(reader, start=2):  # row 1 is the header
+            row = {k: str(raw.get(k) or "").strip() for k in REQUIRED_COLUMNS + OPTIONAL_COLUMNS}
+            email = row["email"].lower()
+            if not email or "@" not in email:
+                rejected.append({"row": i, "reason": "invalid email"})
+                continue
+            if any(not row[c] for c in REQUIRED_COLUMNS):
+                rejected.append({"row": i, "reason": "missing required field"})
+                continue
+            if any(len(row[field]) > ListedStudent._meta.get_field(field).max_length for field in REQUIRED_COLUMNS + OPTIONAL_COLUMNS):
+                rejected.append({"row": i, "reason": "field exceeds maximum length"})
+                continue
+            if email in seen:
+                rejected.append({"row": i, "reason": "duplicate email in file"})
+                continue
+            seen.add(email)
+    
+            existing = (
+                ListedStudent.objects.filter(institute_id=str(institute.uuid), email__iexact=email)
+                .order_by("-created_at")
+                .first()
             )
-        accepted += 1
+            if existing and existing.status == ListedStudent.Status.CLAIMED:
+                # Never overwrite a claimed profile from a list (spec S3); report
+                # list-side changes for human review instead.
+                skipped_claimed.append({"row": i, "email": _mask_email(email)})
+                continue
+            if existing and existing.status == ListedStudent.Status.UNCLAIMED:
+                for field in REQUIRED_COLUMNS + OPTIONAL_COLUMNS:
+                    setattr(existing, field, row[field])
+                existing.source_list = source_list
+                existing.save()
+            else:
+                ListedStudent.objects.create(
+                    source_list=source_list, institute_id=str(institute.uuid), **row
+                )
+            accepted += 1
+    
+        source_list.row_count = accepted
+        source_list.save(update_fields=["row_count"])
+        return Response(
+            {
+                "list_id": source_list.id,
+                "accepted": accepted,
+                "rejected": rejected,
+                "skipped_claimed": skipped_claimed,
+            }
+        )
+    except BaseException:
+        source_path(source_file_fields["source_file_path"]).unlink(missing_ok=True)
+        raise
 
-    source_list.row_count = accepted
-    source_list.save(update_fields=["row_count"])
-    return Response(
-        {
-            "list_id": source_list.id,
-            "accepted": accepted,
-            "rejected": rejected,
-            "skipped_claimed": skipped_claimed,
-        }
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +235,7 @@ def _get_owned_list(account, list_id):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes(INSTITUTE_PERMISSIONS)
 def list_lists(request):
     """
     GET /api/institute-lists/lists/   ?institute_id=<...> (superuser only)
@@ -329,7 +296,7 @@ def list_lists(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes(INSTITUTE_PERMISSIONS)
 def list_students(request, list_id):
     """
     GET /api/institute-lists/lists/<list_id>/students/
@@ -371,7 +338,7 @@ def list_students(request, list_id):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes(INSTITUTE_PERMISSIONS)
 def download_source_file(request, list_id):
     """
     GET /api/institute-lists/lists/<list_id>/file/
@@ -392,25 +359,27 @@ def download_source_file(request, list_id):
             {"error": "no source file was retained for this list"}, status=status.HTTP_404_NOT_FOUND
         )
 
-    file_path = Path(lst.source_file_path)
+    try:
+        file_path = source_path(lst.source_file_path)
+    except ValueError:
+        return Response({"error": "source file unavailable"}, status=404)
     if not file_path.exists():
         return Response(
             {"error": "source file is missing on the server"}, status=status.HTTP_404_NOT_FOUND
         )
 
-    # Read fully into memory rather than handing FileResponse an open handle
-    # (keeps the handle short-lived; matches the download views elsewhere).
-    content = file_path.read_bytes()
-    return FileResponse(
-        io.BytesIO(content),
-        as_attachment=True,
+    response = FileResponse(
+        file_path.open("rb"), as_attachment=True,
         filename=lst.source_file_name or file_path.name,
-        content_type=lst.source_file_content_type or "application/octet-stream",
+        content_type="text/csv",
     )
+    response["X-Content-Type-Options"] = "nosniff"
+    response["Cache-Control"] = "private, no-store"
+    return response
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes(INSTITUTE_PERMISSIONS)
 def send_invites(request, list_id):
     """
     POST /api/institute-lists/lists/<list_id>/send-invites/
@@ -457,7 +426,7 @@ def send_invites(request, list_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes(INSTITUTE_PERMISSIONS)
 def send_invite(request, list_id, student_id):
     """
     POST /api/institute-lists/lists/<list_id>/students/<student_id>/send-invite/
@@ -508,52 +477,8 @@ def send_invite(request, list_id, student_id):
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
-@throttle_classes([ClaimStartIPThrottle, ClaimStartEmailThrottle])
-def start_claim(request):
-    """
-    POST /api/claim/start/   {"email": ...} or {"token": ...}
-    Sends a one-time code to the LISTED address and returns only the masked
-    email. Reveals nothing else -- a forwarded link or photographed QR gets
-    an attacker no further than this masked string.
-
-    Rate limited per-IP and per-email/token so it can't be hammered --
-    each call sends a real email, so the email-side budget is deliberately
-    tight (see ClaimStartEmailThrottle / DEFAULT_THROTTLE_RATES).
-    """
-    row = _find_claimable(
-        email=str(request.data.get("email") or ""),
-        token=str(request.data.get("token") or ""),
-    )
-    if not row:
-        # Deliberately generic: don't confirm which emails are on a list.
-        return Response(
-            {"error": "No claimable invitation found for that information."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
-
-    code = f"{secrets.randbelow(10**6):06d}"
-    row.otp_hash = _hash_otp(code)
-    row.otp_expires_at = timezone.now() + timezone.timedelta(seconds=OTP_TTL_SECONDS)
-    row.otp_attempts = 0
-    row.save(update_fields=["otp_hash", "otp_expires_at", "otp_attempts"])
-
-    send_mail(
-        subject="Your Kormic claim code",
-        message=(
-            f"Your one-time code is {code}. It expires in 10 minutes.\n\n"
-            "Your university listed this address so you can claim your Kormic "
-            "profile. If you didn't request this, you can ignore it."
-        ),
-        from_email=None,  # DEFAULT_FROM_EMAIL
-        recipient_list=[row.email],
-        fail_silently=False,
-    )
-    return Response({"masked_email": _mask_email(row.email)})
-
-
-@api_view(["POST"])
-@permission_classes([AllowAny])
 @throttle_classes([ClaimVerifyIPThrottle, ClaimVerifyEmailThrottle])
+@transaction.atomic
 def verify_claim(request):
     """
     POST /api/claim/verify/   {"email"|"token": ..., "code": ...}
@@ -566,26 +491,45 @@ def verify_claim(request):
         email=str(request.data.get("email") or ""),
         token=str(request.data.get("token") or ""),
     )
+    def invalid_code():
+        return Response({"error": "Invalid or expired code. Request a new code if needed."}, status=400)
+
+    if row:
+        row = ListedStudent.objects.select_for_update().filter(
+            pk=row.pk, status=ListedStudent.Status.UNCLAIMED,
+            source_list__status=UniversityStudentList.Status.ACTIVE,
+        ).first()
     code = str(request.data.get("code") or "").strip()
     if not row or not code:
-        return Response({"error": "invalid request"}, status=status.HTTP_400_BAD_REQUEST)
+        return invalid_code()
 
     if not row.otp_hash or not row.otp_expires_at or timezone.now() > row.otp_expires_at:
-        return Response({"error": "code expired -- request a new one"}, status=status.HTTP_400_BAD_REQUEST)
+        return invalid_code()
     if row.otp_attempts >= OTP_MAX_ATTEMPTS:
-        return Response({"error": "too many attempts -- request a new code"}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        return invalid_code()
 
-    row.otp_attempts += 1
-    row.save(update_fields=["otp_attempts"])
-    if _hash_otp(code) != row.otp_hash:
-        return Response({"error": "incorrect code"}, status=status.HTTP_400_BAD_REQUEST)
+    reserved = ListedStudent.objects.filter(
+        pk=row.pk, otp_hash=row.otp_hash, otp_attempts__lt=OTP_MAX_ATTEMPTS,
+        status=ListedStudent.Status.UNCLAIMED,
+        source_list__status=UniversityStudentList.Status.ACTIVE,
+    ).update(otp_attempts=F("otp_attempts") + 1)
+    if not reserved:
+        return invalid_code()
+    if not check_otp(code, row.otp_hash):
+        return invalid_code()
 
+    discard_claim_otp_code(row.id, row.otp_hash)
+    row.otp_hash = ""
+    row.otp_expires_at = None
+    row.save(update_fields=["otp_hash", "otp_expires_at"])
     claim_session = _claim_signer.sign(str(row.id))
     return Response({"claim_session": claim_session, "prefill": _prefill_payload(row)})
 
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes([ClaimConfirmIPThrottle, ClaimConfirmSessionThrottle])
+@transaction.atomic
 def confirm_claim(request):
     """
     POST /api/claim/confirm/   {"claim_session": ..., "fields": {...}}
@@ -608,7 +552,7 @@ def confirm_claim(request):
     except (signing.BadSignature, signing.SignatureExpired, ValueError):
         return Response({"error": "invalid or expired claim session"}, status=status.HTTP_400_BAD_REQUEST)
 
-    row = ListedStudent.objects.filter(id=row_id).first()
+    row = ListedStudent.objects.select_for_update().filter(id=row_id, source_list__status=UniversityStudentList.Status.ACTIVE).first()
     if not row or row.status != ListedStudent.Status.UNCLAIMED:
         return Response({"error": "this invitation is no longer claimable"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -688,3 +632,4 @@ def confirm_claim(request):
             },
         }
     )
+

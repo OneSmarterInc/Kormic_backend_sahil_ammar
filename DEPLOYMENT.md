@@ -1,324 +1,66 @@
-# Kormic Backend - Production Deployment Guide (AWS EC2)
+# Backend deployment
 
-This runbook provides a complete, step-by-step guide to deploying the Kormic Django Backend from scratch on a fresh AWS EC2 instance. It assumes you are deploying the backend using Docker Compose.
+Start with [SYSTEM.md](SYSTEM.md) for environment generation and coordinated frontend rollout. This file describes the committed `docker-compose.yml`.
 
-## Canonical Runtime Port
+## Configure and start
 
-Before deploying the encrypted TOTP schema, configure a separate
-`TOTP_SECRET_KEYS` key ring for migrations, web and workers. Follow
-[TOTP_SECURITY.md](TOTP_SECURITY.md) for the required maintenance-window migration,
-key rotation and recovery procedure.
+Copy `.env.template` to `.env` and supply database credentials, Django secret, independent TOTP encryption keys, OAuth/model credentials, and email delivery settings. Set `DJANGO_DEBUG=false`, exact allowed hosts and HTTPS frontend origins in production. Generate `.env.urls` for the target environment. See [WEB_AUTH.md](WEB_AUTH.md) and [TOTP_SECURITY.md](TOTP_SECURITY.md).
 
-Production student invitations use `https://app.kormic.ai/claim`. Follow
-[the app-link deployment guide](APP_LINKS.md) to deploy its HTTPS domain,
-Android/iOS association documents and browser fallback before setting
-`CLAIM_PAGE_URL` and enabling invitation delivery.
-
-The backend application port is **8000** in every environment. Docker runs Gunicorn on `0.0.0.0:8000`, publishes host port `8000`, and checks `/api/health/` on port `8000`. In production, Nginx proxies to `http://127.0.0.1:8000`. Local browser frontends should use `http://127.0.0.1:8000` as their backend base URL. Port `8030` is not part of the supported runtime configuration.
-
----
-
-## 1. Provisioning the EC2 Instance
-
-1. **Launch an EC2 Instance:**
-   - **OS:** Ubuntu 22.04 or 24.04 LTS
-   - **Instance Type:** `t3.medium` or larger (recommended due to Celery workers, Redis, and Postgres running concurrently).
-   - **Storage:** At least 20-30 GB of EBS storage (gp3).
-2. **Configure Security Group:**
-   - **SSH (Port 22):** Restrict to your IP address.
-   - **HTTP (Port 80):** Anywhere (0.0.0.0/0) - Required for SSL certificate generation and redirecting to HTTPS.
-   - **HTTPS (Port 443):** Anywhere (0.0.0.0/0) - Required for secure API access.
-
----
-
-## 2. Server Setup & Installing Docker
-
-SSH into your new EC2 instance:
-```bash
-ssh -i /path/to/your-key.pem ubuntu@<your-ec2-ip>
-```
-
-Update the package manager and install necessary utilities:
-```bash
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y curl git ufw nginx
-```
-
-Install Docker and Docker Compose:
-```bash
-# Download the official Docker install script
-curl -fsSL https://get.docker.com -o get-docker.sh
-sudo sh get-docker.sh
-
-# Add the ubuntu user to the docker group so you can run docker without sudo
-sudo usermod -aG docker ubuntu
-
-# Apply group changes immediately
-newgrp docker
-```
-Verify the installation:
-```bash
-docker compose version
-```
-
----
-
-## 3. Cloning the Repository
-
-Generate an SSH key on your server if you need to access a private GitHub repository:
-```bash
-ssh-keygen -t ed25519 -C "server@kormic.ai"
-cat ~/.ssh/id_ed25519.pub
-```
-*(Add this key to your GitHub account as a Deploy Key)*
-
-Clone your backend repository:
-```bash
-git clone git@github.com:YourOrg/kormic-Django-Backend-Prajval-1.git backend
-cd backend
-```
-
----
-
-## 4. Environment Variables Configuration
-
-The backend requires strict environment variables to run securely in production. Create the `.env` file in the root of the cloned repository:
-
-```bash
-nano .env
-```
-
-Paste and modify the following template:
-
-```ini
-# ==========================================
-# 1. Django Security Settings
-# ==========================================
-# MUST be false in production to prevent leaking stack traces.
-DJANGO_DEBUG=false
-
-# Generate a strong, random 50+ character string. Do not use the local key.
-# You can generate one via: python3 -c 'from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())'
-DJANGO_SECRET_KEY=your_secure_random_long_string_here
-
-# The domain(s) pointing to your backend API. E.g., api.kormic.ai
-DJANGO_ALLOWED_HOSTS=api.kormic.ai,localhost,127.0.0.1
-
-# The frontend URLs that are allowed to make cross-origin requests.
-DJANGO_CORS_ALLOWED_ORIGINS=https://student.kormic.ai,https://admin.kormic.ai,https://university.kormic.ai
-
-# ==========================================
-# 2. Database & Redis (Docker internal)
-# ==========================================
-POSTGRES_DB=kormic_prod
-POSTGRES_USER=kormic_admin
-# REQUIRED. Use a strong unique production password; Compose intentionally
-# refuses to render/start when POSTGRES_PASSWORD is missing or empty.
-POSTGRES_PASSWORD=your_secure_db_password
-# Docker Compose connects Django/Celery/migrations to the `postgres` service.
-POSTGRES_HOST=postgres
-POSTGRES_PORT=5432
-DB_CONN_MAX_AGE=60
-
-# Redis connection URL for Celery and Caching
-REDIS_URL=redis://redis:6379/0
-
-# ==========================================
-# 3. Third-Party API Keys
-# ==========================================
-# Required for LangGraph and University Agents
-ANTHROPIC_API_KEY=sk-ant-api03-...
-
-# ==========================================
-# 4. Email Configuration (SMTP)
-# ==========================================
-# Required for escalation routing and notifications
-EMAIL_HOST=smtp.your-email-provider.com
-EMAIL_PORT=587
-EMAIL_HOST_USER=no-reply@kormic.ai
-EMAIL_HOST_PASSWORD=your_smtp_app_password
-```
-
-Save and exit (`Ctrl+O`, `Enter`, `Ctrl+X`).
-
-The same `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` values are injected into the PostgreSQL container, the one-shot migration service, the web process, and both Celery services. Do not place alternate database credentials directly in `docker-compose.yml`.
-
----
-
-## 5. Build and Start the Application
-
-With the `.env` file in place, you can bring up the stack. This will build the Python image and download the Postgres/Redis images.
-
-```bash
-# Validate interpolation first. This will fail immediately if the required
-# POSTGRES_PASSWORD is missing.
-docker compose config >/dev/null
-
-# Build the Docker images
-docker compose build
-
-# Start the application in detached mode
-docker compose up -d
-```
-
-Verify that all containers (web, celery_worker, celery_beat, postgres, redis) are running:
-```bash
+```sh
+docker compose config
+docker compose up --build -d
 docker compose ps
+docker compose logs --tail=100 migrate web chat_worker
+curl http://127.0.0.1:8000/api/v1/health/
 ```
 
-Verify the host-published backend directly before configuring Nginx:
-```bash
-curl http://127.0.0.1:8000/api/health/
-```
+| Service | Purpose |
+| --- | --- |
+| postgres | PostgreSQL 16; loopback port 5438 → container 5432 |
+| redis | Redis 7; shared cache, Celery broker and results |
+| migrate | One-shot migrations; web/workers wait for success |
+| web | collectstatic, then Gunicorn on container port 8000 / host loopback port 8000 |
+| celery_worker | General Celery tasks |
+| chat_worker | Dedicated `chat` queue, prefork, concurrency 2; required for chat jobs |
+| celery_beat | Scheduled tasks; persistent schedule volume under /home/app |
 
----
+Compose injects `postgres:5432` and Redis database indexes 0 (broker), 1 (results), 2 (cache). A host-run Django process uses PostgreSQL port 5438 for this Compose database. `POSTGRES_PASSWORD` is mandatory. Worker processes must share the same database, cache, encryption keys and code version as web.
 
-## 6. Run Migrations & Collect Static Files
+Named volumes `postgres_data`, `redis_data` (AOF enabled), `static_data`, `uploads_data`, and `beat_data` persist data. Back up PostgreSQL and uploads before migrations. Do not run `docker compose down -v` on a deployment with data to retain. Compose runs the built image without mounting the host checkout over it. Rebuild after code changes. Keep one beat instance; its schedule volume is not a shared multi-scheduler database.
 
-The database schema must be initialized, and static files (CSS/JS for the Django Admin) must be collected so Whitenoise can serve them.
+## Reverse proxy
 
-```bash
-# Run database migrations
-docker compose exec web python manage.py migrate
+Terminate TLS at the proxy and preserve host/protocol headers. The upstream is port 8000:
 
-# Collect static files
-docker compose exec web python manage.py collectstatic --noinput
-
-# Create the first Kormic application operator
-docker compose exec web python manage.py create_superuser_account --email admin@example.com
-```
-
-### First Kormic operator
-
-Replace `admin@example.com` with the operator's email address and enter the password at the interactive prompts. The project command creates an `Account` with `Account.Role.SUPERUSER`, which is required by `/api/superuser/` and the Kormic Superuser portal.
-
-If running directly in the configured backend Python environment instead of Docker, the equivalent command is:
-
-```sh
-python manage.py create_superuser_account --email admin@example.com
-```
-
-After HTTPS and the Kormic Superuser frontend are configured, log in through Kormic with that email and password (`/api/auth/login/`), then enroll and confirm TOTP using an authenticator app. Save the returned backup codes securely. Superuser API access remains blocked until TOTP enrollment is confirmed.
-
-The command creates a new account; it does not upgrade an existing user. If the email already exists (including from an earlier `createsuperuser` attempt), use a distinct operator email for this bootstrap command.
-
-### Optional: separate Django Admin access
-
-Django Admin access is managed separately through Django's `is_staff` / `is_superuser` flags. The Kormic bootstrap command does not grant these flags. If Django Admin access is also needed, create a separate Django administrator:
-
-```sh
-docker compose exec web python manage.py createsuperuser
-```
-
-Use a different username/email from the Kormic operator. Django's `createsuperuser` command does **not** create an `Account.Role.SUPERUSER` account and does not by itself grant access to the Kormic Superuser API or portal.
-
-At this point, the backend is available on the server host at `http://127.0.0.1:8000`.
-
----
-
-## 7. Nginx Reverse Proxy and SSL (HTTPS)
-
-You must never expose Gunicorn directly to the public internet. Nginx routes public HTTP/HTTPS traffic to the backend published on host port 8000.
-
-Create an Nginx configuration file for the API:
-```bash
-sudo nano /etc/nginx/sites-available/kormic_api
-```
-
-Add the following config:
 ```nginx
-server {
-    listen 80;
-    server_name api.kormic.ai; # Change this to your actual domain
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
+location / {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 }
 ```
 
-Enable the configuration and restart Nginx:
-```bash
-sudo ln -s /etc/nginx/sites-available/kormic_api /etc/nginx/sites-enabled/
-sudo nginx -t
-sudo systemctl restart nginx
+Database/API published ports default to loopback. For a deliberate LAN pilot, set `API_BIND_ADDRESS=0.0.0.0` and restrict access at the firewall; keep PostgreSQL local. Serve static files appropriately; keep private uploads behind their authorized download paths. Configure the frontend host to serve its SPA entry point for claim links.
+
+Gunicorn defaults to a 120-second timeout. Chat generation runs in the dedicated worker with its own shorter bounded execution; increasing the web timeout is not a replacement for running `chat_worker`. Inspect generation states and sanitized telemetry to detect stalled work.
+
+## Verify and upgrade
+
+```sh
+docker compose exec web python manage.py check --deploy
+docker compose exec web python manage.py showmigrations
+docker compose logs --tail=100 celery_worker chat_worker celery_beat
 ```
 
-### Enable HTTPS with Certbot
-Install Certbot and request a free Let's Encrypt SSL certificate:
-```bash
-sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d api.kormic.ai
-```
-Follow the prompts and choose to **Redirect** all HTTP traffic to HTTPS.
+A healthy web process alone does not prove queue processing, email or provider connectivity. Run staging login/TOTP, CSRF refresh, staff permission, upload and chat smoke tests. Monitor worker failures and latency percentiles under representative traffic. On upgrade, retain secrets and volumes, rebuild all services, and confirm the migration job completes before accepting traffic. Restore a tested backup if a schema rollback is necessary; do not assume reversing a migration preserves user data.
 
----
+See [Knowledge, telemetry and privacy operations](KNOWLEDGE_PRIVACY_OPERATIONS.md) for pgvector migration, embedding configuration, source freshness, model pricing, data export/deletion and retention rollout.
 
-## 8. Verification & Health Check
+New clients use `/api/v1/`; `/api/` remains a compatibility alias. See [API version policy](API_VERSIONING.md).
 
-Test that your API is accessible and healthy from the outside world:
-```bash
-curl -i https://api.kormic.ai/api/health/
-```
-You should see:
-```http
-HTTP/1.1 200 OK
-Content-Type: application/json
+## CI gates and production evolution
 
-{"status": "ok"}
-```
+See [CI_CD.md](CI_CD.md) for checks and merge protection. The Docker job builds this exact image, starts an isolated PostgreSQL/Redis/web/worker/beat stack, applies migrations, checks API/worker health and destroys only its ephemeral CI volumes. It uses generated test secrets and no production provider credentials.
 
----
-
-### Verify Kormic operator access
-
-1. Sign in to the Kormic Superuser portal with the operator account created in section 6.
-2. Complete TOTP enrollment and confirmation if this is the first login, and save the backup codes.
-3. Open the university list and verify that `GET /api/superuser/universities/` succeeds (HTTP 200, even if the list is empty).
-4. Sign out and sign back in, completing the TOTP challenge, to verify subsequent logins.
-
-A successful Django Admin login does not verify Kormic operator access. If the Superuser API denies access, check that this login has `Account.Role.SUPERUSER` and a confirmed TOTP device.
-
----
-
-## 9. Day-to-Day Maintenance
-
-### Viewing Logs
-To see real-time logs for the web server or background workers:
-```bash
-# Web server logs
-docker compose logs -f web
-
-# Celery worker logs
-docker compose logs -f celery_worker
-```
-
-### Updating to the Latest Code
-When new code is merged to the main branch, deploy it using:
-```bash
-cd ~/backend
-git pull origin main
-docker compose build
-docker compose up -d
-docker compose exec web python manage.py migrate
-docker compose exec web python manage.py collectstatic --noinput
-```
-
-### Accessing the Database Shell
-If you need to query the Postgres database directly, use the credentials already injected into that container:
-```bash
-docker compose exec postgres sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
-```
-
-### Accessing the Django Shell
-```bash
-docker compose exec web python manage.py shell
-```
-
-## Browser cookie authentication
-
-See [WEB_AUTH.md](WEB_AUTH.md) before deploying the portal clients: configure exact HTTPS CORS/CSRF origins and same-site cookie hosting. Access tokens last five minutes; refresh credentials are HttpOnly cookies.
+Stay on the single-host pilot until capacity or availability requirements justify migration. The later target is static web portals on Vercel/CDN, signed mobile releases through EAS/app stores, the API and separate scalable Celery workers on managed containers, RDS PostgreSQL, ElastiCache Redis, S3 private uploads, centralized logs/traces, and AWS Secrets Manager/Parameter Store. These are future deployment choices, not services provisioned by this change. Preserve private-file authorization, encryption keys, queue routing and a tested data migration/rollback plan when adopting them.

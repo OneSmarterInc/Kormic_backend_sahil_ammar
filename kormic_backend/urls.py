@@ -13,22 +13,27 @@ def health_check(request):
     return JsonResponse({"status": "ok"})
 
 
+# Versioned and compatibility routes share handlers, permissions and throttles.
+# Keep the old namespace for released clients; new clients use /api/v1/.
+api_patterns = [
+    path("health/", health_check),
+    path("schema/", StudentProfileSchemaAPIView.as_view(), name="openapi-schema"),
+    path("auth/", include("accounts.urls")),
+    path("verification/", include("verification.urls")),
+    path("university-admin/", include("universities.urls")),
+    path("notifications/", include("notifications.urls")),
+    path("superuser/", include("project_superuser.urls")),
+    path("", include("institutes_list.urls")),
+    path("", include("django_api.urls")),
+]
+
 urlpatterns = [
     path('.well-known/assetlinks.json', android_assetlinks),
     path('.well-known/apple-app-site-association', apple_app_site_association),
     path('claim', claim_landing),
     path('claim/', claim_landing),
-    path("api/health/", health_check),
-    path("api/schema/", StudentProfileSchemaAPIView.as_view(), name="openapi-schema"),
     path("admin/", admin.site.urls),
-    path("api/auth/", include("accounts.urls")),
-    path("api/verification/", include("verification.urls")),
-    path("api/university-admin/", include("universities.urls")),
-    path("api/notifications/", include("notifications.urls")),
-    path("api/superuser/", include("project_superuser.urls")),
-    path("api/", include("institutes_list.urls")),
-    path("api/", include("django_api.urls")),
-    # Compatibility for released/local student builds whose API base omitted
-    # the /api suffix. Canonical claim URLs remain under /api/claim/.
+    path("api/v1/", include((api_patterns, "api"), namespace="v1")),
+    path("api/", include(api_patterns)),
     path("claim/", include("institutes_list.claim_compat_urls")),
 ]
