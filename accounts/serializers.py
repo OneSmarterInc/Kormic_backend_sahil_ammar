@@ -306,3 +306,15 @@ def serialize_user(user: User) -> dict:
 
     return data
 
+
+
+class PortalUserSerializer(serializers.Serializer):
+    """Stable core shared by web login and /auth/me; role-specific extras remain additive."""
+    id = serializers.IntegerField()
+    email = serializers.EmailField(allow_blank=True)
+    name = serializers.CharField(allow_blank=True)
+    role = serializers.CharField(allow_null=True)
+    student_id = serializers.CharField(allow_null=True)
+    university_id = serializers.CharField(allow_null=True)
+    institute_id = serializers.CharField(allow_null=True)
+    totp_enrolled = serializers.BooleanField()

@@ -40,3 +40,5 @@ New clients use `/api/v1/`; `/api/` remains a compatibility alias. See [API vers
 See the [section 11 testing matrix](https://github.com/OneSmarterInc/Kormic_backend_sahil_ammar/blob/fix/p1-06-10-chat-policy-and-environments/TESTING_MATRIX.md) for executable coverage, local commands, and staging/device acceptance checks.
 
 Security fixes, rollout notes, OTP invalidation and raw-roster retention: [SECURITY_HARDENING.md](SECURITY_HARDENING.md).
+
+Medium/structural audit decisions and contract workflow: [Audit disposition](AUDIT_DISPOSITION.md).

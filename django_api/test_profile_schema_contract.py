@@ -21,3 +21,13 @@ class StudentProfileSchemaContractTests(SimpleTestCase):
         self.assertIn("date_of_birth", documented_fields)
         self.assertIn("year_in_college", documented_fields)
 
+
+
+    def test_portal_core_contract_matches_actual_user_serialization(self):
+        from types import SimpleNamespace
+        from accounts.serializers import serialize_user, PortalUserSerializer
+        user = SimpleNamespace(id=42, email="admin@example.test", first_name="Admin")
+        payload = serialize_user(user)
+        self.assertEqual(set(payload), set(PortalUserSerializer().fields))
+        serializer = PortalUserSerializer(data=payload)
+        self.assertTrue(serializer.is_valid(), serializer.errors)

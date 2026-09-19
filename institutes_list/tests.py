@@ -107,7 +107,7 @@ class ClaimFlowTests(TestCase):
         row = ListedStudent.objects.get(email="priya.sharma@gmail.com")
         resp = self.client.post("/api/claim/start/", {"token": row.claim_token}, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json(), {"masked_email": "p•••••@gmail.com"})
+        self.assertEqual(resp.json(), {"masked_email": "•••••@•••••", "message": "If an eligible invitation exists, a code will be sent. Check your email."})
 
         row.refresh_from_db()
         self.mock_claim_otp_delivery.assert_called_once_with(row.id, row.otp_hash)
@@ -115,7 +115,7 @@ class ClaimFlowTests(TestCase):
 
     def test_start_is_generic_for_unknown_email(self):
         resp = self.client.post("/api/claim/start/", {"email": "stranger@gmail.com"}, format="json")
-        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.status_code, 200)
         self.assertNotIn("stranger", str(resp.json()))
 
     # ------------------------------------------------------------ claim: verify
@@ -132,7 +132,7 @@ class ClaimFlowTests(TestCase):
         resp = self.client.post(
             "/api/claim/verify/", {"email": "priya.sharma@gmail.com", "code": "000000"}, format="json"
         )
-        self.assertEqual(resp.status_code, 429)
+        self.assertEqual(resp.status_code, 400)
 
     def test_correct_code_returns_prefill(self):
         self.client.post("/api/claim/start/", {"email": "priya.sharma@gmail.com"}, format="json")
@@ -187,7 +187,7 @@ class ClaimFlowTests(TestCase):
         # token now dead for start...
         row = ListedStudent.objects.get(email="priya.sharma@gmail.com")
         resp = self.client.post("/api/claim/start/", {"token": row.claim_token}, format="json")
-        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.status_code, 200)
         # ...and the session cannot confirm twice
         resp = self.client.post("/api/claim/confirm/", {"claim_session": session, "fields": {}}, format="json")
         self.assertEqual(resp.status_code, 400)

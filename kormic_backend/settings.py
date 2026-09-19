@@ -55,7 +55,16 @@ ALLOWED_HOSTS = [
     if h.strip()
 ]
 
-SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+# Trust forwarding headers only from explicitly configured reverse proxies.
+TRUSTED_PROXY_CIDRS = tuple(x.strip() for x in os.getenv("DJANGO_TRUSTED_PROXY_CIDRS", "").split(",") if x.strip())
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https") if TRUSTED_PROXY_CIDRS else None
+SECURE_SSL_REDIRECT = os.getenv("DJANGO_SECURE_SSL_REDIRECT", str(not DEBUG)).lower() == "true"
+SECURE_REDIRECT_EXEMPT = [r"^api/(v1/)?health/$"]  # no credentials or application data
+SECURE_HSTS_SECONDS = int(os.getenv("DJANGO_SECURE_HSTS_SECONDS", "0" if DEBUG else "3600"))
+# Subdomains/preload need a separate DNS/TLS readiness decision.
+SECURE_HSTS_INCLUDE_SUBDOMAINS = os.getenv("DJANGO_HSTS_INCLUDE_SUBDOMAINS", "false").lower() == "true"
+SECURE_HSTS_PRELOAD = os.getenv("DJANGO_HSTS_PRELOAD", "false").lower() == "true"
+SESSION_COOKIE_SECURE = not DEBUG
 
 
 # Application definition
@@ -70,6 +79,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
 
     'rest_framework',
+    'drf_spectacular',
     'rest_framework_simplejwt',
     'rest_framework_simplejwt.token_blacklist',
     'accounts',
@@ -86,6 +96,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'accounts.api_errors.APIRequestIdMiddleware',
     "corsheaders.middleware.CorsMiddleware",
+    'accounts.proxy.TrustedProxyMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -124,7 +135,7 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': os.environ.get('POSTGRES_DB', 'kormic'),
         'USER': os.environ.get('POSTGRES_USER', 'kormic'),
-        'PASSWORD': os.environ.get('POSTGRES_PASSWORD', 'kormic'),
+        'PASSWORD': os.environ.get('POSTGRES_PASSWORD', ''),
         'HOST': os.environ.get('POSTGRES_HOST', 'localhost'),
         'PORT': os.environ.get('POSTGRES_PORT', '5432'),
       
@@ -246,6 +257,8 @@ REST_FRAMEWORK = {
         "claim_start_email": "3/min",
         "claim_verify_ip": "20/min",
         "claim_verify_email": "10/min",
+        "claim_confirm_ip": "20/min",
+        "claim_confirm_session": "5/min",
     },
 }
 
@@ -492,3 +505,9 @@ CELERY_BEAT_SCHEDULE.update({
 INSTITUTE_ROSTER_MAX_BYTES = int(os.getenv("INSTITUTE_ROSTER_MAX_BYTES", "5242880"))
 INSTITUTE_ROSTER_MAX_ROWS = int(os.getenv("INSTITUTE_ROSTER_MAX_ROWS", "5000"))
 INSTITUTE_SOURCE_FILE_RETENTION_DAYS = int(os.getenv("INSTITUTE_SOURCE_FILE_RETENTION_DAYS", "30"))
+
+# This service publishes explicit client contracts, not an inferred schema of
+# undocumented legacy endpoints. Deployment checks use that same URLconf.
+SPECTACULAR_SETTINGS = {
+    "DEFAULT_GENERATOR_CLASS": "django_api.schema_generator.ClientContractSchemaGenerator",
+}

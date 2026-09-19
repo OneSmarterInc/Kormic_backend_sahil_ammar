@@ -8,7 +8,7 @@ from rest_framework.views import APIView
 from accounts.permissions import IsStudentRole, IsTOTPEnrolled
 from verification import services
 
-STUDENT_PERMISSIONS = [IsAuthenticated, IsTOTPEnrolled, IsStudentRole]
+from accounts.permissions import STUDENT_PERMISSIONS
 
 
 def _api_error(message: str, http_status=status.HTTP_400_BAD_REQUEST) -> Response:
@@ -71,3 +71,4 @@ class VerificationItemListAPIView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+

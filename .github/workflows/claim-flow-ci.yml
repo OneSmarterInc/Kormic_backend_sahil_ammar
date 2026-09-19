@@ -41,6 +41,7 @@ jobs:
     env:
       DJANGO_SECRET_KEY: claim-flow-ci-secret-key-32-bytes-minimum-value
       DJANGO_DEBUG: "false"
+      DJANGO_SECURE_SSL_REDIRECT: "false" # synthetic HTTP test requests only
       DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,testserver
       POSTGRES_DB: kormic_ci
       POSTGRES_USER: postgres
@@ -53,7 +54,6 @@ jobs:
       CELERY_TASK_ALWAYS_EAGER: "false"
       REQUIRE_POSTGRES_CHECKPOINT_TEST: "true"
       EMAIL_MODE: dev
-      GITHUB_OAUTH_TOKEN_KEY: b6AZAbEEXdp7c9bD1dpHeOxrzr3jlos2qaYJxfVEOjs=
 
     steps:
       - name: Check out repository
@@ -66,10 +66,16 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+        run: python -m pip install --upgrade pip && python -m pip install --require-hashes -r requirements.txt
 
-      - name: Generate ephemeral TOTP encryption key for CI
-        run: python -c "from cryptography.fernet import Fernet; print('TOTP_SECRET_KEYS=' + Fernet.generate_key().decode())" >> "$GITHUB_ENV"
+      - name: Verify reproducible Python dependency lock
+        run: |
+          python -m pip install uv==0.12.15
+          uv pip compile requirements.in --python-version 3.11 --generate-hashes --no-strip-extras --output-file requirements.txt
+          git diff --exit-code -- requirements.txt
+
+      - name: Generate ephemeral encryption keys for CI
+        run: python -c "import secrets; from cryptography.fernet import Fernet; print('DJANGO_SECRET_KEY=' + secrets.token_urlsafe(64)); print('TOTP_SECRET_KEYS=' + Fernet.generate_key().decode()); print('GITHUB_OAUTH_TOKEN_KEY=' + Fernet.generate_key().decode())" >> "$GITHUB_ENV"
 
       - name: Validate Compose database environment contract
         env:
@@ -190,6 +196,13 @@ jobs:
       - name: Validate shared environment generation
         run: python scripts/test_configure_environment.py
 
+      - name: Production deployment security checks
+        env:
+          DJANGO_SECURE_SSL_REDIRECT: "true"
+          DJANGO_HSTS_INCLUDE_SUBDOMAINS: "true"
+          DJANGO_HSTS_PRELOAD: "true"
+        run: python manage.py check --deploy --fail-level WARNING
+
       - name: Django system check
         run: python manage.py check
 
@@ -204,6 +217,9 @@ jobs:
 
       - name: Run institute claim-flow regression tests
         run: python manage.py test institutes_list --verbosity 2
+
+      - name: Verify exported client contracts
+        run: python manage.py export_client_contracts --check
 
       - name: Run complete backend test suite
         run: python manage.py test --verbosity 1
@@ -253,7 +269,7 @@ jobs:
       - name: Build deployment image
         run: docker compose build
       - name: Generate isolated encryption keys
-        run: docker compose run --rm --no-deps -T web python -c "from cryptography.fernet import Fernet; print('TOTP_SECRET_KEYS=' + Fernet.generate_key().decode()); print('GITHUB_OAUTH_TOKEN_KEY=' + Fernet.generate_key().decode())" >> .env
+        run: docker compose run --rm --no-deps -T web python -c "import secrets; from cryptography.fernet import Fernet; print('DJANGO_SECRET_KEY=' + secrets.token_urlsafe(64)); print('TOTP_SECRET_KEYS=' + Fernet.generate_key().decode()); print('GITHUB_OAUTH_TOKEN_KEY=' + Fernet.generate_key().decode())" >> .env
       - name: Start pilot services and await health checks
         run: docker compose up -d --wait --wait-timeout 240
       - name: Verify API and workers

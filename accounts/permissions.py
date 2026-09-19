@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from rest_framework.permissions import BasePermission
+from rest_framework.permissions import BasePermission, IsAuthenticated
 
 from accounts.models import Account, TOTPDevice
 
@@ -103,3 +103,6 @@ class ScopedToOwnInstituteId(BasePermission):
         account = get_account(request)
         return account is not None and account.institute_uuid == str(institute_id)
 
+
+
+STUDENT_PERMISSIONS = (IsAuthenticated, IsTOTPEnrolled, IsStudentRole)

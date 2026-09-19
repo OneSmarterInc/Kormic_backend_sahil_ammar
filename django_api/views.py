@@ -68,7 +68,7 @@ from institutes_list.models import ListedStudent
 
 logger = logging.getLogger(__name__)
 
-STUDENT_PERMISSIONS = [IsAuthenticated, IsTOTPEnrolled, IsStudentRole]
+from accounts.permissions import STUDENT_PERMISSIONS
 STUDENT_OWNER_PERMISSIONS = [IsAuthenticated, IsTOTPEnrolled, IsStudentRole, ScopedToOwnStudentId]
 UNIVERSITY_OWNER_PERMISSIONS = [IsAuthenticated, IsTOTPEnrolled, IsUniversityRole, ScopedToOwnUniversityId]
 

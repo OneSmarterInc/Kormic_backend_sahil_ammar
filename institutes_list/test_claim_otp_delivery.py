@@ -54,7 +54,7 @@ class ClaimOtpDeliveryTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response["Content-Type"].startswith("application/json"))
-        self.assertEqual(response.json(), {"masked_email": "m•••••@example.edu"})
+        self.assertEqual(response.json(), {"masked_email": "•••••@•••••", "message": "If an eligible invitation exists, a code will be sent. Check your email."})
 
         self.student.refresh_from_db()
         mock_delay.assert_called_once_with(self.student.id, self.student.otp_hash)
@@ -89,12 +89,9 @@ class ClaimOtpDeliveryTests(TestCase):
             format="json",
         )
 
-        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.status_code, 200)
         self.assertTrue(response["Content-Type"].startswith("application/json"))
-        self.assertEqual(
-            response.json()["error"]["code"],
-            "SERVICE_UNAVAILABLE",
-        )
+        self.assertEqual(response.json()["masked_email"], "•••••@•••••")
 
         self.student.refresh_from_db()
         self.assertEqual(self.student.otp_hash, "")
@@ -153,12 +150,9 @@ class ClaimOtpDeliveryTests(TestCase):
             format="json",
         )
 
-        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.status_code, 200)
         self.assertTrue(response["Content-Type"].startswith("application/json"))
-        self.assertEqual(
-            response.json()["error"]["message"],
-            "No claimable invitation found for that information.",
-        )
+        self.assertEqual(response.json()["masked_email"], "•••••@•••••")
 
 
 class ClaimOtpRouteIsolationTests(TestCase):

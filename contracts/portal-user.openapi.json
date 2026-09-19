@@ -1,0 +1,56 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Kormic client contract",
+    "version": "1.0.0"
+  },
+  "components": {
+    "schemas": {
+      "PortalUser": {
+        "type": "object",
+        "description": "Stable core shared by web login and /auth/me; role-specific extras remain additive.",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "nullable": true
+          },
+          "student_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "university_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "institute_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "totp_enrolled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "email",
+          "id",
+          "institute_id",
+          "name",
+          "role",
+          "student_id",
+          "totp_enrolled",
+          "university_id"
+        ]
+      }
+    }
+  }
+}

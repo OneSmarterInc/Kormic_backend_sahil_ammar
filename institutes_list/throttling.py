@@ -6,7 +6,8 @@
 from __future__ import annotations
 
 from django.conf import settings
-from rest_framework.throttling import AnonRateThrottle, SimpleRateThrottle
+from django.utils.crypto import salted_hmac
+from rest_framework.throttling import SimpleRateThrottle
 
 
 class ClaimRateSettingsMixin:
@@ -35,10 +36,16 @@ class ClaimEmailRateThrottle(ClaimRateSettingsMixin, SimpleRateThrottle):
         if not ident:
             # Nothing to key on -- the per-IP throttle still applies.
             return None
-        return self.cache_format % {"scope": self.scope, "ident": ident}
+        return self.cache_format % {"scope": self.scope, "ident": salted_hmac("claim-throttle", ident).hexdigest()}
 
 
-class ClaimStartIPThrottle(ClaimRateSettingsMixin, AnonRateThrottle):
+class ClaimIPThrottle(ClaimRateSettingsMixin, SimpleRateThrottle):
+    # Also applies when an authenticated caller uses this public flow.
+    def get_cache_key(self, request, view):
+        return self.cache_format % {"scope": self.scope, "ident": self.get_ident(request)}
+
+
+class ClaimStartIPThrottle(ClaimIPThrottle):
     scope = "claim_start_ip"
 
 
@@ -46,9 +53,23 @@ class ClaimStartEmailThrottle(ClaimEmailRateThrottle):
     scope = "claim_start_email"
 
 
-class ClaimVerifyIPThrottle(ClaimRateSettingsMixin, AnonRateThrottle):
+class ClaimVerifyIPThrottle(ClaimIPThrottle):
     scope = "claim_verify_ip"
 
 
 class ClaimVerifyEmailThrottle(ClaimEmailRateThrottle):
     scope = "claim_verify_email"
+
+
+
+class ClaimConfirmIPThrottle(ClaimIPThrottle):
+    scope = "claim_confirm_ip"
+
+
+class ClaimConfirmSessionThrottle(ClaimRateSettingsMixin, SimpleRateThrottle):
+    scope = "claim_confirm_session"
+
+    def get_cache_key(self, request, view):
+        session = str(request.data.get("claim_session") or "")
+        ident = salted_hmac("claim-confirm-throttle", session).hexdigest()
+        return self.cache_format % {"scope": self.scope, "ident": ident}

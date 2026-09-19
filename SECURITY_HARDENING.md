@@ -31,3 +31,16 @@ University, Institute and Superuser clients have identical policies except PORTA
 ## Verification
 
 Backend: institutes_list.test_security, institutes_list.test_claim_otp_delivery, url_discovery.test_security, accounts.test_secret_configuration, existing claim/privacy/knowledge suites, plus complete/shuffled PostgreSQL CI. Portals: tests/components/apiSecurity.test.jsx and existing browser journeys. These are deterministic adversarial fixtures, not requests to metadata services or private networks.
+
+
+## Medium-severity follow-up
+
+Claim start always returns the same 200 placeholder/message, including unknown or consumed invitations and queue/cache failures. Internal logs retain delivery failures; users can retry after the usual throttle. No email address or domain is inferred from stored roster data. Wrong/unknown/expired/exhausted codes share the same 400 response. Rate-limit responses still return 429 based on caller traffic. This removes the status/body membership oracle; it is not a claim of constant-time network behavior.
+
+Verification reserves attempts with a conditional SQL increment inside a row-locked transaction. Confirmation has separate IP/session throttles and locks the row through profile creation/claim consumption. PostgreSQL parallel-request tests verify five maximum guesses and one successful confirmation. The dead synchronous start handler is removed.
+
+Production defaults enable HTTPS redirects, secure session cookies and one-hour HSTS. Only the non-sensitive health URL is exempt from redirect for container health probes. Forwarded HTTPS is disabled unless `DJANGO_TRUSTED_PROXY_CIDRS` lists the actual connecting proxy IP/CIDR; middleware removes forwarding headers from every other peer. The proxy must overwrite incoming forwarding headers, and Gunicorn must stay private. See [Django's proxy-header guidance](https://docs.djangoproject.com/en/5.2/ref/settings/#secure-proxy-ssl-header). Keep local development DEBUG=true; the CI HTTP tests explicitly disable redirects and separately run production deployment checks. HSTS subdomain/preload settings remain deliberate deployment opt-ins; the deployment CI tests those opt-ins without changing production DNS.
+
+The database password no longer has a built-in value. Compose still requires a non-empty password. CI generates both encryption keys per run. Historical CI keys remain in Git history and must never be used for a deployment. If a deployment copied one, rotate it using the existing encrypted-data key-rotation procedure; no deployed keys were changed here.
+
+Python `requirements.in` expresses direct dependencies and `requirements.txt` is the complete Python 3.11 lock with hashes. Docker/CI install with `--require-hashes`; CI regenerates without upgrading existing pins and fails on drift. Update intentionally with uv 0.12.15, `uv pip compile requirements.in --python-version 3.11 --generate-hashes --no-strip-extras --upgrade --output-file requirements.txt`, then regenerate without `--upgrade` to retain the canonical header, review the diff, audit and run all gates. Pytest is removed from the application dependencies; the suite uses Django's runner.
