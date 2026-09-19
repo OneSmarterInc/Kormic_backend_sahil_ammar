@@ -34,3 +34,7 @@ Tests require a dedicated test database and Redis cache. CI exercises the comple
 See [Knowledge, telemetry and privacy operations](KNOWLEDGE_PRIVACY_OPERATIONS.md) for pgvector migration, embedding configuration, source freshness, model pricing, data export/deletion and retention rollout.
 
 New clients use `/api/v1/`; `/api/` remains a compatibility alias. See [API version policy](API_VERSIONING.md).
+
+## Required test gates
+
+See the [section 11 testing matrix](https://github.com/OneSmarterInc/Kormic_backend_sahil_ammar/blob/fix/p1-06-10-chat-policy-and-environments/TESTING_MATRIX.md) for executable coverage, local commands, and staging/device acceptance checks.
