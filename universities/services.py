@@ -42,12 +42,15 @@ def build_persona_dict(university: University) -> Dict[str, Any]:
     }
 
 
-def register_university(institution_name: str) -> University:
+def register_university(institution_name: str, country: str = "US") -> University:
     """Create a bare University row with an auto-generated unique id and
     agent name -- the registration-time half of the two-phase flow. Setup
     (description/contacts/eligibility/scrape URLs/knowledge) all happens
     afterward via the universities-admin endpoints."""
-    university = University.objects.create(name=institution_name.strip())
+    university = University.objects.create(
+        name=institution_name.strip(),
+        country=country.strip().upper(),
+    )
     ensure_agent_name(university)
     return university
 
