@@ -68,6 +68,7 @@ def _serialize_university(university: University) -> Dict[str, Any]:
     return {
         "id": str(university.uuid),
         "name": university.name,
+        "country": university.country,
         "agent_name": university.agent_name,
         "location": university.location,
         "tagline": university.tagline,
@@ -306,6 +307,7 @@ def _serialize_institute(institute: Institute) -> Dict[str, Any]:
     return {
         "id": str(institute.uuid),
         "name": institute.name,
+        "country": institute.country,
         "contact_email": institute.contact_email,
         "contact_phone": institute.contact_phone,
         "address": institute.address,
@@ -367,7 +369,7 @@ class AdminInstituteDetailAPIView(APIView):
     """
 
     permission_classes = SUPERUSER_PERMISSIONS
-    PATCHABLE_FIELDS = {"name", "contact_email", "contact_phone", "address"}
+    PATCHABLE_FIELDS = {"name", "contact_email", "contact_phone", "address", "country"}
 
     def get(self, request, institute_id: str):
         institute = Institute.objects.filter(uuid=institute_id).first()
