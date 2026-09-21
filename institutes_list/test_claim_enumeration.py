@@ -4,14 +4,14 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from institutes.services import register_institute
-from institutes_list.models import ListedStudent, UniversityStudentList
+from institutes_list.models import ListedStudent, InstituteStudentList
 
 
 class ClaimEnumerationResistanceTests(TestCase):
     def setUp(self):
         self.client = APIClient()
         institute = register_institute("Enumeration Safe Institute", country="IN")
-        source_list = UniversityStudentList.objects.create(
+        source_list = InstituteStudentList.objects.create(
             institute=institute,
             contact_name="Admissions",
             contact_email="admissions@example.edu",
