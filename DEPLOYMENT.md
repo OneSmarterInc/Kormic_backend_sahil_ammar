@@ -171,9 +171,9 @@ Verify that all containers (web, celery_worker, celery_beat, postgres, redis) ar
 docker compose ps
 ```
 
-Verify the host-published backend directly before configuring Nginx:
+Verify the host-published backend directly before configuring Nginx. Because this production configuration enables HTTPS redirect and trusts Nginx's forwarded-proto header, emulate that trusted header for this loopback-only check:
 ```bash
-curl http://127.0.0.1:8000/api/health/
+curl -H 'X-Forwarded-Proto: https' http://127.0.0.1:8000/api/health/
 ```
 
 ---
