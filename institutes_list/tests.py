@@ -105,7 +105,7 @@ class ClaimFlowTests(TestCase):
         row = ListedStudent.objects.get(email="priya.sharma@gmail.com")
         resp = self.client.post("/api/claim/start/", {"token": row.claim_token}, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json(), {"masked_email": "p•••••@gmail.com"})
+        self.assertEqual(resp.json(), {"masked_email": "•••••"})
 
         row.refresh_from_db()
         self.mock_claim_otp_delivery.assert_called_once_with(row.id, row.otp_hash)
