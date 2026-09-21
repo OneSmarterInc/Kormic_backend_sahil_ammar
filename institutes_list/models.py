@@ -2,10 +2,11 @@
 Institute-list enrollment: institutes send student lists (for students headed
 into university admissions); we pre-create unclaimed profiles; students claim
 by proving control of the listed email.
-Note: the uploading "institute" (institutes.Institute) is a distinct entity
-from a "university" (universities.University) elsewhere in this codebase --
-an institute is a local org that sends a list; a university is the AI-agent-
-bearing destination school the student is applying to. Never conflate them.
+Note: the uploading "institute" (institutes.Institute) is a university or
+other entity outside the USA that sends students and may upload rosters. It is
+distinct from a "university" (universities.University), which is a US
+destination university with an AI-agent and knowledge base. Never conflate
+them.
 """
 import secrets
 
