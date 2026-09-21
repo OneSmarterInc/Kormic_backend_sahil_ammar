@@ -5,7 +5,7 @@ from institutes.models import Institute
 
 def register_institute(
     name: str,
-    country: str = "IN",
+    country: str,
     contact_email: str = "",
     contact_phone: str = "",
     address: str = "",
