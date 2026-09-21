@@ -21,11 +21,13 @@ The project is broken down into several Django apps, each handling a distinct do
 
 ## Institute vs University
 
-These are two distinct concepts and are not meant to converge:
+Kormic uses these terms for two different institution roles:
 
-- **`University`** (`universities/`) is a destination school: it has an AI officer agent (persona, name, its own knowledge base), fit scoring against student profiles, `KnowledgeGroup`s for routing escalations to the right department, and `url_discovery` jobs to help build its knowledge base. Only a superuser can create one, via `POST /api/superuser/universities/`.
+- **`University`** (`universities/`) is a **US university that accepts students**. It has its own AI officer agent, persona, knowledge base, fit scoring, department knowledge groups, and URL-discovery/scraping workflow. Universities are created by a superuser via `POST /api/superuser/universities/`.
 
-- **`Institute`** (`institutes/`) is a local org -- a school, coaching center, or an agent's partner institution -- that uploads student lists for the claim flow (`institutes_list/`). An institute never gets an agent; it only ever needs an identity (id, name, contact info) for provenance and one admin login to upload lists. Also only created by a superuser, via `POST /api/superuser/institutes/`.
+- **`Institute`** (`institutes/`) is a **university or other entity outside the United States that sends students** into the Kormic ecosystem and may upload student rosters for the claim flow in `institutes_list/`. Institutes do **not** have an AI agent or their own Kormic knowledge base. They have an identity, country, contact information, and an admin login for roster management. Institutes are created by a superuser via `POST /api/superuser/institutes/`.
+
+- **Students do not need to come through an Institute roster.** A student may also self-register directly through the public student registration flow. An Institute roster is an additional verified onboarding path, not a prerequisite for having a Kormic student account.
 
 ## Canonical Backend Port
 
