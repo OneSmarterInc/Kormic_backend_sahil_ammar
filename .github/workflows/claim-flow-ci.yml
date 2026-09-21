@@ -63,8 +63,27 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      - name: Enforce direct dependency pins
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          offenders = []
+          for raw in Path("requirements.txt").read_text().splitlines():
+              line = raw.strip()
+              if not line or line.startswith("#"):
+                  continue
+              if "==" not in line:
+                  offenders.append(line)
+          if offenders:
+              raise SystemExit("Unpinned direct dependencies: " + ", ".join(offenders))
+          PY
+
       - name: Install dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip check
 
       - name: Generate ephemeral encryption keys for CI
         run: |
