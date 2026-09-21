@@ -13,7 +13,7 @@ from institutes_list.views import OTP_MAX_ATTEMPTS, OTP_TTL_SECONDS, _hash_otp
 
 class ClaimOtpHashIsolationTests(TestCase):
     def setUp(self):
-        institute = register_institute("OTP Hash Isolation Institute")
+        institute = register_institute("OTP Hash Isolation Institute", country="IN")
         source_list = InstituteStudentList.objects.create(
             institute=institute,
             contact_name="Admissions",
