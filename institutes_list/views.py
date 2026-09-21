@@ -5,15 +5,13 @@ Institute-list intake and the student claim flow.
 import csv
 import hashlib
 import io
-import secrets
 import uuid
 from pathlib import Path
 from urllib.parse import urlencode
 
 from django.conf import settings
 from django.core import signing
-from django.core.mail import send_mail
-from django.db.models import Count, Q
+from django.db.models import Count, F, Q
 from django.http import FileResponse
 from django.utils import timezone
 from rest_framework import status
@@ -27,8 +25,8 @@ from institutes.models import Institute
 from .models import ListedStudent, UniversityStudentList
 from .tasks import send_invite_email_task
 from .throttling import (
-    ClaimStartEmailThrottle,
-    ClaimStartIPThrottle,
+    ClaimConfirmIPThrottle,
+    ClaimConfirmSessionThrottle,
     ClaimVerifyEmailThrottle,
     ClaimVerifyIPThrottle,
 )
@@ -508,51 +506,6 @@ def send_invite(request, list_id, student_id):
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
-@throttle_classes([ClaimStartIPThrottle, ClaimStartEmailThrottle])
-def start_claim(request):
-    """
-    POST /api/claim/start/   {"email": ...} or {"token": ...}
-    Sends a one-time code to the LISTED address and returns only the masked
-    email. Reveals nothing else -- a forwarded link or photographed QR gets
-    an attacker no further than this masked string.
-
-    Rate limited per-IP and per-email/token so it can't be hammered --
-    each call sends a real email, so the email-side budget is deliberately
-    tight (see ClaimStartEmailThrottle / DEFAULT_THROTTLE_RATES).
-    """
-    row = _find_claimable(
-        email=str(request.data.get("email") or ""),
-        token=str(request.data.get("token") or ""),
-    )
-    if not row:
-        # Deliberately generic: don't confirm which emails are on a list.
-        return Response(
-            {"error": "No claimable invitation found for that information."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
-
-    code = f"{secrets.randbelow(10**6):06d}"
-    row.otp_hash = _hash_otp(code)
-    row.otp_expires_at = timezone.now() + timezone.timedelta(seconds=OTP_TTL_SECONDS)
-    row.otp_attempts = 0
-    row.save(update_fields=["otp_hash", "otp_expires_at", "otp_attempts"])
-
-    send_mail(
-        subject="Your Kormic claim code",
-        message=(
-            f"Your one-time code is {code}. It expires in 10 minutes.\n\n"
-            "Your university listed this address so you can claim your Kormic "
-            "profile. If you didn't request this, you can ignore it."
-        ),
-        from_email=None,  # DEFAULT_FROM_EMAIL
-        recipient_list=[row.email],
-        fail_silently=False,
-    )
-    return Response({"masked_email": _mask_email(row.email)})
-
-
-@api_view(["POST"])
-@permission_classes([AllowAny])
 @throttle_classes([ClaimVerifyIPThrottle, ClaimVerifyEmailThrottle])
 def verify_claim(request):
     """
@@ -572,11 +525,21 @@ def verify_claim(request):
 
     if not row.otp_hash or not row.otp_expires_at or timezone.now() > row.otp_expires_at:
         return Response({"error": "code expired -- request a new one"}, status=status.HTTP_400_BAD_REQUEST)
-    if row.otp_attempts >= OTP_MAX_ATTEMPTS:
-        return Response({"error": "too many attempts -- request a new code"}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+    # Atomically consume one attempt. Conditioning the update on the OTP
+    # generation prevents a concurrent resend from having its fresh attempt
+    # budget consumed by a request that verified the previous code.
+    updated = ListedStudent.objects.filter(
+        id=row.id,
+        otp_hash=row.otp_hash,
+        otp_expires_at=row.otp_expires_at,
+        otp_attempts__lt=OTP_MAX_ATTEMPTS,
+    ).update(otp_attempts=F("otp_attempts") + 1)
+    if updated != 1:
+        return Response(
+            {"error": "too many attempts -- request a new code"},
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
 
-    row.otp_attempts += 1
-    row.save(update_fields=["otp_attempts"])
     if _hash_otp(code) != row.otp_hash:
         return Response({"error": "incorrect code"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -586,6 +549,7 @@ def verify_claim(request):
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes([ClaimConfirmIPThrottle, ClaimConfirmSessionThrottle])
 def confirm_claim(request):
     """
     POST /api/claim/confirm/   {"claim_session": ..., "fields": {...}}
