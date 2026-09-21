@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-from functools import lru_cache
 from urllib.parse import urlsplit
 
 try:
@@ -42,14 +41,13 @@ def is_private_or_local_host(hostname: str) -> bool:
         return False
 
 
-@lru_cache(maxsize=512)
 def resolves_to_public_ip(hostname: str) -> bool:
     if is_private_or_local_host(hostname):
         return False
     try:
         addresses = socket.getaddrinfo(hostname, None)
-    except socket.gaierror:
-        return True  # DNS may be unavailable during project creation; crawler will report failures.
+    except (socket.gaierror, OSError):
+        return False
     if not addresses:
         return False
     for address in addresses:
