@@ -52,3 +52,18 @@ class ClaimVerifyIPThrottle(ClaimRateSettingsMixin, AnonRateThrottle):
 
 class ClaimVerifyEmailThrottle(ClaimEmailRateThrottle):
     scope = "claim_verify_email"
+
+
+class ClaimConfirmIPThrottle(ClaimRateSettingsMixin, AnonRateThrottle):
+    scope = "claim_confirm_ip"
+
+
+class ClaimConfirmSessionThrottle(ClaimRateSettingsMixin, SimpleRateThrottle):
+    scope = "claim_confirm_session"
+
+    def get_cache_key(self, request, view):
+        claim_session = str(request.data.get("claim_session") or "").strip()
+        if not claim_session:
+            # The per-IP throttle still applies to malformed requests.
+            return None
+        return self.cache_format % {"scope": self.scope, "ident": claim_session}

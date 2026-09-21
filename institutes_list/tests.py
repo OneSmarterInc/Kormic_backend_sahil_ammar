@@ -105,16 +105,18 @@ class ClaimFlowTests(TestCase):
         row = ListedStudent.objects.get(email="priya.sharma@gmail.com")
         resp = self.client.post("/api/claim/start/", {"token": row.claim_token}, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json(), {"masked_email": "p•••••@gmail.com"})
+        self.assertEqual(resp.json(), {"masked_email": "•••••"})
 
         row.refresh_from_db()
         self.mock_claim_otp_delivery.assert_called_once_with(row.id, row.otp_hash)
         self.assertEqual(mail.outbox, [])
 
-    def test_start_is_generic_for_unknown_email(self):
+    def test_start_is_status_neutral_for_unknown_email(self):
         resp = self.client.post("/api/claim/start/", {"email": "stranger@gmail.com"}, format="json")
-        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"masked_email": "•••••"})
         self.assertNotIn("stranger", str(resp.json()))
+        self.mock_claim_otp_delivery.assert_not_called()
 
     # ------------------------------------------------------------ claim: verify
 
@@ -131,6 +133,8 @@ class ClaimFlowTests(TestCase):
             "/api/claim/verify/", {"email": "priya.sharma@gmail.com", "code": "000000"}, format="json"
         )
         self.assertEqual(resp.status_code, 429)
+        row = ListedStudent.objects.get(email="priya.sharma@gmail.com")
+        self.assertEqual(row.otp_attempts, 5)
 
     def test_correct_code_returns_prefill(self):
         self.client.post("/api/claim/start/", {"email": "priya.sharma@gmail.com"}, format="json")
@@ -153,6 +157,31 @@ class ClaimFlowTests(TestCase):
             "/api/claim/verify/", {"email": email, "code": _code_from_outbox()}, format="json"
         )
         return resp.json()["claim_session"]
+
+    def test_confirm_endpoint_is_throttled_by_claim_session(self):
+        session = self._verified_session()
+        throttle_settings = deepcopy(django_settings.REST_FRAMEWORK)
+        throttle_settings["DEFAULT_THROTTLE_RATES"] = {
+            **throttle_settings["DEFAULT_THROTTLE_RATES"],
+            "claim_confirm_ip": "100/min",
+            "claim_confirm_session": "2/min",
+        }
+        cache.clear()
+        with self.settings(REST_FRAMEWORK=throttle_settings):
+            first = self.client.post(
+                "/api/claim/confirm/", {"claim_session": session, "fields": {}}, format="json"
+            )
+            self.assertEqual(first.status_code, 200)
+
+            second = self.client.post(
+                "/api/claim/confirm/", {"claim_session": session, "fields": {}}, format="json"
+            )
+            self.assertEqual(second.status_code, 400)
+
+            third = self.client.post(
+                "/api/claim/confirm/", {"claim_session": session, "fields": {}}, format="json"
+            )
+            self.assertEqual(third.status_code, 429)
 
     def test_confirm_records_divergence_and_creates_sourced_profile(self):
         session = self._verified_session()
@@ -182,10 +211,14 @@ class ClaimFlowTests(TestCase):
     def test_claimed_invitation_is_dead(self):
         session = self._verified_session()
         self.client.post("/api/claim/confirm/", {"claim_session": session, "fields": {}}, format="json")
-        # token now dead for start...
+        # The consumed token remains operationally dead, but start returns the
+        # same public 200/placeholder response used for every unknown token.
         row = ListedStudent.objects.get(email="priya.sharma@gmail.com")
+        self.mock_claim_otp_delivery.reset_mock()
         resp = self.client.post("/api/claim/start/", {"token": row.claim_token}, format="json")
-        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"masked_email": "•••••"})
+        self.mock_claim_otp_delivery.assert_not_called()
         # ...and the session cannot confirm twice
         resp = self.client.post("/api/claim/confirm/", {"claim_session": session, "fields": {}}, format="json")
         self.assertEqual(resp.status_code, 400)

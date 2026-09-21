@@ -103,6 +103,11 @@ DJANGO_SECRET_KEY=your_secure_random_long_string_here
 
 # The domain(s) pointing to your backend API. E.g., api.kormic.ai
 DJANGO_ALLOWED_HOSTS=api.kormic.ai,localhost,127.0.0.1
+# This deployment puts Django exclusively behind Nginx. The EC2 security
+# group must not expose port 8000 publicly.
+DJANGO_TRUST_PROXY_SSL_HEADER=true
+DJANGO_SECURE_SSL_REDIRECT=true
+DJANGO_SECURE_HSTS_SECONDS=31536000
 
 # The frontend URLs that are allowed to make cross-origin requests.
 DJANGO_CORS_ALLOWED_ORIGINS=https://student.kormic.ai,https://admin.kormic.ai,https://university.kormic.ai
@@ -166,9 +171,9 @@ Verify that all containers (web, celery_worker, celery_beat, postgres, redis) ar
 docker compose ps
 ```
 
-Verify the host-published backend directly before configuring Nginx:
+Verify the host-published backend directly before configuring Nginx. Because this production configuration enables HTTPS redirect and trusts Nginx's forwarded-proto header, emulate that trusted header for this loopback-only check:
 ```bash
-curl http://127.0.0.1:8000/api/health/
+curl -H 'X-Forwarded-Proto: https' http://127.0.0.1:8000/api/health/
 ```
 
 ---

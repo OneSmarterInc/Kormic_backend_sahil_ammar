@@ -31,6 +31,31 @@ jobs:
   schema-contract:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: kormic
+          POSTGRES_USER: kormic
+          POSTGRES_PASSWORD: kormic
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kormic -d kormic"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     env:
       DJANGO_SECRET_KEY: profile-contract-ci-secret-key
       DJANGO_DEBUG: "true"
@@ -57,8 +82,10 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
 
-      - name: Generate ephemeral TOTP encryption key for CI
-        run: python -c "from cryptography.fernet import Fernet; print('TOTP_SECRET_KEYS=' + Fernet.generate_key().decode())" >> "$GITHUB_ENV"
+      - name: Generate ephemeral encryption keys for CI
+        run: |
+          python -c "from cryptography.fernet import Fernet; print('TOTP_SECRET_KEYS=' + Fernet.generate_key().decode())" >> "$GITHUB_ENV"
+          python -c "from cryptography.fernet import Fernet; print('GITHUB_OAUTH_TOKEN_KEY=' + Fernet.generate_key().decode())" >> "$GITHUB_ENV"
 
       - name: Verify canonical profile OpenAPI contract
         run: python manage.py test django_api.test_profile_schema_contract --verbosity 2

@@ -29,7 +29,7 @@ from .tasks import (
     send_claim_otp_email_task,
 )
 from .throttling import ClaimStartEmailThrottle, ClaimStartIPThrottle
-from .views import OTP_TTL_SECONDS, _find_claimable, _hash_otp, _mask_email
+from .views import OTP_TTL_SECONDS, _find_claimable, _hash_otp
 
 logger = logging.getLogger(__name__)
 
@@ -65,9 +65,11 @@ def start_claim(request):
         token=str(request.data.get("token") or ""),
     )
     if not row:
+        # Do not reveal roster membership through HTTP status. Unknown,
+        # consumed, and valid invitations all return the same public shape.
         return Response(
-            {"error": "No claimable invitation found for that information."},
-            status=status.HTTP_404_NOT_FOUND,
+            {"masked_email": "•••••"},
+            status=status.HTTP_200_OK,
         )
 
     code = f"{secrets.randbelow(10**6):06d}"
@@ -100,8 +102,8 @@ def start_claim(request):
     except ClaimInvitationUnavailable:
         discard_claim_otp_code(row.id, otp_hash)
         return Response(
-            {"error": "No claimable invitation found for that information."},
-            status=status.HTTP_404_NOT_FOUND,
+            {"masked_email": "•••••"},
+            status=status.HTTP_200_OK,
         )
     except Exception:
         logger.exception("Unable to prepare claim OTP delivery for ListedStudent %s.", row.id)
@@ -121,9 +123,10 @@ def start_claim(request):
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
 
-    # Preserve the established public response contract used by released
-    # student clients; delivery is an implementation detail.
+    # Deliberately return the same public shape as an unknown invitation.
+    # Even a masked real address/domain would let an attacker distinguish
+    # roster membership by comparing response bodies.
     return Response(
-        {"masked_email": _mask_email(row.email)},
+        {"masked_email": "•••••"},
         status=status.HTTP_200_OK,
     )

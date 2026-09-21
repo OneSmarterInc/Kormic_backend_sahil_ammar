@@ -56,7 +56,29 @@ ALLOWED_HOSTS = [
     if h.strip()
 ]
 
-SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+# Production transport hardening. Trust the proxy's X-Forwarded-Proto header
+# only when the deployment explicitly opts in and the app port is not exposed
+# directly to untrusted networks.
+if os.environ.get("DJANGO_TRUST_PROXY_SSL_HEADER", "false").lower() == "true":
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+SECURE_SSL_REDIRECT = (
+    os.environ.get(
+        "DJANGO_SECURE_SSL_REDIRECT",
+        "true" if not DEBUG else "false",
+    ).lower()
+    == "true"
+)
+SECURE_HSTS_SECONDS = int(
+    os.environ.get("DJANGO_SECURE_HSTS_SECONDS", "31536000" if not DEBUG else "0")
+)
+SECURE_HSTS_INCLUDE_SUBDOMAINS = (
+    os.environ.get("DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS", "false").lower() == "true"
+)
+SECURE_HSTS_PRELOAD = (
+    os.environ.get("DJANGO_SECURE_HSTS_PRELOAD", "false").lower() == "true"
+)
+SESSION_COOKIE_SECURE = not DEBUG
 
 
 # Application definition
@@ -71,6 +93,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
 
     'rest_framework',
+    'drf_spectacular',
     'rest_framework_simplejwt',
     'rest_framework_simplejwt.token_blacklist',
     'accounts',
@@ -124,7 +147,7 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': os.environ.get('POSTGRES_DB', 'kormic'),
         'USER': os.environ.get('POSTGRES_USER', 'kormic'),
-        'PASSWORD': os.environ.get('POSTGRES_PASSWORD', 'kormic'),
+        'PASSWORD': os.environ.get('POSTGRES_PASSWORD', ''),
         'HOST': os.environ.get('POSTGRES_HOST', 'localhost'),
         'PORT': os.environ.get('POSTGRES_PORT', '5432'),
       
@@ -218,10 +241,14 @@ CSRF_COOKIE_SAMESITE = 'Lax'
 
 REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "accounts.exceptions.auth_exception_handler",
-    "DEFAULT_RENDERER_CLASSES": [
-        "rest_framework.renderers.JSONRenderer",
-        "rest_framework.renderers.BrowsableAPIRenderer",
-    ],
+    "DEFAULT_RENDERER_CLASSES": (
+        [
+            "rest_framework.renderers.JSONRenderer",
+            "rest_framework.renderers.BrowsableAPIRenderer",
+        ]
+        if DEBUG
+        else ["rest_framework.renderers.JSONRenderer"]
+    ),
     "DEFAULT_PARSER_CLASSES": [
         "rest_framework.parsers.JSONParser",
         "rest_framework.parsers.FormParser",
@@ -247,6 +274,8 @@ REST_FRAMEWORK = {
         "claim_start_email": "3/min",
         "claim_verify_ip": "20/min",
         "claim_verify_email": "10/min",
+        "claim_confirm_ip": "20/min",
+        "claim_confirm_session": "10/min",
     },
 }
 

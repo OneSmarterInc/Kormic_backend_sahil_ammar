@@ -41,6 +41,7 @@ jobs:
     env:
       DJANGO_SECRET_KEY: claim-flow-ci-secret-key-32-bytes-minimum-value
       DJANGO_DEBUG: "false"
+      DJANGO_SECURE_SSL_REDIRECT: "false"
       DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,testserver
       POSTGRES_DB: kormic_ci
       POSTGRES_USER: postgres
@@ -52,7 +53,6 @@ jobs:
       CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/1
       CELERY_TASK_ALWAYS_EAGER: "false"
       EMAIL_MODE: dev
-      GITHUB_OAUTH_TOKEN_KEY: b6AZAbEEXdp7c9bD1dpHeOxrzr3jlos2qaYJxfVEOjs=
 
     steps:
       - name: Check out repository
@@ -64,11 +64,32 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Install dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+      - name: Enforce direct dependency pins
+        run: |
+          python - <<'PY'
+          from pathlib import Path
 
-      - name: Generate ephemeral TOTP encryption key for CI
-        run: python -c "from cryptography.fernet import Fernet; print('TOTP_SECRET_KEYS=' + Fernet.generate_key().decode())" >> "$GITHUB_ENV"
+          offenders = []
+          for raw in Path("requirements.txt").read_text().splitlines():
+              line = raw.strip()
+              if not line or line.startswith("#"):
+                  continue
+              if "==" not in line:
+                  offenders.append(line)
+          if offenders:
+              raise SystemExit("Unpinned direct dependencies: " + ", ".join(offenders))
+          PY
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip check
+
+      - name: Generate ephemeral encryption keys for CI
+        run: |
+          python -c "from cryptography.fernet import Fernet; print('TOTP_SECRET_KEYS=' + Fernet.generate_key().decode())" >> "$GITHUB_ENV"
+          python -c "from cryptography.fernet import Fernet; print('GITHUB_OAUTH_TOKEN_KEY=' + Fernet.generate_key().decode())" >> "$GITHUB_ENV"
 
       - name: Validate Compose database environment contract
         env:
