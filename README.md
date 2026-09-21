@@ -41,7 +41,22 @@ Do not use port `8030` for this backend.
 
 ## Local Development
 
-The easiest way to run the backend locally is Docker Compose, which starts PostgreSQL, Redis, Celery, migrations, and Gunicorn.
+### Direct local run with SQLite
+
+```bat
+copy .env.template .env
+python -m pip install -r requirements.txt
+python manage.py migrate
+python manage.py runserver 127.0.0.1:8000
+```
+
+The default local database is `db.sqlite3`. LangGraph conversation checkpoints use `agent_checkpoints.sqlite3`. Set `DB_ENGINE=postgresql` to use the existing PostgreSQL configuration instead.
+
+For converting an existing PostgreSQL database without deleting it, follow [SQLITE_MIGRATION.md](SQLITE_MIGRATION.md).
+
+### Docker Compose / PostgreSQL
+
+For direct local development, the backend now defaults to SQLite. Docker Compose remains explicitly PostgreSQL-backed for the multi-process production-style stack.
 
 1. Create the local environment file:
 
