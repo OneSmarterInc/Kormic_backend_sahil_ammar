@@ -100,22 +100,46 @@ class ClaimFlowTests(TestCase):
             ListedStudent.objects.filter(status=ListedStudent.Status.UNCLAIMED).count(), 2
         )
 
+    def test_old_csv_state_alias_populates_region_and_country(self):
+        user = get_user_model().objects.get(username="officer@wsfi.edu")
+        self.client.force_authenticate(user=user)
+        legacy_csv = (
+            "full_name,email,field_of_study,degree_level,expected_graduation,phone,state\n"
+            "Legacy Student,legacy@example.com,Engineering,Masters,05/2027,+91 98765 43210,Maharashtra\n"
+        )
+        resp = self.client.post(
+            "/api/institute-lists/upload/",
+            {
+                "file": io.BytesIO(legacy_csv.encode()),
+                "institute_id": str(self.institute.uuid),
+                "contact_name": "Dr. John",
+                "contact_email": "john@wsfi.edu",
+            },
+            format="multipart",
+        )
+        self.assertEqual(resp.status_code, 200)
+        row = ListedStudent.objects.get(email="legacy@example.com")
+        self.assertEqual(row.region, "Maharashtra")
+        self.assertEqual(row.country, "IN")
+        self.assertTrue(row.phone.startswith("+91"))
+
     # ------------------------------------------------------------- claim: start
 
     def test_start_reveals_only_masked_email(self):
         row = ListedStudent.objects.get(email="priya.sharma@gmail.com")
         resp = self.client.post("/api/claim/start/", {"token": row.claim_token}, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json(), {"masked_email": "p•••••@gmail.com"})
+        self.assertEqual(resp.json(), {"sent": True})
 
         row.refresh_from_db()
         self.mock_claim_otp_delivery.assert_called_once_with(row.id, row.otp_hash)
         self.assertEqual(mail.outbox, [])
 
     def test_start_is_generic_for_unknown_email(self):
+        listed = self.client.post("/api/claim/start/", {"email": "priya.sharma@gmail.com"}, format="json")
         resp = self.client.post("/api/claim/start/", {"email": "stranger@gmail.com"}, format="json")
-        self.assertEqual(resp.status_code, 404)
-        self.assertNotIn("stranger", str(resp.json()))
+        self.assertEqual(resp.status_code, listed.status_code)
+        self.assertEqual(resp.json(), listed.json())
 
     # ------------------------------------------------------------ claim: verify
 
@@ -144,6 +168,8 @@ class ClaimFlowTests(TestCase):
         data = resp.json()
         self.assertEqual(data["prefill"]["full_name"], "Priya Sharma")
         self.assertEqual(data["prefill"]["institute_name"], "Wright State Feeder Institute")
+        self.assertEqual(data["prefill"]["country"], "IN")
+        self.assertIn("region", data["prefill"])
         self.assertIn("claim_session", data)
 
     # ----------------------------------------------------------- claim: confirm
