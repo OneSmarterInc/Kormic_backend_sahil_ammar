@@ -209,10 +209,12 @@ class ClaimFlowTests(TestCase):
     def test_claimed_invitation_is_dead(self):
         session = self._verified_session()
         self.client.post("/api/claim/confirm/", {"claim_session": session, "fields": {}}, format="json")
-        # token now dead for start...
+        # The token is dead, but claim/start is deliberately enumeration-safe:
+        # consumed and unknown invitations return the same generic 200 response.
         row = ListedStudent.objects.get(email="priya.sharma@gmail.com")
         resp = self.client.post("/api/claim/start/", {"token": row.claim_token}, format="json")
-        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"sent": True})
         # ...and the session cannot confirm twice
         resp = self.client.post("/api/claim/confirm/", {"claim_session": session, "fields": {}}, format="json")
         self.assertEqual(resp.status_code, 400)
