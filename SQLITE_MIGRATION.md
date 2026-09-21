@@ -1,13 +1,17 @@
+# LOCAL DEVELOPMENT ONLY
+
+> **Do not use SQLite for staging or production.** Kormic production requires `DB_ENGINE=postgresql`. This document exists only to help developers create a local SQLite copy of existing PostgreSQL application data for testing/debugging.
+
 # PostgreSQL to SQLite Migration (No Destructive Steps)
 
-The backend now defaults to SQLite for local/direct runs. PostgreSQL remains supported by setting `DB_ENGINE=postgresql`, so the existing database can be exported and kept as a rollback source.
+When `DJANGO_DEBUG=true`, direct local runs may use SQLite. When `DJANGO_DEBUG=false`, Kormic requires `DB_ENGINE=postgresql` and refuses to start otherwise. PostgreSQL remains the production database and rollback source.
 
 ## Important
 
 - Do **not** drop, truncate, or overwrite the PostgreSQL database.
 - Take a logical Django backup before creating/loading SQLite.
 - `dumpdata` covers Django-managed application data. LangGraph checkpoint tables are separate non-Django tables; keep the original PostgreSQL database as the archive for those historical checkpoints.
-- The new SQLite mode writes Django-managed application data to `db.sqlite3`. LangGraph's transient graph checkpoint state is process-local in SQLite mode; persisted Kormic chat/message rows remain in the Django database.
+- Local SQLite mode writes Django-managed application data to `db.sqlite3` and LangGraph checkpoints to the file configured by `AGENT_CHECKPOINTER_SQLITE_PATH` (default `agent_checkpoints.sqlite3`). This is for local development only.
 
 ## Windows CMD migration
 
@@ -114,4 +118,4 @@ Or set `DB_ENGINE=postgresql` in `.env`.
 
 ## Production note
 
-SQLite is appropriate for local development, demos, and modest single-host workloads. Kormic's Docker/production architecture may still use PostgreSQL by setting `DB_ENGINE=postgresql`; this is the safer option for multiple Gunicorn/Celery workers and heavier concurrent write traffic.
+SQLite is supported only for local development/testing. Production and staging must use PostgreSQL; startup fails when `DJANGO_DEBUG=false` unless `DB_ENGINE=postgresql` and `POSTGRES_PASSWORD` are explicitly configured.
