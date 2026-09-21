@@ -96,3 +96,28 @@ class ClaimEnumerationResistanceTests(TestCase):
         expected = (400, {"error": "That code didn't work"})
         for response in (wrong, unknown, expired, locked):
             self.assertEqual((response.status_code, response.json()), expected)
+
+    @mock.patch("institutes_list.claim_views.send_claim_otp_email_task.delay")
+    def test_six_wrong_attempts_are_identical_for_listed_and_unlisted(self, _mock_delay):
+        self.client.post(
+            "/api/claim/start/", {"email": "listed@example.edu"}, format="json"
+        )
+
+        for _ in range(6):
+            listed = self.client.post(
+                "/api/claim/verify/",
+                {"email": "listed@example.edu", "code": "000000"},
+                format="json",
+            )
+            unlisted = self.client.post(
+                "/api/claim/verify/",
+                {"email": "nobody@example.edu", "code": "000000"},
+                format="json",
+            )
+            self.assertEqual(listed.status_code, 400)
+            self.assertEqual(unlisted.status_code, listed.status_code)
+            self.assertEqual(unlisted.json(), listed.json())
+            self.assertEqual(listed.json(), {"error": "That code didn't work"})
+
+        self.listed.refresh_from_db()
+        self.assertEqual(self.listed.otp_attempts, 5)
