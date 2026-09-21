@@ -21,7 +21,7 @@ from accounts.models import Account, TOTPDevice
 from django_api.models import StudentProfile
 from institutes.services import register_institute
 
-from .models import ListedStudent, UniversityStudentList
+from .models import ListedStudent, InstituteStudentList
 from .tasks import claim_otp_cache_key
 
 CSV = (
@@ -93,7 +93,7 @@ class ClaimFlowTests(TestCase):
     def test_upload_ingests_with_provenance_and_rejects_bad_rows(self):
         self.assertEqual(self.upload["accepted"], 2)
         self.assertEqual(len(self.upload["rejected"]), 1)
-        lst = UniversityStudentList.objects.get(id=self.upload["list_id"])
+        lst = InstituteStudentList.objects.get(id=self.upload["list_id"])
         self.assertEqual(lst.contact_name, "Dr. John")
         self.assertEqual(lst.row_count, 2)
         self.assertEqual(
@@ -384,7 +384,7 @@ class ClaimFlowTests(TestCase):
         user = get_user_model().objects.get(username="officer@wsfi.edu")
         self.client.force_authenticate(user=user)
         other = register_institute("Some Other Institute")
-        other_list = UniversityStudentList.objects.create(institute=other, contact_name="x", contact_email="x@x.com")
+        other_list = InstituteStudentList.objects.create(institute=other, contact_name="x", contact_email="x@x.com")
         other_row = ListedStudent.objects.create(
             source_list=other_list,
             institute_id=str(other.uuid),
