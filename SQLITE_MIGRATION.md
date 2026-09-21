@@ -7,7 +7,7 @@ The backend now defaults to SQLite for local/direct runs. PostgreSQL remains sup
 - Do **not** drop, truncate, or overwrite the PostgreSQL database.
 - Take a logical Django backup before creating/loading SQLite.
 - `dumpdata` covers Django-managed application data. LangGraph checkpoint tables are separate non-Django tables; keep the original PostgreSQL database as the archive for those historical checkpoints.
-- The new SQLite mode writes application data to `db.sqlite3` and LangGraph conversation checkpoints to `agent_checkpoints.sqlite3`.
+- The new SQLite mode writes Django-managed application data to `db.sqlite3`. LangGraph's transient graph checkpoint state is process-local in SQLite mode; persisted Kormic chat/message rows remain in the Django database.
 
 ## Windows CMD migration
 
@@ -44,7 +44,6 @@ The PostgreSQL database is not modified by these commands.
 ```bat
 set DB_ENGINE=sqlite
 set SQLITE_PATH=db.sqlite3
-set AGENT_CHECKPOINTER_SQLITE_PATH=agent_checkpoints.sqlite3
 ```
 
 If an old local SQLite file already exists, back it up first:
@@ -58,7 +57,6 @@ For a clean conversion target, remove only the local SQLite files after backing 
 
 ```bat
 if exist db.sqlite3 del /F /Q db.sqlite3
-if exist agent_checkpoints.sqlite3 del /F /Q agent_checkpoints.sqlite3
 ```
 
 This does **not** touch PostgreSQL.
@@ -94,7 +92,6 @@ Set these lines in `.env`:
 ```ini
 DB_ENGINE=sqlite
 SQLITE_PATH=db.sqlite3
-AGENT_CHECKPOINTER_SQLITE_PATH=agent_checkpoints.sqlite3
 ```
 
 Then start normally:
