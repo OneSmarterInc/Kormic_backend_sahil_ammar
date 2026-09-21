@@ -27,25 +27,28 @@ logger = logging.getLogger(__name__)
 
 def _build_checkpointer():
     """
-    Shared checkpointer so conversation history (the `messages` state)
-    persists across per-turn graph rebuilds, keyed by thread_id=student key.
+    Durable checkpointer for the student-agent conversation state.
 
-    Backed by the same Postgres database Django already uses, via a
-    per-process connection pool (langgraph-checkpoint-postgres) -- not
-    LangGraph's in-memory MemorySaver. MemorySaver keeps state only in the
-    worker process that first handled a student's message: with more than
-    one gunicorn worker (the normal deployment shape, see GUNICORN_WORKERS)
-    a student's next message can land on a different worker and the agent
-    silently "forgets" mid-conversation, state is lost on every
-    restart/deploy, and the in-process dict never evicts so memory grows for
-    the life of the process. A durable, shared backend fixes all three.
+    SQLite is used when Django's default database is SQLite. PostgreSQL remains
+    supported via DB_ENGINE=postgresql for production/rollback scenarios.
     """
     from django.conf import settings
+
+    db = settings.DATABASES["default"]
+    engine = db["ENGINE"]
+
+    if engine == "django.db.backends.sqlite3":
+        import sqlite3
+        from langgraph.checkpoint.sqlite import SqliteSaver
+
+        path = str(settings.AGENT_CHECKPOINTER_SQLITE_PATH)
+        conn = sqlite3.connect(path, check_same_thread=False, timeout=30)
+        return SqliteSaver(conn)
+
     from psycopg.rows import dict_row
     from psycopg_pool import ConnectionPool
     from langgraph.checkpoint.postgres import PostgresSaver
 
-    db = settings.DATABASES["default"]
     conninfo = (
         f"dbname={db['NAME']} user={db['USER']} password={db['PASSWORD']} "
         f"host={db['HOST']} port={db['PORT']}"
@@ -59,12 +62,6 @@ def _build_checkpointer():
     )
     saver = PostgresSaver(pool)
     try:
-        # Idempotent (CREATE TABLE IF NOT EXISTS + a migrations-version
-        # table) -- safe to call from every worker process on startup. Only
-        # swallow failures here rather than crashing Django's boot: a
-        # transient DB hiccup at import time shouldn't take the whole
-        # process down when every other Django subsystem already tolerates
-        # the DB being briefly unreachable at startup.
         saver.setup()
     except Exception:
         logger.exception("Agent checkpointer setup() failed -- will retry lazily on first use.")
