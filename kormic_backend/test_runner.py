@@ -20,6 +20,8 @@ class KormicTestRunner(DiscoverRunner):
 
         runtime_module = sys.modules.get("pure_multi_agent.runtime")
         if runtime_module is not None:
-            runtime_module._checkpointer.conn.close()
+            conn = getattr(runtime_module._checkpointer, "conn", None)
+            if conn is not None:
+                conn.close()
 
         super().teardown_databases(old_config, **kwargs)
