@@ -11,12 +11,11 @@ from urllib.parse import urlencode
 
 from django.conf import settings
 from django.core import signing
-from django.core.signing import salted_hmac
 from django.core.mail import send_mail
 from django.db.models import Count, F, Q
 from django.http import FileResponse
 from django.utils import timezone
-from django.utils.crypto import constant_time_compare
+from django.utils.crypto import constant_time_compare, salted_hmac
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
