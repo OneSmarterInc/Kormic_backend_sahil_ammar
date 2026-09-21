@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from unittest import mock
 
 from django.contrib.auth import get_user_model
@@ -12,6 +11,7 @@ from rest_framework.test import APIClient
 from accounts.models import Account
 from institutes.services import register_institute
 from institutes_list.models import ListedStudent, UniversityStudentList
+from institutes_list.views import _hash_otp
 from institutes_list.tasks import (
     claim_otp_cache_key,
     send_claim_otp_email_task,
@@ -62,7 +62,7 @@ class ClaimOtpDeliveryTests(TestCase):
 
         code = cache.get(claim_otp_cache_key(self.student.id, self.student.otp_hash))
         self.assertRegex(code, r"^\d{6}$")
-        self.assertEqual(hashlib.sha256(code.encode("utf-8")).hexdigest(), self.student.otp_hash)
+        self.assertEqual(_hash_otp(self.student.id, code), self.student.otp_hash)
         self.assertEqual(mail.outbox, [])
 
     @mock.patch("institutes_list.claim_views.send_claim_otp_email_task.delay")
