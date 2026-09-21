@@ -52,12 +52,6 @@ class AdminCreateStudentSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True)
     name = serializers.CharField(required=False, allow_blank=True, default="")
 
-    def validate_country(self, value: str) -> str:
-        value = _normalize_country(value)
-        if value != "US":
-            raise serializers.ValidationError("Universities must use country US.")
-        return value
-
     def validate_email(self, value: str) -> str:
         if User.objects.filter(email__iexact=value).exists():
             raise serializers.ValidationError("An account with this email already exists.")
@@ -147,6 +141,12 @@ class AdminEnrollUniversitySerializer(serializers.Serializer):
         value = value.strip()
         if not value:
             raise serializers.ValidationError("institution_name cannot be blank.")
+        return value
+
+    def validate_country(self, value: str) -> str:
+        value = _normalize_country(value)
+        if value != "US":
+            raise serializers.ValidationError("Universities must use country US.")
         return value
 
     def validate_email(self, value: str) -> str:
