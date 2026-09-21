@@ -6,6 +6,9 @@ __pycache__/
 db.sqlite3
 db.sqlite3-shm
 db.sqlite3-wal
+agent_checkpoints.sqlite3
+agent_checkpoints.sqlite3-shm
+agent_checkpoints.sqlite3-wal
 postman_test.json
 project_flow.md
 uploads/
