@@ -41,6 +41,7 @@ jobs:
     env:
       DJANGO_SECRET_KEY: claim-flow-ci-secret-key-32-bytes-minimum-value
       DJANGO_DEBUG: "false"
+      DJANGO_SECURE_SSL_REDIRECT: "false"
       DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,testserver
       POSTGRES_DB: kormic_ci
       POSTGRES_USER: postgres
