@@ -103,6 +103,10 @@ DJANGO_SECRET_KEY=your_secure_random_long_string_here
 
 # The domain(s) pointing to your backend API. E.g., api.kormic.ai
 DJANGO_ALLOWED_HOSTS=api.kormic.ai,localhost,127.0.0.1
+# This deployment puts Django exclusively behind Nginx. The EC2 security
+# group must not expose port 8000 publicly.
+DJANGO_TRUST_PROXY_SSL_HEADER=true
+DJANGO_SECURE_HSTS_SECONDS=31536000
 
 # The frontend URLs that are allowed to make cross-origin requests.
 DJANGO_CORS_ALLOWED_ORIGINS=https://student.kormic.ai,https://admin.kormic.ai,https://university.kormic.ai
