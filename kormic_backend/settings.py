@@ -62,7 +62,13 @@ ALLOWED_HOSTS = [
 if os.environ.get("DJANGO_TRUST_PROXY_SSL_HEADER", "false").lower() == "true":
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
-SECURE_SSL_REDIRECT = not DEBUG
+SECURE_SSL_REDIRECT = (
+    os.environ.get(
+        "DJANGO_SECURE_SSL_REDIRECT",
+        "true" if not DEBUG else "false",
+    ).lower()
+    == "true"
+)
 SECURE_HSTS_SECONDS = int(
     os.environ.get("DJANGO_SECURE_HSTS_SECONDS", "31536000" if not DEBUG else "0")
 )
