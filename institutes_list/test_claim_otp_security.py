@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 
-from django.db import close_old_connections
+from django.db import close_old_connections, connections
 from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -78,7 +78,7 @@ class ClaimOtpConcurrentAttemptTests(TransactionTestCase):
             )
             return response.status_code
         finally:
-            close_old_connections()
+            connections.close_all()
 
     def test_five_parallel_wrong_guesses_lock_the_row(self):
         with ThreadPoolExecutor(max_workers=OTP_MAX_ATTEMPTS) as executor:
