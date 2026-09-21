@@ -691,7 +691,7 @@ class PilotEscalationMetricsTests(TestCase):
         cache.clear()
         _reset_inprocess_agent_caches()
         self.admin = make_superuser_client()
-        self.university = University.objects.create(name="Metrics University")
+        self.university = University.objects.create(name="Metrics University", country="US")
         ensure_default_groups(self.university)
         self.money_group = self.university.knowledge_groups.get(slug=KnowledgeGroup.Slug.MONEY)
 
@@ -744,7 +744,7 @@ class PilotEscalationMetricsTests(TestCase):
         self.assertEqual(resp.data["weeks"], [])
 
     def test_omitting_university_id_combines_every_university(self):
-        other_university = University.objects.create(name="Second Metrics University")
+        other_university = University.objects.create(name="Second Metrics University", country="US")
         self._backdated_query(student_id="s1", days_ago=1)
         PendingQuery.objects.filter(university_id=str(self.university.uuid)).update(university_id=str(self.university.uuid))
         query = PendingQuery.objects.create(university_id=str(other_university.uuid), student_id="s2", question="q")
