@@ -132,7 +132,7 @@ class ClaimOtpDeliveryTests(TestCase):
         self.student.refresh_from_db()
         cache_key = claim_otp_cache_key(self.student.id, self.student.otp_hash)
         code = cache.get(cache_key)
-        self.assertRegex(code, r"^\\d{6}$")
+        self.assertRegex(code, r"^\d{6}$")
 
         verified = self.client.post(
             "/api/claim/verify/",
