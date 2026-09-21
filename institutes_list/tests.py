@@ -67,7 +67,7 @@ class ClaimFlowTests(TestCase):
         self.addCleanup(self.claim_otp_delivery_patcher.stop)
 
         self.client = APIClient()
-        self.institute = register_institute("Wright State Feeder Institute", contact_email="ops@wsfi.edu")
+        self.institute = register_institute("Wright State Feeder Institute", country="IN", contact_email="ops@wsfi.edu")
         user = get_user_model().objects.create_user(
             username="officer@wsfi.edu", email="officer@wsfi.edu", password="x"
         )
@@ -246,7 +246,7 @@ class ClaimFlowTests(TestCase):
     # -------------------------------------------------------------- ownership
 
     def test_institute_cannot_upload_for_a_different_institute(self):
-        other = register_institute("Some Other Institute")
+        other = register_institute("Some Other Institute", country="IN")
         user = get_user_model().objects.get(username="officer@wsfi.edu")
         self.client.force_authenticate(user=user)
         resp = self.client.post(
@@ -272,7 +272,7 @@ class ClaimFlowTests(TestCase):
         self.assertEqual(emails, {"priya.sharma@gmail.com", "arjun.rao@gmail.com"})
 
     def test_list_students_rejects_a_different_institute(self):
-        other = register_institute("Some Other Institute")
+        other = register_institute("Some Other Institute", country="IN")
         other_user = get_user_model().objects.create_user(
             username="officer@other.edu", email="officer@other.edu", password="x"
         )
@@ -385,7 +385,7 @@ class ClaimFlowTests(TestCase):
     def test_send_invite_404s_for_a_student_on_a_different_list(self):
         user = get_user_model().objects.get(username="officer@wsfi.edu")
         self.client.force_authenticate(user=user)
-        other = register_institute("Some Other Institute")
+        other = register_institute("Some Other Institute", country="IN")
         other_list = InstituteStudentList.objects.create(institute=other, contact_name="x", contact_email="x@x.com")
         other_row = ListedStudent.objects.create(
             source_list=other_list,
@@ -400,7 +400,7 @@ class ClaimFlowTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_send_invite_rejects_a_different_institute(self):
-        other = register_institute("Some Other Institute")
+        other = register_institute("Some Other Institute", country="IN")
         other_user = get_user_model().objects.create_user(
             username="officer2@other.edu", email="officer2@other.edu", password="x"
         )
@@ -450,7 +450,7 @@ class ClaimRateLimitTests(TestCase):
         self.addCleanup(self.claim_otp_delivery_patcher.stop)
 
         self.client = APIClient()
-        self.institute = register_institute("Rate Limit Institute", contact_email="ops@rli.edu")
+        self.institute = register_institute("Rate Limit Institute", country="IN", contact_email="ops@rli.edu")
         user = get_user_model().objects.create_user(
             username="officer@rli.edu", email="officer@rli.edu", password="x"
         )
