@@ -10,7 +10,7 @@ from institutes.services import register_institute
 class InstituteRosterTOTPTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        institute = register_institute("TOTP Gate Institute")
+        institute = register_institute("TOTP Gate Institute", country="IN")
         user = get_user_model().objects.create_user(
             username="preenrollment@institute.test",
             email="preenrollment@institute.test",
