@@ -364,7 +364,7 @@ class AdminInstituteDetailAPIView(APIView):
     DELETE /api/superuser/institutes/<institute_id>/
         Refuses (409) while admin accounts or uploaded lists still reference
         this institute_id -- remove/reassign the admin via /api/superuser/users/
-        and the lists stay owned by the institute (UniversityStudentList.institute
+        and the lists stay owned by the institute (InstituteStudentList.institute
         is on_delete=PROTECT) until reassigned or removed first.
     """
 
@@ -408,9 +408,9 @@ class AdminInstituteDetailAPIView(APIView):
                 status.HTTP_409_CONFLICT,
             )
 
-        from institutes_list.models import UniversityStudentList
+        from institutes_list.models import InstituteStudentList
 
-        if UniversityStudentList.objects.filter(institute__uuid=institute_id).exists():
+        if InstituteStudentList.objects.filter(institute__uuid=institute_id).exists():
             return _error(
                 "This institute still has uploaded student lists and cannot be deleted.",
                 status.HTTP_409_CONFLICT,
