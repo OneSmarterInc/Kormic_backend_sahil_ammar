@@ -26,6 +26,7 @@ class ClaimOtpDeliveryTests(TestCase):
         self.client = APIClient()
         self.institute = register_institute(
             "Indian Institute of Technology, Kanpur",
+            country="IN",
             contact_email="info@iitk.example",
         )
         self.source_list = InstituteStudentList.objects.create(
@@ -187,7 +188,7 @@ class ClaimOtpRouteIsolationTests(TestCase):
     @mock.patch("institutes_list.claim_views.send_claim_otp_email_task.delay")
     def test_anonymous_claim_start_remains_allowed(self, mock_delay):
         cache.clear()
-        institute = register_institute("Anonymous Claim Institute")
+        institute = register_institute("Anonymous Claim Institute", country="IN")
         source_list = InstituteStudentList.objects.create(
             institute=institute,
             contact_name="Contact",
