@@ -97,5 +97,7 @@ class ClaimOtpConcurrentAttemptTests(TransactionTestCase):
             {"token": self.student.claim_token, "code": "000000"},
             format="json",
         )
-        self.assertEqual(response.status_code, 429)
-        self.assertIn("too many attempts", str(response.data))
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data, {"error": "That code didn't work"})
+        self.student.refresh_from_db()
+        self.assertEqual(self.student.otp_attempts, OTP_MAX_ATTEMPTS)
