@@ -334,7 +334,7 @@ class DirectUniversityCrawler:
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf;q=0.8,*/*;q=0.5",
                     "Accept-Language": "en-US,en;q=0.8",
                 },
-                follow_redirects=True,
+                follow_redirects=False,
                 timeout=httpx.Timeout(self.timeout),
                 limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
             ) as client:
@@ -605,6 +605,48 @@ class DirectUniversityCrawler:
                 or score >= self.relevant_threshold,
             )
 
+    def _request_with_policy(
+        self,
+        client: httpx.Client,
+        url: str,
+        *,
+        max_redirects: int = 10,
+        max_bytes: int = 5 * 1024 * 1024,
+    ) -> tuple[int, httpx.Headers, bytes, str]:
+        current = url
+        for _hop in range(max_redirects + 1):
+            if not self.domain_policy.is_allowed(current):
+                raise ValueError(f"Blocked unsafe or out-of-policy URL: {current}")
+
+            with client.stream("GET", current, follow_redirects=False) as response:
+                status = response.status_code
+                headers = response.headers
+                response_url = str(response.url)
+
+                if status in {301, 302, 303, 307, 308}:
+                    location = headers.get("location")
+                    if not location:
+                        raise ValueError(f"Redirect response from {current} omitted Location")
+                    next_url = urljoin(response_url, location)
+                    if not self.domain_policy.is_allowed(next_url):
+                        raise ValueError(f"Blocked unsafe redirect target: {next_url}")
+                    current = next_url
+                    continue
+
+                if status >= 400:
+                    return status, headers, b"", response_url
+
+                chunks: list[bytes] = []
+                total = 0
+                for chunk in response.iter_bytes():
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ValueError(f"Response exceeds {max_bytes} byte limit")
+                    chunks.append(chunk)
+                return status, headers, b"".join(chunks), response_url
+
+        raise ValueError(f"Too many redirects while fetching {url}")
+
     def _fetch_and_parse(
         self,
         client: httpx.Client,
@@ -615,29 +657,19 @@ class DirectUniversityCrawler:
         navigation_level: int | None,
     ) -> None:
         try:
-            response = client.get(url)
+            status_code, headers, body, response_url = self._request_with_policy(client, url)
         except httpx.TransportError as exc:
-            if "certificate" in str(exc).lower() or "ssl" in str(exc).lower():
-                try:
-                    with httpx.Client(headers=client.headers, follow_redirects=True, timeout=self.timeout, verify=False) as insecure:
-                        response = insecure.get(url)
-                except Exception as retry_exc:  # noqa: BLE001
-                    self._mark_fetch_failure(url, str(retry_exc))
-                    return
-            else:
-                self._mark_fetch_failure(url, str(exc))
-                return
+            self._mark_fetch_failure(url, str(exc))
+            return
         except Exception as exc:  # noqa: BLE001
             self._mark_fetch_failure(url, str(exc))
             return
 
-        content_type = response.headers.get("content-type", "").split(";", 1)[0].lower().strip()
-        final_url = normalize_url(str(response.url)) or url
-        if response.status_code >= 400:
-            self._mark_fetch_failure(url, f"HTTP {response.status_code}", http_status=response.status_code)
+        content_type = headers.get("content-type", "").split(";", 1)[0].lower().strip()
+        final_url = normalize_url(response_url) or url
+        if status_code >= 400:
+            self._mark_fetch_failure(url, f"HTTP {status_code}", http_status=status_code)
             return
-
-        body = response.content
         is_sitemap = (
             "xml" in content_type
             or final_url.lower().endswith((".xml", ".xml.gz"))
@@ -645,7 +677,7 @@ class DirectUniversityCrawler:
             or b"<sitemapindex" in body[:500].lower()
         )
         if is_sitemap:
-            self._record_page(url, final_url, response.status_code, content_type, depth, "XML sitemap", "", "", "", anchor_text, parent_url, True)
+            self._record_page(url, final_url, status_code, content_type, depth, "XML sitemap", "", "", "", anchor_text, parent_url, True)
             self._parse_sitemap(body, final_url, depth)
             return
 
@@ -655,14 +687,14 @@ class DirectUniversityCrawler:
             # knowledge.scraper fact-extraction pipeline doesn't parse PDFs
             # either, so behaviour stays consistent either way.
             filename = final_url.rstrip("/").rsplit("/", 1)[-1]
-            self._record_page(url, final_url, response.status_code, content_type, depth, filename, "", "", "", anchor_text, parent_url, False)
+            self._record_page(url, final_url, status_code, content_type, depth, filename, "", "", "", anchor_text, parent_url, False)
             return
 
         if "html" not in content_type and not body.lstrip().lower().startswith((b"<!doctype html", b"<html")):
-            self._record_page(url, final_url, response.status_code, content_type, depth, "", "", "", "", anchor_text, parent_url, True)
+            self._record_page(url, final_url, status_code, content_type, depth, "", "", "", "", anchor_text, parent_url, True)
             return
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = BeautifulSoup(body.decode("utf-8", errors="replace"), "html.parser")
         base_tag = soup.find("base", href=True)
         resolve_base = urljoin(final_url, base_tag["href"]) if base_tag else final_url
         structured_navigation = _structured_navigation_links(soup, resolve_base)
