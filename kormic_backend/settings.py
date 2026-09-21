@@ -155,11 +155,6 @@ else:
         }
     }
 
-AGENT_CHECKPOINTER_SQLITE_PATH = Path(
-    os.environ.get("AGENT_CHECKPOINTER_SQLITE_PATH", BASE_DIR / "agent_checkpoints.sqlite3")
-)
-if not AGENT_CHECKPOINTER_SQLITE_PATH.is_absolute():
-    AGENT_CHECKPOINTER_SQLITE_PATH = (BASE_DIR / AGENT_CHECKPOINTER_SQLITE_PATH).resolve()
 
 # See kormic_backend/test_runner.py: pure_multi_agent.runtime's checkpointer
 # pool is a separate psycopg v3 connection outside django.db.connections, so
