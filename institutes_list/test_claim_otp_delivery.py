@@ -10,7 +10,7 @@ from rest_framework.test import APIClient
 
 from accounts.models import Account
 from institutes.services import register_institute
-from institutes_list.models import ListedStudent, UniversityStudentList
+from institutes_list.models import ListedStudent, InstituteStudentList
 from institutes_list.views import _hash_otp
 from institutes_list.tasks import (
     claim_otp_cache_key,
@@ -28,7 +28,7 @@ class ClaimOtpDeliveryTests(TestCase):
             "Indian Institute of Technology, Kanpur",
             contact_email="info@iitk.example",
         )
-        self.source_list = UniversityStudentList.objects.create(
+        self.source_list = InstituteStudentList.objects.create(
             institute=self.institute,
             contact_name="Admissions Office",
             contact_email="info@iitk.example",
@@ -183,7 +183,7 @@ class ClaimOtpRouteIsolationTests(TestCase):
     def test_anonymous_claim_start_remains_allowed(self, mock_delay):
         cache.clear()
         institute = register_institute("Anonymous Claim Institute")
-        source_list = UniversityStudentList.objects.create(
+        source_list = InstituteStudentList.objects.create(
             institute=institute,
             contact_name="Contact",
             contact_email="contact@example.edu",
