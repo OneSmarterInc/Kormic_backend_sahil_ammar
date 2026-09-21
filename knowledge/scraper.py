@@ -12,9 +12,12 @@ import time
 from typing import Any, Dict, List, Optional
 
 import anthropic
-import requests
+import httpx
 from bs4 import BeautifulSoup
 from rich.console import Console
+
+from url_discovery.domain_policy import DomainPolicy
+from url_discovery.safe_fetch import request_with_policy
 
 console = Console()
 
@@ -87,31 +90,47 @@ def _truncate(text: str, limit: int = 6000) -> str:
     return text[:limit].rsplit(" ", 1)[0]
 
 
-def fetch_page(url: str, timeout: int = 15) -> str:
-    """
-    Fetch a page and return clean text content.
+def fetch_page(
+    url: str,
+    timeout: int = 15,
+    *,
+    domain_policy: DomainPolicy | None = None,
+    client: httpx.Client | None = None,
+) -> str:
+    """Fetch a page through the same SSRF/redirect/size policy as discovery."""
+    policy = domain_policy or DomainPolicy(url, include_subdomains=True)
+    owns_client = client is None
 
-    Returns an empty string if the page cannot be fetched or parsed.
-    """
-    try:
-        response = requests.get(
-            url,
+    if client is None:
+        client = httpx.Client(
             headers=HEADERS,
-            timeout=timeout,
-            allow_redirects=True,
+            timeout=httpx.Timeout(timeout),
+            follow_redirects=False,
         )
-        response.raise_for_status()
 
-        content_type = response.headers.get("Content-Type", "").lower()
+    try:
+        status_code, headers, body, final_url = request_with_policy(
+            client,
+            url,
+            policy,
+        )
+        if status_code >= 400:
+            console.print(f"[red]Failed to fetch {url}: HTTP {status_code}[/red]")
+            return ""
+
+        content_type = headers.get("content-type", "").lower()
         if "html" not in content_type and "text" not in content_type:
             console.print(
-                f"[yellow]Skipping non-text page: {url} ({content_type or 'unknown content type'})[/yellow]"
+                f"[yellow]Skipping non-text page: {final_url} "
+                f"({content_type or 'unknown content type'})[/yellow]"
             )
             return ""
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = BeautifulSoup(
+            body.decode("utf-8", errors="replace"),
+            "html.parser",
+        )
 
-        # Remove noisy elements.
         for tag in soup(
             [
                 "script",
@@ -129,26 +148,19 @@ def fetch_page(url: str, timeout: int = 15) -> str:
         ):
             tag.decompose()
 
-        # Prefer main/article content when available.
         main = soup.find("main") or soup.find("article") or soup.body or soup
-
         text = main.get_text(separator=" ", strip=True)
-        clean_text = _clean_whitespace(text)
+        return _truncate(_clean_whitespace(text), 8000)
 
-        return _truncate(clean_text, 8000)
-
-    except requests.HTTPError as exc:
-        status = getattr(exc.response, "status_code", "unknown")
-        console.print(f"[red]Failed to fetch {url}: HTTP {status}[/red]")
-        return ""
-
-    except requests.RequestException as exc:
+    except (httpx.TransportError, ValueError) as exc:
         console.print(f"[red]Failed to fetch {url}: {exc}[/red]")
         return ""
-
     except Exception as exc:
         console.print(f"[red]Failed to parse {url}: {exc}[/red]")
         return ""
+    finally:
+        if owns_client:
+            client.close()
 
 
 def _fallback_extract_facts(
@@ -436,7 +448,10 @@ def scrape_university(
             f"  [dim]Scraping ({index + 1}/{len(urls)}): {url[:80]}...[/dim]"
         )
 
-        page_text = fetch_page(url)
+        page_text = fetch_page(
+            url,
+            domain_policy=DomainPolicy(url, include_subdomains=True),
+        )
 
         if not page_text:
             continue
