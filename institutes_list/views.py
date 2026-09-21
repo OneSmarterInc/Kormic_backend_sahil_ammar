@@ -21,6 +21,7 @@ from rest_framework.response import Response
 
 from accounts.models import Account
 from accounts.permissions import IsTOTPEnrolled
+from institutes.country_codes import normalize_country_code
 from institutes.models import Institute
 
 from .models import ListedStudent, UniversityStudentList
@@ -201,7 +202,11 @@ def upload_list(request):
             row["region"] = row["state"]
         if not row["country"]:
             row["country"] = institute.country
-        row["country"] = row["country"].upper()
+        try:
+            row["country"] = normalize_country_code(row["country"])
+        except ValueError:
+            rejected.append({"row": i, "reason": "invalid country code"})
+            continue
         email = row["email"].lower()
         if not email or "@" not in email:
             rejected.append({"row": i, "reason": "invalid email"})
@@ -636,8 +641,15 @@ def confirm_claim(request):
     _apply("major", confirmed["field_of_study"])
     _apply("program", confirmed.get("program_name"))
     _apply("institution", row.source_list.institute.name)
+    _apply("country", confirmed.get("country"))
 
     extra = profile.extra_data or {}
+    basic_info = dict(extra.get("basic_info") or {})
+    for key in ("phone", "city", "region", "country", "year_in_college"):
+        value = (confirmed.get(key) or "").strip()
+        if value and not basic_info.get(key):
+            basic_info[key] = value
+    extra["basic_info"] = basic_info
     extra["institute_sourced"] = {
         "list_id": row.source_list_id,
         "institute_id": row.institute_id,
