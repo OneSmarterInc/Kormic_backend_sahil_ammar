@@ -326,7 +326,6 @@ class DirectUniversityCrawler:
     def run(self) -> None:
         self._mark_running()
         try:
-            self._prepare_robots()
             self._seed()
             with httpx.Client(
                 headers={
@@ -338,6 +337,7 @@ class DirectUniversityCrawler:
                 timeout=httpx.Timeout(self.timeout),
                 limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
             ) as client:
+                self._prepare_robots(client)
                 while self.queue:
                     job_status = self._job_status()
                     if job_status in {"stop_requested", "stopped"}:
@@ -406,17 +406,22 @@ class DirectUniversityCrawler:
             navigation_level=0,
         )
 
-    def _prepare_robots(self) -> None:
+    def _prepare_robots(self, client: httpx.Client) -> None:
         if not self.respect_robots:
             return
         robots_url = urljoin(self.base_url, "/robots.txt")
         parser = robotparser.RobotFileParser()
         parser.set_url(robots_url)
         try:
-            parser.read()
+            status, _headers, body, final_url = self._request_with_policy(
+                client, robots_url, max_bytes=512 * 1024
+            )
+            if status >= 400:
+                raise ValueError(f"HTTP {status}")
+            parser.parse(body.decode("utf-8", errors="replace").splitlines())
             self.robot_parser = parser
             for sitemap in parser.site_maps() or []:
-                self._discover(sitemap, robots_url, "Sitemap from robots.txt", 0, force_queue=True)
+                self._discover(sitemap, final_url, "Sitemap from robots.txt", 0, force_queue=True)
         except Exception as exc:  # network/SSL/parser issues must not kill crawling
             LOGGER.info("robots.txt unavailable for %s: %s", self.base_url, exc)
             self.robot_parser = None
