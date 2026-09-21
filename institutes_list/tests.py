@@ -242,7 +242,10 @@ class ClaimFlowTests(TestCase):
         resp = self.client.post(
             "/api/claim/verify/", {"email": "priya.sharma@gmail.com", "code": "000000"}, format="json"
         )
-        self.assertEqual(resp.status_code, 429)
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json(), {"error": "That code didn't work"})
+        row = ListedStudent.objects.get(email="priya.sharma@gmail.com")
+        self.assertEqual(row.otp_attempts, OTP_MAX_ATTEMPTS)
 
     def test_correct_code_returns_prefill(self):
         self.client.post("/api/claim/start/", {"email": "priya.sharma@gmail.com"}, format="json")
