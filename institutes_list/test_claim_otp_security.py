@@ -6,14 +6,14 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from institutes.services import register_institute
-from institutes_list.models import ListedStudent, UniversityStudentList
+from institutes_list.models import ListedStudent, InstituteStudentList
 from institutes_list.views import OTP_MAX_ATTEMPTS, OTP_TTL_SECONDS, _hash_otp
 
 
 class ClaimOtpHashIsolationTests(TestCase):
     def setUp(self):
         institute = register_institute("OTP Hash Isolation Institute")
-        source_list = UniversityStudentList.objects.create(
+        source_list = InstituteStudentList.objects.create(
             institute=institute,
             contact_name="Admissions",
             contact_email="admissions@example.edu",
@@ -46,7 +46,7 @@ class ClaimOtpConcurrentAttemptTests(TransactionTestCase):
 
     def setUp(self):
         institute = register_institute("OTP Concurrency Institute")
-        source_list = UniversityStudentList.objects.create(
+        source_list = InstituteStudentList.objects.create(
             institute=institute,
             contact_name="Admissions",
             contact_email="admissions@example.edu",
