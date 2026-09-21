@@ -369,7 +369,7 @@ class AdminInstituteDetailAPIView(APIView):
     """
 
     permission_classes = SUPERUSER_PERMISSIONS
-    PATCHABLE_FIELDS = {"name", "contact_email", "contact_phone", "address", "country"}
+    PATCHABLE_FIELDS = {"name", "contact_email", "contact_phone", "address"}
 
     def get(self, request, institute_id: str):
         institute = Institute.objects.filter(uuid=institute_id).first()
