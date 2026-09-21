@@ -120,6 +120,7 @@ class SuperuserUniversityAPITests(TestCase):
             "/api/superuser/universities/",
             {
                 "institution_name": "Test University",
+                "country": "US",
                 "email": "admin_new@example.com",
                 "password": "S3curePassw0rd!",
             },
@@ -131,10 +132,24 @@ class SuperuserUniversityAPITests(TestCase):
         self.assertTrue(Account.objects.filter(university__uuid=university_id, role=Account.Role.UNIVERSITY).exists())
         self.assertEqual(resp.data["officer_count"], 1)
 
+    def test_non_us_university_is_rejected(self):
+        resp = self.admin.post(
+            "/api/superuser/universities/",
+            {
+                "institution_name": "Foreign University",
+                "country": "IN",
+                "email": "foreign_admin@example.com",
+                "password": "S3curePassw0rd!",
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(University.objects.filter(name="Foreign University").exists())
+
     def test_enroll_university_requires_admin_credentials(self):
         resp = self.admin.post(
             "/api/superuser/universities/",
-            {"institution_name": "Bare University"},
+            {"institution_name": "Bare University", "country": "US"},
             format="json",
         )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
@@ -147,6 +162,7 @@ class SuperuserUniversityAPITests(TestCase):
             "/api/superuser/universities/",
             {
                 "institution_name": "Self Enroll University",
+                "country": "US",
                 "email": "self_enroll_admin@example.com",
                 "password": "S3curePassw0rd!",
             },
@@ -168,6 +184,7 @@ class SuperuserUniversityAPITests(TestCase):
             "/api/superuser/universities/",
             {
                 "institution_name": "Guarded University",
+                "country": "US",
                 "email": "guard_admin@example.com",
                 "password": "S3curePassw0rd!",
             },
@@ -184,6 +201,7 @@ class SuperuserUniversityAPITests(TestCase):
             "/api/superuser/universities/",
             {
                 "institution_name": "Emailed University",
+                "country": "US",
                 "email": "admin_emailed@example.com",
                 "password": "S3curePassw0rd!",
                 "name": "Jane Admin",
@@ -206,6 +224,7 @@ class SuperuserUniversityAPITests(TestCase):
             "/api/superuser/universities/",
             {
                 "institution_name": "Patchable University",
+                "country": "US",
                 "email": "patchable_admin@example.com",
                 "password": "S3curePassw0rd!",
             },
@@ -237,6 +256,7 @@ class SuperuserInstituteAPITests(TestCase):
             "/api/superuser/institutes/",
             {
                 "institution_name": "Test Institute",
+                "country": "IN",
                 "email": "institute_admin_new@example.com",
                 "password": "S3curePassw0rd!",
             },
@@ -247,10 +267,24 @@ class SuperuserInstituteAPITests(TestCase):
         self.assertTrue(Institute.objects.filter(uuid=institute_id).exists())
         self.assertTrue(Account.objects.filter(institute__uuid=institute_id, role=Account.Role.INSTITUTE).exists())
 
+    def test_us_institute_is_rejected(self):
+        resp = self.admin.post(
+            "/api/superuser/institutes/",
+            {
+                "institution_name": "US Institute",
+                "country": "US",
+                "email": "us_institute_admin@example.com",
+                "password": "S3curePassw0rd!",
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Institute.objects.filter(name="US Institute").exists())
+
     def test_enroll_institute_requires_admin_credentials(self):
         resp = self.admin.post(
             "/api/superuser/institutes/",
-            {"institution_name": "Bare Institute"},
+            {"institution_name": "Bare Institute", "country": "IN"},
             format="json",
         )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
@@ -261,6 +295,7 @@ class SuperuserInstituteAPITests(TestCase):
             "/api/superuser/institutes/",
             {
                 "institution_name": "Self Enroll Institute",
+                "country": "IN",
                 "email": "self_enroll_institute_admin@example.com",
                 "password": "S3curePassw0rd!",
             },
@@ -282,6 +317,7 @@ class SuperuserInstituteAPITests(TestCase):
             "/api/superuser/institutes/",
             {
                 "institution_name": "Guarded Institute",
+                "country": "IN",
                 "email": "guard_institute_admin@example.com",
                 "password": "S3curePassw0rd!",
             },
@@ -298,6 +334,7 @@ class SuperuserInstituteAPITests(TestCase):
             "/api/superuser/institutes/",
             {
                 "institution_name": "Emailed Institute",
+                "country": "IN",
                 "email": "institute_admin_emailed@example.com",
                 "password": "S3curePassw0rd!",
                 "name": "Jane Admin",
@@ -320,6 +357,7 @@ class SuperuserInstituteAPITests(TestCase):
             "/api/superuser/institutes/",
             {
                 "institution_name": "Patchable Institute",
+                "country": "IN",
                 "email": "patchable_institute_admin@example.com",
                 "password": "S3curePassw0rd!",
             },
