@@ -50,7 +50,7 @@ python manage.py migrate
 python manage.py runserver 127.0.0.1:8000
 ```
 
-The default local database is `db.sqlite3`. LangGraph conversation checkpoints use `agent_checkpoints.sqlite3`. Set `DB_ENGINE=postgresql` to use the existing PostgreSQL configuration instead.
+The default local database is `db.sqlite3`. In SQLite mode, LangGraph short-term graph checkpoint state is process-local while persisted Kormic records and chat/message rows remain in SQLite. Set `DB_ENGINE=postgresql` to use the existing PostgreSQL configuration instead.
 
 For converting an existing PostgreSQL database without deleting it, follow [SQLITE_MIGRATION.md](SQLITE_MIGRATION.md).
 
