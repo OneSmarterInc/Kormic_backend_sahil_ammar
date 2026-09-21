@@ -24,7 +24,7 @@ from accounts.permissions import IsTOTPEnrolled
 from institutes.country_codes import normalize_country_code
 from institutes.models import Institute
 
-from .models import ListedStudent, UniversityStudentList
+from .models import ListedStudent, InstituteStudentList
 from .tasks import discard_claim_otp_code, send_invite_email_task
 from .throttling import (
     ClaimVerifyEmailThrottle,
@@ -79,7 +79,7 @@ def _find_claimable(email: str = "", token: str = ""):
     """Latest unclaimed row on an ACTIVE list, by email or claim token."""
     qs = ListedStudent.objects.filter(
         status=ListedStudent.Status.UNCLAIMED,
-        source_list__status=UniversityStudentList.Status.ACTIVE,
+        source_list__status=InstituteStudentList.Status.ACTIVE,
     )
     if token:
         return qs.filter(claim_token=token).first()
@@ -91,7 +91,7 @@ def _find_claimable(email: str = "", token: str = ""):
 def _store_source_file(institute_id: str, upload) -> dict:
     """
     Persist the raw uploaded sheet verbatim under MEDIA_ROOT/institute_lists/
-    <institute_id>/ and return the fields to stamp on UniversityStudentList.
+    <institute_id>/ and return the fields to stamp on InstituteStudentList.
     The filename is uuid-suffixed so re-uploading a same-named file doesn't
     clobber an older list's copy.
     """
@@ -118,7 +118,7 @@ def _store_source_file(institute_id: str, upload) -> dict:
     }
 
 
-def _source_file_url(request, lst: UniversityStudentList):
+def _source_file_url(request, lst: InstituteStudentList):
     """Absolute URL the frontend can GET to download this list's original
     sheet, or None if the list has no stored file (older uploads)."""
     if not lst.source_file_path:
@@ -186,7 +186,7 @@ def upload_list(request):
 
     source_file_fields = _store_source_file(institute.id, upload)
 
-    source_list = UniversityStudentList.objects.create(
+    source_list = InstituteStudentList.objects.create(
         institute=institute,
         contact_name=contact_name,
         contact_email=contact_email,
@@ -269,7 +269,7 @@ def _get_owned_list(account, list_id):
     """Returns (list, None) or (None, error Response). Scopes an institute
     account to lists belonging to its own institute_id; a superuser may
     access any list."""
-    lst = UniversityStudentList.objects.select_related("institute").filter(id=list_id).first()
+    lst = InstituteStudentList.objects.select_related("institute").filter(id=list_id).first()
     if lst is None:
         return None, Response({"error": "list not found"}, status=status.HTTP_404_NOT_FOUND)
     if account.role == Account.Role.INSTITUTE and lst.institute_id != account.institute_id:
@@ -296,7 +296,7 @@ def list_lists(request):
     if error:
         return error
 
-    qs = UniversityStudentList.objects.select_related("institute")
+    qs = InstituteStudentList.objects.select_related("institute")
     if account.role == Account.Role.INSTITUTE:
         qs = qs.filter(institute=account.institute_id)
     else:
