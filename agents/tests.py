@@ -36,7 +36,7 @@ class UniversityAgentPartialEscalationTests(TestCase):
     """
 
     def setUp(self):
-        u = University.objects.create(name="Write State", agent_name="Nova2")
+        u = University.objects.create(name="Write State", country="US", agent_name="Nova2")
         self.university_id = str(u.uuid)
         self.agent = UniversityAgent(self.university_id, auto_scrape=False)
         self.agent.kb.store(
