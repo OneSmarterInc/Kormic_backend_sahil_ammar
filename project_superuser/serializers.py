@@ -52,6 +52,12 @@ class AdminCreateStudentSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True)
     name = serializers.CharField(required=False, allow_blank=True, default="")
 
+    def validate_country(self, value: str) -> str:
+        value = _normalize_country(value)
+        if value != "US":
+            raise serializers.ValidationError("Universities must use country US.")
+        return value
+
     def validate_email(self, value: str) -> str:
         if User.objects.filter(email__iexact=value).exists():
             raise serializers.ValidationError("An account with this email already exists.")
@@ -113,6 +119,13 @@ class AdminCreateSuperuserSerializer(serializers.Serializer):
         return user
 
 
+def _normalize_country(value: str) -> str:
+    value = (value or "").strip().upper()
+    if len(value) != 2 or not value.isalpha():
+        raise serializers.ValidationError("Use a two-letter ISO country code.")
+    return value
+
+
 class AdminEnrollUniversitySerializer(serializers.Serializer):
     """The only way a university gets onto the platform: a superuser
     registers the University (mirrors universities.services.register_university)
@@ -124,6 +137,7 @@ class AdminEnrollUniversitySerializer(serializers.Serializer):
     the same must_enroll_totp flow every other role goes through."""
 
     institution_name = serializers.CharField()
+    country = serializers.CharField()
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
     name = serializers.CharField(required=False, allow_blank=True, default="")
@@ -151,7 +165,10 @@ class AdminEnrollUniversitySerializer(serializers.Serializer):
         from universities.services import register_university, sync_profile_facts_to_kb
 
         with transaction.atomic():
-            university = register_university(validated_data["institution_name"])
+            university = register_university(
+                validated_data["institution_name"],
+                country=validated_data["country"],
+            )
 
             profile = validated_data.get("profile") or {}
             changed_kb_fields = False
@@ -190,6 +207,7 @@ class AdminEnrollInstituteSerializer(serializers.Serializer):
     itself on first login, same as every other role."""
 
     institution_name = serializers.CharField()
+    country = serializers.CharField()
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
     name = serializers.CharField(required=False, allow_blank=True, default="")
@@ -201,6 +219,12 @@ class AdminEnrollInstituteSerializer(serializers.Serializer):
         value = value.strip()
         if not value:
             raise serializers.ValidationError("institution_name cannot be blank.")
+        return value
+
+    def validate_country(self, value: str) -> str:
+        value = _normalize_country(value)
+        if value == "US":
+            raise serializers.ValidationError("Institutes cannot use country US.")
         return value
 
     def validate_email(self, value: str) -> str:
@@ -218,6 +242,7 @@ class AdminEnrollInstituteSerializer(serializers.Serializer):
         with transaction.atomic():
             institute = register_institute(
                 validated_data["institution_name"],
+                country=validated_data["country"],
                 contact_email=validated_data.get("contact_email", ""),
                 contact_phone=validated_data.get("contact_phone", ""),
                 address=validated_data.get("address", ""),
