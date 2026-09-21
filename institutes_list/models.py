@@ -12,7 +12,7 @@ import secrets
 from django.db import models
 
 
-class UniversityStudentList(models.Model):
+class InstituteStudentList(models.Model):
     """One uploaded list. The provenance record the whole tier stands on."""
 
     class Status(models.TextChoices):
@@ -69,7 +69,7 @@ class ListedStudent(models.Model):
         EXPIRED = "expired", "Expired"
 
     source_list = models.ForeignKey(
-        UniversityStudentList, on_delete=models.CASCADE, related_name="students"
+        InstituteStudentList, on_delete=models.CASCADE, related_name="students"
     )
     # Denormalized off source_list.institute_id purely so upload_list can
     # reconcile against a student's most recent row across ALL of an
