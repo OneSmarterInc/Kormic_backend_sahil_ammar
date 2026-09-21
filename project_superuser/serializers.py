@@ -7,6 +7,7 @@ from rest_framework import serializers
 
 from accounts.models import Account
 from django_api.models import StudentProfile
+from institutes.country_codes import normalize_country_code
 
 # Same field set universities.views.UniversityProfileAPIView lets a
 # university officer patch on their own profile, just reachable here for any
@@ -113,13 +114,6 @@ class AdminCreateSuperuserSerializer(serializers.Serializer):
         return user
 
 
-def _normalize_country(value: str) -> str:
-    value = (value or "").strip().upper()
-    if len(value) != 2 or not value.isalpha():
-        raise serializers.ValidationError("Use a two-letter ISO country code.")
-    return value
-
-
 class AdminEnrollUniversitySerializer(serializers.Serializer):
     """The only way a university gets onto the platform: a superuser
     registers the University (mirrors universities.services.register_university)
@@ -144,7 +138,10 @@ class AdminEnrollUniversitySerializer(serializers.Serializer):
         return value
 
     def validate_country(self, value: str) -> str:
-        value = _normalize_country(value)
+        try:
+            value = normalize_country_code(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
         if value != "US":
             raise serializers.ValidationError("Universities must use country US.")
         return value
@@ -222,7 +219,10 @@ class AdminEnrollInstituteSerializer(serializers.Serializer):
         return value
 
     def validate_country(self, value: str) -> str:
-        value = _normalize_country(value)
+        try:
+            value = normalize_country_code(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
         if value == "US":
             raise serializers.ValidationError("Institutes cannot use country US.")
         return value
