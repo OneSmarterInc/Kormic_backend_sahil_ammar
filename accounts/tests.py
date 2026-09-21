@@ -367,7 +367,7 @@ class ForgotPasswordFlowTests(TestCase):
                 else None
             ),
             university=(
-                University.objects.create(name="Western State University")
+                University.objects.create(name="Western State University", country="US")
                 if role == Account.Role.UNIVERSITY
                 else None
             ),
