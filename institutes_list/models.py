@@ -88,6 +88,8 @@ class ListedStudent(models.Model):
     year_in_college = models.CharField(max_length=20, blank=True, default="")
     program_name = models.CharField(max_length=255, blank=True, default="")
     city = models.CharField(max_length=255, blank=True, default="")
+    country = models.CharField(max_length=2, blank=True, default="")
+    region = models.CharField(max_length=255, blank=True, default="")
     state = models.CharField(max_length=255, blank=True, default="")
 
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.UNCLAIMED)
