@@ -144,19 +144,16 @@ class ClaimOtpDeliveryTests(TestCase):
         send_claim_otp_email_task(*second_args)
         self.assertEqual(len(mail.outbox), 1)
 
-    def test_unknown_token_still_uses_generic_json_error(self):
+    def test_unknown_token_uses_same_public_response_shape(self):
         response = self.client.post(
             "/api/claim/start/",
             {"token": "not-a-real-invitation"},
             format="json",
         )
 
-        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.status_code, 200)
         self.assertTrue(response["Content-Type"].startswith("application/json"))
-        self.assertEqual(
-            response.json(),
-            {"error": "No claimable invitation found for that information."},
-        )
+        self.assertEqual(response.json(), {"masked_email": "•••••"})
 
 
 class ClaimOtpRouteIsolationTests(TestCase):
