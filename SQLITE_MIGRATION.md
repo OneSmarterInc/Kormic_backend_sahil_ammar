@@ -1,8 +1,6 @@
-# LOCAL DEVELOPMENT ONLY
+# LOCAL DEVELOPMENT ONLY — PostgreSQL to SQLite Migration
 
 > **Do not use SQLite for staging or production.** Kormic production requires `DB_ENGINE=postgresql`. This document exists only to help developers create a local SQLite copy of existing PostgreSQL application data for testing/debugging.
-
-# PostgreSQL to SQLite Migration (No Destructive Steps)
 
 When `DJANGO_DEBUG=true`, direct local runs may use SQLite. When `DJANGO_DEBUG=false`, Kormic requires `DB_ENGINE=postgresql` and refuses to start otherwise. PostgreSQL remains the production database and rollback source.
 
