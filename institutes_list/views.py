@@ -3,7 +3,6 @@ Institute-list intake and the student claim flow.
 
 """
 import csv
-import hashlib
 import io
 import secrets
 import uuid
@@ -12,10 +11,12 @@ from urllib.parse import urlencode
 
 from django.conf import settings
 from django.core import signing
+from django.core.signing import salted_hmac
 from django.core.mail import send_mail
-from django.db.models import Count, Q
+from django.db.models import Count, F, Q
 from django.http import FileResponse
 from django.utils import timezone
+from django.utils.crypto import constant_time_compare
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -26,7 +27,7 @@ from accounts.permissions import IsTOTPEnrolled
 from institutes.models import Institute
 
 from .models import ListedStudent, UniversityStudentList
-from .tasks import send_invite_email_task
+from .tasks import discard_claim_otp_code, send_invite_email_task
 from .throttling import (
     ClaimStartEmailThrottle,
     ClaimStartIPThrottle,
@@ -52,8 +53,11 @@ def _mask_email(email: str) -> str:
     return f"{keep}•••••@{domain}"
 
 
-def _hash_otp(code: str) -> str:
-    return hashlib.sha256(code.encode("utf-8")).hexdigest()
+def _hash_otp(row_id: int, code: str) -> str:
+    return salted_hmac(
+        "kormic.claim.otp",
+        f"{row_id}:{code}",
+    ).hexdigest()
 
 
 def _prefill_payload(row: ListedStudent) -> dict:
@@ -533,7 +537,7 @@ def start_claim(request):
         )
 
     code = f"{secrets.randbelow(10**6):06d}"
-    row.otp_hash = _hash_otp(code)
+    row.otp_hash = _hash_otp(row.id, code)
     row.otp_expires_at = timezone.now() + timezone.timedelta(seconds=OTP_TTL_SECONDS)
     row.otp_attempts = 0
     row.save(update_fields=["otp_hash", "otp_expires_at", "otp_attempts"])
@@ -573,14 +577,31 @@ def verify_claim(request):
 
     if not row.otp_hash or not row.otp_expires_at or timezone.now() > row.otp_expires_at:
         return Response({"error": "code expired -- request a new one"}, status=status.HTTP_400_BAD_REQUEST)
-    if row.otp_attempts >= OTP_MAX_ATTEMPTS:
-        return Response({"error": "too many attempts -- request a new code"}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
-    row.otp_attempts += 1
-    row.save(update_fields=["otp_attempts"])
-    if _hash_otp(code) != row.otp_hash:
+    expected_hash = row.otp_hash
+
+    # Count the attempt atomically before checking the submitted code. The
+    # otp_attempts__lt predicate prevents concurrent requests from exceeding
+    # the lockout budget.
+    updated = ListedStudent.objects.filter(
+        id=row.id,
+        otp_hash=expected_hash,
+        otp_attempts__lt=OTP_MAX_ATTEMPTS,
+        status=ListedStudent.Status.UNCLAIMED,
+    ).update(otp_attempts=F("otp_attempts") + 1)
+
+    if updated != 1:
+        return Response(
+            {"error": "too many attempts -- request a new code"},
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+
+    row.refresh_from_db(fields=["otp_attempts", "otp_hash", "otp_expires_at"])
+    submitted_hash = _hash_otp(row.id, code)
+    if not constant_time_compare(submitted_hash, expected_hash):
         return Response({"error": "incorrect code"}, status=status.HTTP_400_BAD_REQUEST)
 
+    discard_claim_otp_code(row.id, expected_hash)
     claim_session = _claim_signer.sign(str(row.id))
     return Response({"claim_session": claim_session, "prefill": _prefill_payload(row)})
 
