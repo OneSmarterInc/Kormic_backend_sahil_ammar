@@ -22,6 +22,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from accounts.models import Account
+from accounts.permissions import IsTOTPEnrolled
 from institutes.models import Institute
 
 from .models import ListedStudent, UniversityStudentList
@@ -128,7 +129,7 @@ def _source_file_url(request, lst: UniversityStudentList):
 # ---------------------------------------------------------------------------
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, IsTOTPEnrolled])
 def upload_list(request):
     """
     POST /api/institute-lists/upload/
@@ -268,7 +269,7 @@ def _get_owned_list(account, list_id):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, IsTOTPEnrolled])
 def list_lists(request):
     """
     GET /api/institute-lists/lists/   ?institute_id=<...> (superuser only)
@@ -329,7 +330,7 @@ def list_lists(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, IsTOTPEnrolled])
 def list_students(request, list_id):
     """
     GET /api/institute-lists/lists/<list_id>/students/
@@ -371,7 +372,7 @@ def list_students(request, list_id):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, IsTOTPEnrolled])
 def download_source_file(request, list_id):
     """
     GET /api/institute-lists/lists/<list_id>/file/
@@ -410,7 +411,7 @@ def download_source_file(request, list_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, IsTOTPEnrolled])
 def send_invites(request, list_id):
     """
     POST /api/institute-lists/lists/<list_id>/send-invites/
@@ -457,7 +458,7 @@ def send_invites(request, list_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, IsTOTPEnrolled])
 def send_invite(request, list_id, student_id):
     """
     POST /api/institute-lists/lists/<list_id>/students/<student_id>/send-invite/
