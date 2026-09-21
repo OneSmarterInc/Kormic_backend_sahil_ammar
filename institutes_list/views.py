@@ -4,14 +4,12 @@ Institute-list intake and the student claim flow.
 """
 import csv
 import io
-import secrets
 import uuid
 from pathlib import Path
 from urllib.parse import urlencode
 
 from django.conf import settings
 from django.core import signing
-from django.core.mail import send_mail
 from django.db.models import Count, F, Q
 from django.http import FileResponse
 from django.utils import timezone
@@ -28,8 +26,6 @@ from institutes.models import Institute
 from .models import ListedStudent, UniversityStudentList
 from .tasks import discard_claim_otp_code, send_invite_email_task
 from .throttling import (
-    ClaimStartEmailThrottle,
-    ClaimStartIPThrottle,
     ClaimVerifyEmailThrottle,
     ClaimVerifyIPThrottle,
 )
@@ -516,51 +512,6 @@ def send_invite(request, list_id, student_id):
 # ---------------------------------------------------------------------------
 # Claim flow (student side; unauthenticated by design -- the OTP is the auth)
 # ---------------------------------------------------------------------------
-
-@api_view(["POST"])
-@permission_classes([AllowAny])
-@throttle_classes([ClaimStartIPThrottle, ClaimStartEmailThrottle])
-def start_claim(request):
-    """
-    POST /api/claim/start/   {"email": ...} or {"token": ...}
-    Sends a one-time code to the LISTED address and returns only the masked
-    email. Reveals nothing else -- a forwarded link or photographed QR gets
-    an attacker no further than this masked string.
-
-    Rate limited per-IP and per-email/token so it can't be hammered --
-    each call sends a real email, so the email-side budget is deliberately
-    tight (see ClaimStartEmailThrottle / DEFAULT_THROTTLE_RATES).
-    """
-    row = _find_claimable(
-        email=str(request.data.get("email") or ""),
-        token=str(request.data.get("token") or ""),
-    )
-    if not row:
-        # Deliberately generic: don't confirm which emails are on a list.
-        return Response(
-            {"error": "No claimable invitation found for that information."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
-
-    code = f"{secrets.randbelow(10**6):06d}"
-    row.otp_hash = _hash_otp(row.id, code)
-    row.otp_expires_at = timezone.now() + timezone.timedelta(seconds=OTP_TTL_SECONDS)
-    row.otp_attempts = 0
-    row.save(update_fields=["otp_hash", "otp_expires_at", "otp_attempts"])
-
-    send_mail(
-        subject="Your Kormic claim code",
-        message=(
-            f"Your one-time code is {code}. It expires in 10 minutes.\n\n"
-            "Your university listed this address so you can claim your Kormic "
-            "profile. If you didn't request this, you can ignore it."
-        ),
-        from_email=None,  # DEFAULT_FROM_EMAIL
-        recipient_list=[row.email],
-        fail_silently=False,
-    )
-    return Response({"masked_email": _mask_email(row.email)})
-
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
