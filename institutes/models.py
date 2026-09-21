@@ -1,9 +1,10 @@
 """
-Institutes are the local orgs (schools, coaching centers, agents' partner
-institutions) that upload student lists for the claim flow -- distinct from
-`universities.University`, which is the destination school with an AI officer
-agent, personas, and fit scoring. An institute never gets an agent; it only
-ever needs an identity for provenance and one admin login to upload lists.
+Institutes are universities or other entities outside the United States that
+send students into Kormic and may upload student rosters for the claim flow.
+They are distinct from `universities.University`, which represents a US
+destination university with an AI officer agent and knowledge base. An
+Institute never gets an agent; it has identity/contact data and an admin login
+for roster management.
 """
 import uuid
 
