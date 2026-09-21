@@ -119,7 +119,19 @@ WSGI_APPLICATION = 'kormic_backend.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-DB_ENGINE = os.environ.get("DB_ENGINE", "sqlite").strip().lower()
+_raw_db_engine = os.environ.get("DB_ENGINE", "").strip().lower()
+
+if not DEBUG:
+    if not _raw_db_engine:
+        raise ImproperlyConfigured(
+            "DB_ENGINE=postgresql must be set explicitly when DJANGO_DEBUG=false."
+        )
+    if _raw_db_engine not in {"postgres", "postgresql"}:
+        raise ImproperlyConfigured(
+            "Production requires DB_ENGINE=postgresql; SQLite is local-development only."
+        )
+
+DB_ENGINE = _raw_db_engine or "sqlite"
 
 if DB_ENGINE in {"sqlite", "sqlite3"}:
     sqlite_name = os.environ.get("SQLITE_PATH", "").strip()
@@ -142,12 +154,18 @@ else:
             f"Unsupported DB_ENGINE={DB_ENGINE!r}; expected sqlite or postgresql."
         )
 
+    postgres_password = os.environ.get("POSTGRES_PASSWORD", "").strip()
+    if not DEBUG and not postgres_password:
+        raise ImproperlyConfigured(
+            "POSTGRES_PASSWORD must be set when DJANGO_DEBUG=false."
+        )
+
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.postgresql",
             "NAME": os.environ.get("POSTGRES_DB", "kormic"),
             "USER": os.environ.get("POSTGRES_USER", "kormic"),
-            "PASSWORD": os.environ.get("POSTGRES_PASSWORD", "kormic"),
+            "PASSWORD": postgres_password or "kormic",
             "HOST": os.environ.get("POSTGRES_HOST", "localhost"),
             "PORT": os.environ.get("POSTGRES_PORT", "5432"),
             "CONN_MAX_AGE": int(os.environ.get("DB_CONN_MAX_AGE", "60")),
