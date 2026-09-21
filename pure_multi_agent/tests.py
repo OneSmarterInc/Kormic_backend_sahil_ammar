@@ -97,7 +97,7 @@ class AskUniversityToolConversationLoggingTests(TestCase):
 
     def setUp(self):
         _reset_inprocess_agent_caches()
-        u = University.objects.create(name="Tool Log University", agent_name="Nova5")
+        u = University.objects.create(name="Tool Log University", country="US", agent_name="Nova5")
         self.university_id = str(u.uuid)
         self.ctx = {
             "canonical_student_id": "student_tool_log",
