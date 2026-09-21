@@ -115,6 +115,11 @@ class ClaimOtpDeliveryTests(TestCase):
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].to, [self.student.email])
         self.assertIn(code, mail.outbox[0].body)
+        self.assertIn(self.institute.name, mail.outbox[0].body)
+        self.assertIn(
+            f"{self.institute.name} listed this address so you can claim your Kormic profile.",
+            mail.outbox[0].body,
+        )
         self.assertIsNone(cache.get(cache_key))
 
     @mock.patch("institutes_list.claim_views.send_claim_otp_email_task.delay")
