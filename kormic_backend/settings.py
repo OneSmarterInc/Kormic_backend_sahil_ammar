@@ -119,19 +119,47 @@ WSGI_APPLICATION = 'kormic_backend.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.environ.get('POSTGRES_DB', 'kormic'),
-        'USER': os.environ.get('POSTGRES_USER', 'kormic'),
-        'PASSWORD': os.environ.get('POSTGRES_PASSWORD', 'kormic'),
-        'HOST': os.environ.get('POSTGRES_HOST', 'localhost'),
-        'PORT': os.environ.get('POSTGRES_PORT', '5432'),
-      
-        'CONN_MAX_AGE': int(os.environ.get('DB_CONN_MAX_AGE', '60')),
-        'CONN_HEALTH_CHECKS': True,
+DB_ENGINE = os.environ.get("DB_ENGINE", "sqlite").strip().lower()
+
+if DB_ENGINE in {"sqlite", "sqlite3"}:
+    sqlite_name = os.environ.get("SQLITE_PATH", "").strip()
+    SQLITE_DB_PATH = Path(sqlite_name).expanduser() if sqlite_name else BASE_DIR / "db.sqlite3"
+    if not SQLITE_DB_PATH.is_absolute():
+        SQLITE_DB_PATH = (BASE_DIR / SQLITE_DB_PATH).resolve()
+
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": SQLITE_DB_PATH,
+            "OPTIONS": {
+                "timeout": int(os.environ.get("SQLITE_TIMEOUT", "30")),
+            },
+        }
     }
-}
+else:
+    if DB_ENGINE not in {"postgres", "postgresql"}:
+        raise ImproperlyConfigured(
+            f"Unsupported DB_ENGINE={DB_ENGINE!r}; expected sqlite or postgresql."
+        )
+
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": os.environ.get("POSTGRES_DB", "kormic"),
+            "USER": os.environ.get("POSTGRES_USER", "kormic"),
+            "PASSWORD": os.environ.get("POSTGRES_PASSWORD", "kormic"),
+            "HOST": os.environ.get("POSTGRES_HOST", "localhost"),
+            "PORT": os.environ.get("POSTGRES_PORT", "5432"),
+            "CONN_MAX_AGE": int(os.environ.get("DB_CONN_MAX_AGE", "60")),
+            "CONN_HEALTH_CHECKS": True,
+        }
+    }
+
+AGENT_CHECKPOINTER_SQLITE_PATH = Path(
+    os.environ.get("AGENT_CHECKPOINTER_SQLITE_PATH", BASE_DIR / "agent_checkpoints.sqlite3")
+)
+if not AGENT_CHECKPOINTER_SQLITE_PATH.is_absolute():
+    AGENT_CHECKPOINTER_SQLITE_PATH = (BASE_DIR / AGENT_CHECKPOINTER_SQLITE_PATH).resolve()
 
 # See kormic_backend/test_runner.py: pure_multi_agent.runtime's checkpointer
 # pool is a separate psycopg v3 connection outside django.db.connections, so
