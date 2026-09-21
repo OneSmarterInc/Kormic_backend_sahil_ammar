@@ -170,7 +170,7 @@ def send_claim_otp_email_task(
             subject="Your Kormic claim code",
             message=(
                 f"Your one-time code is {code}. It expires in 10 minutes.\n\n"
-                "Your institute listed this address so you can claim your Kormic "
+                f"{row.source_list.institute.name} listed this address so you can claim your Kormic "
                 "profile. If you did not request this, you can ignore it."
             ),
             from_email=None,  # DEFAULT_FROM_EMAIL
