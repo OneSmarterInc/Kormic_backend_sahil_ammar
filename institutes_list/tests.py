@@ -17,7 +17,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from accounts.models import Account
+from accounts.models import Account, TOTPDevice
 from django_api.models import StudentProfile
 from institutes.services import register_institute
 
@@ -72,6 +72,7 @@ class ClaimFlowTests(TestCase):
             username="officer@wsfi.edu", email="officer@wsfi.edu", password="x"
         )
         Account.objects.create(user=user, role=Account.Role.INSTITUTE, institute=self.institute)
+        TOTPDevice.objects.create(user=user, secret_encrypted="test", confirmed_at=timezone.now())
         self.client.force_authenticate(user=user)
         resp = self.client.post(
             "/api/institute-lists/upload/",
@@ -426,6 +427,7 @@ class ClaimRateLimitTests(TestCase):
             username="officer@rli.edu", email="officer@rli.edu", password="x"
         )
         Account.objects.create(user=user, role=Account.Role.INSTITUTE, institute=self.institute)
+        TOTPDevice.objects.create(user=user, secret_encrypted="test", confirmed_at=timezone.now())
         self.client.force_authenticate(user=user)
         self.client.post(
             "/api/institute-lists/upload/",
