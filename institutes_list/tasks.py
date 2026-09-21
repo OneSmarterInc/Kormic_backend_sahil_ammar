@@ -5,13 +5,13 @@
 # into an HTML 500 page or hold a web worker open.
 from __future__ import annotations
 
-import hashlib
 import logging
 
 from celery import shared_task
 from django.core.cache import cache
 from django.core.mail import send_mail
 from django.utils import timezone
+from django.utils.crypto import constant_time_compare
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +128,12 @@ def send_claim_otp_email_task(
         )
         return
 
-    if hashlib.sha256(code.encode("utf-8")).hexdigest() != expected_otp_hash:
+    from institutes_list.views import _hash_otp
+
+    if not constant_time_compare(
+        _hash_otp(listed_student_id, code),
+        expected_otp_hash,
+    ):
         logger.error(
             "send_claim_otp_email_task: cached OTP integrity check failed for ListedStudent %s.",
             listed_student_id,
