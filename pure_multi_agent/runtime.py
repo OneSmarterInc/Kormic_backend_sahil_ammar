@@ -38,12 +38,12 @@ def _build_checkpointer():
     engine = db["ENGINE"]
 
     if engine == "django.db.backends.sqlite3":
-        import sqlite3
-        from langgraph.checkpoint.sqlite import SqliteSaver
+        from langgraph.checkpoint.memory import InMemorySaver
 
-        path = str(settings.AGENT_CHECKPOINTER_SQLITE_PATH)
-        conn = sqlite3.connect(path, check_same_thread=False, timeout=30)
-        return SqliteSaver(conn)
+        # SQLite is the local/single-process database mode. Persisted Kormic
+        # application/chat rows remain in Django's SQLite database; LangGraph's
+        # short-term graph checkpoint state is process-local in this mode.
+        return InMemorySaver()
 
     from psycopg.rows import dict_row
     from psycopg_pool import ConnectionPool
