@@ -38,7 +38,7 @@ OTP_TTL_SECONDS = 10 * 60
 OTP_MAX_ATTEMPTS = 5
 CLAIM_SESSION_MAX_AGE = 15 * 60  # seconds a verified claim session stays valid
 REQUIRED_COLUMNS = ["full_name", "email", "field_of_study", "degree_level", "expected_graduation"]
-OPTIONAL_COLUMNS = ["phone", "year_in_college", "program_name", "city", "state"]
+OPTIONAL_COLUMNS = ["phone", "year_in_college", "program_name", "city", "country", "region", "state"]
 
 _claim_signer = signing.TimestampSigner(salt="institutes-list.claim")
 
@@ -70,6 +70,8 @@ def _prefill_payload(row: ListedStudent) -> dict:
         "year_in_college": row.year_in_college,
         "program_name": row.program_name,
         "city": row.city,
+        "region": row.region or row.state,
+        "country": row.country or row.source_list.institute.country,
         "state": row.state,
         "institute_id": row.institute_id,
         "institute_name": row.source_list.institute.name,
@@ -199,6 +201,11 @@ def upload_list(request):
     accepted, rejected, skipped_claimed, seen = 0, [], [], set()
     for i, raw in enumerate(reader, start=2):  # row 1 is the header
         row = {k: str(raw.get(k) or "").strip() for k in REQUIRED_COLUMNS + OPTIONAL_COLUMNS}
+        if not row["region"] and row["state"]:
+            row["region"] = row["state"]
+        if not row["country"]:
+            row["country"] = institute.country
+        row["country"] = row["country"].upper()
         email = row["email"].lower()
         if not email or "@" not in email:
             rejected.append({"row": i, "reason": "invalid email"})
@@ -571,11 +578,12 @@ def verify_claim(request):
         token=str(request.data.get("token") or ""),
     )
     code = str(request.data.get("code") or "").strip()
+    generic_error = {"error": "That code didn't work"}
     if not row or not code:
-        return Response({"error": "invalid request"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(generic_error, status=status.HTTP_400_BAD_REQUEST)
 
     if not row.otp_hash or not row.otp_expires_at or timezone.now() > row.otp_expires_at:
-        return Response({"error": "code expired -- request a new one"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(generic_error, status=status.HTTP_400_BAD_REQUEST)
 
     expected_hash = row.otp_hash
 
@@ -598,7 +606,7 @@ def verify_claim(request):
     row.refresh_from_db(fields=["otp_attempts", "otp_hash", "otp_expires_at"])
     submitted_hash = _hash_otp(row.id, code)
     if not constant_time_compare(submitted_hash, expected_hash):
-        return Response({"error": "incorrect code"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(generic_error, status=status.HTTP_400_BAD_REQUEST)
 
     discard_claim_otp_code(row.id, expected_hash)
     claim_session = _claim_signer.sign(str(row.id))
