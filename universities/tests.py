@@ -40,7 +40,7 @@ class KnowledgeGroupClassificationTests(TestCase):
 
 class KnowledgeGroupResolutionTests(TestCase):
     def setUp(self):
-        self.university = University.objects.create(name="Write State")
+        self.university = University.objects.create(name="Write State", country="US")
 
     def test_no_groups_configured_returns_none(self):
         self.assertIsNone(resolve_group_for_question(str(self.university.uuid), "What is the tuition?"))
