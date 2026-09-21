@@ -6,16 +6,71 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 
 from celery import shared_task
 from django.core.cache import cache
 from django.core.mail import send_mail
+from django.conf import settings
 from django.utils import timezone
 from django.utils.crypto import constant_time_compare
 
 logger = logging.getLogger(__name__)
 
 CLAIM_OTP_CACHE_PREFIX = "claim-otp-delivery"
+
+
+@shared_task
+def purge_expired_source_files() -> dict[str, int]:
+    """Delete raw roster files after the configured retention window."""
+    from institutes_list.models import InstituteStudentList
+    from institutes_list.source_files import resolve_source_file_path
+
+    retention_days = max(
+        1, int(getattr(settings, "INSTITUTE_ROSTER_SOURCE_RETENTION_DAYS", 30))
+    )
+    cutoff = timezone.now() - timedelta(days=retention_days)
+    results = {"deleted": 0, "missing": 0, "unsafe": 0, "failed": 0}
+
+    expired = InstituteStudentList.objects.filter(
+        created_at__lt=cutoff,
+    ).exclude(source_file_path="")
+    for source_list in expired.iterator():
+        try:
+            file_path = resolve_source_file_path(source_list.source_file_path)
+        except ValueError:
+            logger.error(
+                "Refusing to delete roster source path outside MEDIA_ROOT for list %s.",
+                source_list.id,
+            )
+            results["unsafe"] += 1
+            continue
+
+        try:
+            if file_path.exists():
+                file_path.unlink()
+                results["deleted"] += 1
+            else:
+                results["missing"] += 1
+        except OSError:
+            logger.exception("Unable to delete roster source file for list %s.", source_list.id)
+            results["failed"] += 1
+            continue
+
+        source_list.source_file_path = ""
+        source_list.source_file_name = ""
+        source_list.source_file_content_type = ""
+        source_list.source_file_size = 0
+        source_list.save(
+            update_fields=[
+                "source_file_path",
+                "source_file_name",
+                "source_file_content_type",
+                "source_file_size",
+            ]
+        )
+
+    return results
 
 
 def claim_otp_cache_key(listed_student_id: int, otp_hash: str) -> str:

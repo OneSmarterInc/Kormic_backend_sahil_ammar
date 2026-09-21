@@ -25,6 +25,7 @@ from institutes.country_codes import normalize_country_code
 from institutes.models import Institute
 
 from .models import ListedStudent, InstituteStudentList
+from .source_files import resolve_source_file_path
 from .tasks import discard_claim_otp_code, send_invite_email_task
 from .throttling import (
     ClaimVerifyEmailThrottle,
@@ -36,6 +37,11 @@ OTP_MAX_ATTEMPTS = 5
 CLAIM_SESSION_MAX_AGE = 15 * 60  # seconds a verified claim session stays valid
 REQUIRED_COLUMNS = ["full_name", "email", "field_of_study", "degree_level", "expected_graduation"]
 OPTIONAL_COLUMNS = ["phone", "year_in_college", "program_name", "city", "country", "region", "state"]
+ALLOWED_ROSTER_CONTENT_TYPES = {
+    "application/csv",
+    "application/vnd.ms-excel",
+    "text/csv",
+}
 
 _claim_signer = signing.TimestampSigner(salt="institutes-list.claim")
 
@@ -95,7 +101,8 @@ def _store_source_file(institute_id: str, upload) -> dict:
     The filename is uuid-suffixed so re-uploading a same-named file doesn't
     clobber an older list's copy.
     """
-    target_dir = Path(settings.MEDIA_ROOT) / "institute_lists" / str(institute_id)
+    relative_dir = Path("institute_lists") / str(institute_id)
+    target_dir = Path(settings.MEDIA_ROOT) / relative_dir
     target_dir.mkdir(parents=True, exist_ok=True)
 
     safe_name = Path(upload.name or "list.csv").name
@@ -111,7 +118,7 @@ def _store_source_file(institute_id: str, upload) -> dict:
             destination.write(chunk)
 
     return {
-        "source_file_path": str(file_path),
+        "source_file_path": (relative_dir / unique_name).as_posix(),
         "source_file_name": safe_name,
         "source_file_content_type": getattr(upload, "content_type", "") or "",
         "source_file_size": file_path.stat().st_size,
@@ -155,6 +162,26 @@ def upload_list(request):
     if not upload or not institute_id or not contact_name or not contact_email:
         return Response(
             {"error": "file, institute_id, contact_name and contact_email are required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    max_upload_bytes = int(getattr(settings, "INSTITUTE_ROSTER_MAX_UPLOAD_BYTES", 2 * 1024 * 1024))
+    if upload.size > max_upload_bytes:
+        return Response(
+            {"error": f"roster file must not exceed {max_upload_bytes} bytes"},
+            status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        )
+
+    if Path(upload.name or "").suffix.lower() != ".csv":
+        return Response(
+            {"error": "roster file must use the .csv extension"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    content_type = (getattr(upload, "content_type", "") or "").split(";", 1)[0].strip().lower()
+    if content_type not in ALLOWED_ROSTER_CONTENT_TYPES:
+        return Response(
+            {"error": "roster file must have a CSV content type"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -404,17 +431,19 @@ def download_source_file(request, list_id):
             {"error": "no source file was retained for this list"}, status=status.HTTP_404_NOT_FOUND
         )
 
-    file_path = Path(lst.source_file_path)
+    try:
+        file_path = resolve_source_file_path(lst.source_file_path)
+    except ValueError:
+        return Response(
+            {"error": "source file path is invalid"}, status=status.HTTP_404_NOT_FOUND
+        )
     if not file_path.exists():
         return Response(
             {"error": "source file is missing on the server"}, status=status.HTTP_404_NOT_FOUND
         )
 
-    # Read fully into memory rather than handing FileResponse an open handle
-    # (keeps the handle short-lived; matches the download views elsewhere).
-    content = file_path.read_bytes()
     return FileResponse(
-        io.BytesIO(content),
+        file_path.open("rb"),
         as_attachment=True,
         filename=lst.source_file_name or file_path.name,
         content_type=lst.source_file_content_type or "application/octet-stream",

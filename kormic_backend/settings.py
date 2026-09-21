@@ -222,6 +222,17 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "uploads"
 
+# Institute roster source files contain PII. Reject large uploads before the
+# view reads them and remove the raw source after the retention window. Parsed
+# roster rows remain in the database according to the application's records
+# policy; these settings govern only the original uploaded CSV.
+INSTITUTE_ROSTER_MAX_UPLOAD_BYTES = int(
+    os.environ.get("INSTITUTE_ROSTER_MAX_UPLOAD_BYTES", str(2 * 1024 * 1024))
+)
+INSTITUTE_ROSTER_SOURCE_RETENTION_DAYS = int(
+    os.environ.get("INSTITUTE_ROSTER_SOURCE_RETENTION_DAYS", "30")
+)
+
 # Kormic Django REST API settings
 # Cookie authentication requires an explicit origin allow-list, even in development.
 CORS_ALLOW_ALL_ORIGINS = False
@@ -347,6 +358,10 @@ PROACTIVE_CHECKIN_COOLDOWN_DAYS = int(os.environ.get("PROACTIVE_CHECKIN_COOLDOWN
 PROACTIVE_CHECKIN_BATCH_SIZE = int(os.environ.get("PROACTIVE_CHECKIN_BATCH_SIZE", "50"))
 
 CELERY_BEAT_SCHEDULE = {
+    "purge-expired-institute-roster-files": {
+        "task": "institutes_list.tasks.purge_expired_source_files",
+        "schedule": crontab(hour=3, minute=0),
+    },
     "proactive-agent-checkins": {
         "task": "notifications.tasks.run_proactive_checkins_task",
         "schedule": crontab(hour=PROACTIVE_CHECKIN_HOUR, minute=0),

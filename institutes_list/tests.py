@@ -4,15 +4,18 @@ possession of a token reveals nothing beyond a masked email; wrong codes are
 counted and limited; a claimed invitation is dead; edits are recorded as
 divergences; re-uploads never overwrite claimed rows.
 """
-import io
 import re
+import tempfile
 from copy import deepcopy
+from datetime import timedelta
+from pathlib import Path
 from unittest import mock
 
 from django.conf import settings as django_settings
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.cache import cache
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -22,7 +25,7 @@ from django_api.models import StudentProfile
 from institutes.services import register_institute
 
 from .models import ListedStudent, InstituteStudentList
-from .tasks import claim_otp_cache_key
+from .tasks import claim_otp_cache_key, purge_expired_source_files
 
 CSV = (
     "full_name,email,field_of_study,degree_level,expected_graduation,phone\n"
@@ -30,6 +33,10 @@ CSV = (
     "Arjun Rao,arjun.rao@gmail.com,Data Science,Masters,05/2027,\n"
     "Bad Row,not-an-email,CS,Masters,05/2027,\n"
 )
+
+
+def _csv_upload(content: str = CSV, *, name: str = "roster.csv", content_type: str = "text/csv"):
+    return SimpleUploadedFile(name, content.encode(), content_type=content_type)
 
 
 def _code_from_outbox() -> str:
@@ -77,7 +84,7 @@ class ClaimFlowTests(TestCase):
         resp = self.client.post(
             "/api/institute-lists/upload/",
             {
-                "file": io.BytesIO(CSV.encode()),
+                "file": _csv_upload(),
                 "institute_id": str(self.institute.uuid),
                 "contact_name": "Dr. John",
                 "contact_email": "john@wsfi.edu",
@@ -100,6 +107,86 @@ class ClaimFlowTests(TestCase):
             ListedStudent.objects.filter(status=ListedStudent.Status.UNCLAIMED).count(), 2
         )
 
+    def test_upload_rejects_50_mb_before_parsing(self):
+        user = get_user_model().objects.get(username="officer@wsfi.edu")
+        self.client.force_authenticate(user=user)
+        oversized = SimpleUploadedFile(
+            "roster.csv",
+            b"x" * (50 * 1024 * 1024),
+            content_type="text/csv",
+        )
+
+        resp = self.client.post(
+            "/api/institute-lists/upload/",
+            {
+                "file": oversized,
+                "institute_id": str(self.institute.uuid),
+                "contact_name": "Dr. John",
+                "contact_email": "john@wsfi.edu",
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(resp.status_code, 413)
+        self.assertEqual(InstituteStudentList.objects.count(), 1)
+
+    def test_upload_rejects_wrong_extension_and_content_type(self):
+        user = get_user_model().objects.get(username="officer@wsfi.edu")
+        self.client.force_authenticate(user=user)
+        common_fields = {
+            "institute_id": str(self.institute.uuid),
+            "contact_name": "Dr. John",
+            "contact_email": "john@wsfi.edu",
+        }
+
+        wrong_extension = self.client.post(
+            "/api/institute-lists/upload/",
+            {"file": _csv_upload(name="roster.txt"), **common_fields},
+            format="multipart",
+        )
+        wrong_type = self.client.post(
+            "/api/institute-lists/upload/",
+            {"file": _csv_upload(content_type="application/octet-stream"), **common_fields},
+            format="multipart",
+        )
+
+        self.assertEqual(wrong_extension.status_code, 400)
+        self.assertEqual(wrong_type.status_code, 400)
+
+    def test_source_path_is_relative_to_media_root(self):
+        source_list = InstituteStudentList.objects.get(id=self.upload["list_id"])
+        self.assertFalse(Path(source_list.source_file_path).is_absolute())
+        self.assertFalse(source_list.source_file_path.startswith("/"))
+
+    def test_expired_source_file_is_deleted_and_metadata_cleared(self):
+        with tempfile.TemporaryDirectory() as media_root, override_settings(
+            MEDIA_ROOT=media_root,
+            INSTITUTE_ROSTER_SOURCE_RETENTION_DAYS=30,
+        ):
+            relative_path = Path("institute_lists") / str(self.institute.id) / "expired.csv"
+            full_path = Path(media_root) / relative_path
+            full_path.parent.mkdir(parents=True)
+            full_path.write_text(CSV, encoding="utf-8")
+
+            source_list = InstituteStudentList.objects.get(id=self.upload["list_id"])
+            InstituteStudentList.objects.filter(id=source_list.id).update(
+                source_file_path=relative_path.as_posix(),
+                source_file_name="expired.csv",
+                source_file_content_type="text/csv",
+                source_file_size=full_path.stat().st_size,
+                created_at=timezone.now() - timedelta(days=31),
+            )
+
+            result = purge_expired_source_files()
+            source_list.refresh_from_db()
+
+            self.assertEqual(result["deleted"], 1)
+            self.assertFalse(full_path.exists())
+            self.assertEqual(source_list.source_file_path, "")
+            self.assertEqual(source_list.source_file_name, "")
+            self.assertEqual(source_list.source_file_content_type, "")
+            self.assertEqual(source_list.source_file_size, 0)
+
     def test_old_csv_state_alias_populates_region_and_country(self):
         user = get_user_model().objects.get(username="officer@wsfi.edu")
         self.client.force_authenticate(user=user)
@@ -110,7 +197,7 @@ class ClaimFlowTests(TestCase):
         resp = self.client.post(
             "/api/institute-lists/upload/",
             {
-                "file": io.BytesIO(legacy_csv.encode()),
+                "file": _csv_upload(legacy_csv, name="legacy.csv"),
                 "institute_id": str(self.institute.uuid),
                 "contact_name": "Dr. John",
                 "contact_email": "john@wsfi.edu",
@@ -231,7 +318,7 @@ class ClaimFlowTests(TestCase):
         resp = self.client.post(
             "/api/institute-lists/upload/",
             {
-                "file": io.BytesIO(changed.encode()),
+                "file": _csv_upload(changed),
                 "institute_id": str(self.institute.uuid),
                 "contact_name": "Dr. John",
                 "contact_email": "john@wsfi.edu",
@@ -252,7 +339,7 @@ class ClaimFlowTests(TestCase):
         resp = self.client.post(
             "/api/institute-lists/upload/",
             {
-                "file": io.BytesIO(CSV.encode()),
+                "file": _csv_upload(),
                 "institute_id": str(other.uuid),
                 "contact_name": "Dr. John",
                 "contact_email": "john@wsfi.edu",
@@ -460,7 +547,7 @@ class ClaimRateLimitTests(TestCase):
         self.client.post(
             "/api/institute-lists/upload/",
             {
-                "file": io.BytesIO(CSV.encode()),
+                "file": _csv_upload(),
                 "institute_id": str(self.institute.uuid),
                 "contact_name": "Dr. John",
                 "contact_email": "john@rli.edu",
