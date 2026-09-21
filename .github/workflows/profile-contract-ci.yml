@@ -32,7 +32,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      DB_ENGINE: postgresql
       DJANGO_SECRET_KEY: profile-contract-ci-secret-key
       DJANGO_DEBUG: "true"
       DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,testserver
