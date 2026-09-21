@@ -10,7 +10,7 @@ from url_discovery.models import DiscoveredUrl, DiscoveryJob
 
 class CrawlerTransportSecurityTests(TestCase):
     def setUp(self):
-        self.university = University.objects.create(name="Security Test University")
+        self.university = University.objects.create(name="Security Test University", country="US")
         self.job = DiscoveryJob.objects.create(
             university=self.university,
             base_url="https://security.example/",
