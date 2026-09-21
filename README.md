@@ -9,7 +9,7 @@ The project is broken down into several Django apps, each handling a distinct do
 - **`accounts`**: Authentication (JWT), user models, password resets, and TOTP (Two-Factor Auth).
 - **`django_api`**: Core student-facing API. Handles student profiles, resumes, LinkedIn parsing, and the main student agent (`Aria`) chat endpoints.
 - **`universities`**: Destination schools. Manages the university agent personas, their knowledge bases, and the escalation routing system (`KnowledgeGroup`).
-- **`institutes`**: Local partner orgs, coaching centers, or feeder schools. They do not have AI agents; they upload student lists for claim flows.
+- **`institutes`**: Universities or other entities outside the USA that send students into Kormic and upload student rosters. They do not have AI agents or Kormic knowledge bases.
 - **`institutes_list`**: The pre-fill claim flow. Manages the student lists uploaded by institutes and the secure invitation process.
 - **`verification`**: The trusted-data layer. Handles requests from universities for students to verify specific claims (e.g. TOEFL scores, transcripts).
 - **`pure_multi_agent`**: The LangGraph AI runtime. Houses the underlying multi-agent reasoning loops, checkpointers, and LangChain setup.
