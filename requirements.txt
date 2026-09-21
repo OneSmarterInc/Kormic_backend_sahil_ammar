@@ -9,6 +9,7 @@ langchain-anthropic>=1.4.0
 # libpq, same reason psycopg2-binary was chosen over plain psycopg2 -- no
 # system libpq needs to be installed in the container.
 langgraph-checkpoint-postgres>=3.1.0
+langgraph-checkpoint-sqlite>=3.1.0
 psycopg[binary]>=3.2.0
 psycopg-pool>=3.2.0
 requests==2.31.0
