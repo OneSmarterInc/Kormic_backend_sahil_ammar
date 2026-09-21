@@ -146,6 +146,20 @@ class SuperuserUniversityAPITests(TestCase):
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertFalse(University.objects.filter(name="Foreign University").exists())
 
+    def test_enroll_university_requires_country(self):
+        resp = self.admin.post(
+            "/api/superuser/universities/",
+            {
+                "institution_name": "Countryless University",
+                "email": "countryless_university@example.com",
+                "password": "S3curePassw0rd!",
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("country", resp.data)
+        self.assertFalse(University.objects.filter(name="Countryless University").exists())
+
     def test_enroll_university_requires_admin_credentials(self):
         resp = self.admin.post(
             "/api/superuser/universities/",
@@ -280,6 +294,20 @@ class SuperuserInstituteAPITests(TestCase):
         )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertFalse(Institute.objects.filter(name="US Institute").exists())
+
+    def test_enroll_institute_requires_country(self):
+        resp = self.admin.post(
+            "/api/superuser/institutes/",
+            {
+                "institution_name": "Countryless Institute",
+                "email": "countryless_institute@example.com",
+                "password": "S3curePassw0rd!",
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("country", resp.data)
+        self.assertFalse(Institute.objects.filter(name="Countryless Institute").exists())
 
     def test_enroll_institute_requires_admin_credentials(self):
         resp = self.admin.post(
