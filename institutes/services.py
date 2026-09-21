@@ -5,6 +5,7 @@ from institutes.models import Institute
 
 def register_institute(
     name: str,
+    country: str = "IN",
     contact_email: str = "",
     contact_phone: str = "",
     address: str = "",
@@ -14,6 +15,7 @@ def register_institute(
     since institutes carry no persona/agent configuration)."""
     return Institute.objects.create(
         name=name.strip(),
+        country=country.strip().upper(),
         contact_email=contact_email.strip(),
         contact_phone=contact_phone.strip(),
         address=address.strip(),
