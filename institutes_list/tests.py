@@ -211,10 +211,14 @@ class ClaimFlowTests(TestCase):
     def test_claimed_invitation_is_dead(self):
         session = self._verified_session()
         self.client.post("/api/claim/confirm/", {"claim_session": session, "fields": {}}, format="json")
-        # token now dead for start...
+        # The consumed token remains operationally dead, but start returns the
+        # same public 200/placeholder response used for every unknown token.
         row = ListedStudent.objects.get(email="priya.sharma@gmail.com")
+        self.mock_claim_otp_delivery.reset_mock()
         resp = self.client.post("/api/claim/start/", {"token": row.claim_token}, format="json")
-        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"masked_email": "•••••"})
+        self.mock_claim_otp_delivery.assert_not_called()
         # ...and the session cannot confirm twice
         resp = self.client.post("/api/claim/confirm/", {"claim_session": session, "fields": {}}, format="json")
         self.assertEqual(resp.status_code, 400)
