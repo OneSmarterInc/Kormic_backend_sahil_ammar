@@ -19,6 +19,7 @@ class University(models.Model):
 
     # -- identity (mirrors the old UNIVERSITY_PERSONAS entry shape) --
     name = models.CharField(max_length=500)
+    country = models.CharField(max_length=2, default="US")
     agent_name = models.CharField(max_length=100, unique=True, null=True, blank=True, db_index=True)
     location = models.CharField(max_length=255, blank=True, default="")
     tagline = models.CharField(max_length=500, blank=True, default="")
