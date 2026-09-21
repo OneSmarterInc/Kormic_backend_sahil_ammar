@@ -22,7 +22,7 @@ from rest_framework.decorators import api_view, permission_classes, throttle_cla
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from .models import ListedStudent, UniversityStudentList
+from .models import ListedStudent, InstituteStudentList
 from .tasks import (
     cache_claim_otp_code,
     discard_claim_otp_code,
@@ -78,7 +78,7 @@ def start_claim(request):
             updated = ListedStudent.objects.filter(
                 id=row.id,
                 status=ListedStudent.Status.UNCLAIMED,
-                source_list__status=UniversityStudentList.Status.ACTIVE,
+                source_list__status=InstituteStudentList.Status.ACTIVE,
             ).update(
                 otp_hash=otp_hash,
                 otp_expires_at=expires_at,
