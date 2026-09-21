@@ -53,7 +53,7 @@ class ClaimOtpDeliveryTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response["Content-Type"].startswith("application/json"))
-        self.assertEqual(response.json(), {"masked_email": "m•••••@example.edu"})
+        self.assertEqual(response.json(), {"masked_email": "•••••"})
 
         self.student.refresh_from_db()
         mock_delay.assert_called_once_with(self.student.id, self.student.otp_hash)
