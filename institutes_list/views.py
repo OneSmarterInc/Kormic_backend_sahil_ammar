@@ -583,10 +583,10 @@ def verify_claim(request):
     ).update(otp_attempts=F("otp_attempts") + 1)
 
     if updated != 1:
-        return Response(
-            {"error": "too many attempts -- request a new code"},
-            status=status.HTTP_429_TOO_MANY_REQUESTS,
-        )
+        # Keep the public response indistinguishable from unknown, wrong, and
+        # expired codes. The row is still locked internally at the attempt
+        # limit; callers do not learn whether a roster row exists.
+        return Response(generic_error, status=status.HTTP_400_BAD_REQUEST)
 
     row.refresh_from_db(fields=["otp_attempts", "otp_hash", "otp_expires_at"])
     submitted_hash = _hash_otp(row.id, code)
