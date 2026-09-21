@@ -46,7 +46,7 @@ class ClaimOtpConcurrentAttemptTests(TransactionTestCase):
     reset_sequences = True
 
     def setUp(self):
-        institute = register_institute("OTP Concurrency Institute")
+        institute = register_institute("OTP Concurrency Institute", country="IN")
         source_list = InstituteStudentList.objects.create(
             institute=institute,
             contact_name="Admissions",
