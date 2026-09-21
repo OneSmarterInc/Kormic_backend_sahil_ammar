@@ -24,6 +24,7 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
+      DB_ENGINE: postgresql
           POSTGRES_DB: kormic_ci
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
