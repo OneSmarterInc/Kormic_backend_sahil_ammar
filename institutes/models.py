@@ -15,6 +15,7 @@ class Institute(models.Model):
     # references. The integer auto `id` stays internal. Replaces the old slug PK.
     uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True, db_index=True)
     name = models.CharField(max_length=500)
+    country = models.CharField(max_length=2, default="IN")
 
     contact_email = models.CharField(max_length=255, blank=True, default="")
     contact_phone = models.CharField(max_length=50, blank=True, default="")
