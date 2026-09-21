@@ -24,16 +24,22 @@ class ProductionDatabaseGuardTests(SimpleTestCase):
 
     def test_production_without_db_engine_fails_closed(self):
         result = self._settings_import(
-            {"DJANGO_DEBUG": "false"},
-            remove=("DB_ENGINE", "POSTGRES_PASSWORD"),
+            {
+                "DJANGO_DEBUG": "false",
+                "DB_ENGINE": "",
+                "POSTGRES_PASSWORD": "",
+            },
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("DB_ENGINE=postgresql", result.stderr + result.stdout)
 
     def test_production_postgres_without_password_fails_closed(self):
         result = self._settings_import(
-            {"DJANGO_DEBUG": "false", "DB_ENGINE": "postgresql"},
-            remove=("POSTGRES_PASSWORD",),
+            {
+                "DJANGO_DEBUG": "false",
+                "DB_ENGINE": "postgresql",
+                "POSTGRES_PASSWORD": "",
+            },
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("POSTGRES_PASSWORD", result.stderr + result.stdout)
