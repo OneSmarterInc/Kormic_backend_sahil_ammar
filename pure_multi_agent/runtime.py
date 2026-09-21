@@ -29,8 +29,9 @@ def _build_checkpointer():
     """
     Durable checkpointer for the student-agent conversation state.
 
-    SQLite is used when Django's default database is SQLite. PostgreSQL remains
-    supported via DB_ENGINE=postgresql for production/rollback scenarios.
+    Local SQLite uses a file-backed saver so checkpoint state survives process
+    restarts during development. Production is PostgreSQL-only and uses the
+    shared PostgresSaver below.
     """
     from django.conf import settings
 
@@ -38,12 +39,22 @@ def _build_checkpointer():
     engine = db["ENGINE"]
 
     if engine == "django.db.backends.sqlite3":
-        from langgraph.checkpoint.memory import InMemorySaver
+        import sqlite3
 
-        # SQLite is the local/single-process database mode. Persisted Kormic
-        # application/chat rows remain in Django's SQLite database; LangGraph's
-        # short-term graph checkpoint state is process-local in this mode.
-        return InMemorySaver()
+        from langgraph.checkpoint.sqlite import SqliteSaver
+
+        checkpoint_name = os.environ.get(
+            "AGENT_CHECKPOINTER_SQLITE_PATH",
+            "agent_checkpoints.sqlite3",
+        ).strip() or "agent_checkpoints.sqlite3"
+        checkpoint_path = settings.BASE_DIR / checkpoint_name
+        if os.path.isabs(checkpoint_name):
+            checkpoint_path = checkpoint_name
+
+        conn = sqlite3.connect(str(checkpoint_path), check_same_thread=False)
+        saver = SqliteSaver(conn)
+        saver.setup()
+        return saver
 
     from psycopg.rows import dict_row
     from psycopg_pool import ConnectionPool
