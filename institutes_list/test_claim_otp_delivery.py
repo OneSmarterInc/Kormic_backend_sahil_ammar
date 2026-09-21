@@ -121,6 +121,29 @@ class ClaimOtpDeliveryTests(TestCase):
         self.assertIsNone(cache.get(cache_key))
 
     @mock.patch("institutes_list.claim_views.send_claim_otp_email_task.delay")
+    def test_successful_verify_discards_cached_plaintext_code(self, mock_delay):
+        response = self.client.post(
+            "/api/claim/start/",
+            {"token": self.student.claim_token},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+        self.student.refresh_from_db()
+        cache_key = claim_otp_cache_key(self.student.id, self.student.otp_hash)
+        code = cache.get(cache_key)
+        self.assertRegex(code, r"^\\d{6}$")
+
+        verified = self.client.post(
+            "/api/claim/verify/",
+            {"token": self.student.claim_token, "code": code},
+            format="json",
+        )
+
+        self.assertEqual(verified.status_code, 200)
+        self.assertIsNone(cache.get(cache_key))
+
+    @mock.patch("institutes_list.claim_views.send_claim_otp_email_task.delay")
     def test_delayed_task_for_replaced_code_cannot_email_stale_otp(self, mock_delay):
         first = self.client.post(
             "/api/claim/start/",
