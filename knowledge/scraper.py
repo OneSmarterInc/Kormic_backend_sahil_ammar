@@ -1,6 +1,6 @@
 ﻿# knowledge/scraper.py
 # Scrapes university websites and extracts structured knowledge.
-# Uses requests + BeautifulSoup for page fetching.
+# Uses the shared policy-enforced httpx fetcher + BeautifulSoup for page parsing.
 # Uses Claude to extract meaningful facts, with a safe fallback when Claude is unavailable.
 
 from __future__ import annotations
