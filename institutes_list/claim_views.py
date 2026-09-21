@@ -57,18 +57,15 @@ def _clear_failed_otp_state(listed_student_id: int, expected_otp_hash: str) -> N
 def start_claim(request):
     """Queue a one-time verification code for a claimable invitation.
 
-    The response intentionally reveals only a masked email. Unknown or
-    already-consumed invitations use the same generic error as before.
+    The public response is deliberately identical whether or not a matching
+    roster row exists. Email is queued only for a real claimable row.
     """
     row = _find_claimable(
         email=str(request.data.get("email") or ""),
         token=str(request.data.get("token") or ""),
     )
     if not row:
-        return Response(
-            {"error": "No claimable invitation found for that information."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return Response({"sent": True}, status=status.HTTP_200_OK)
 
     code = f"{secrets.randbelow(10**6):06d}"
     otp_hash = _hash_otp(row.id, code)
@@ -99,31 +96,19 @@ def start_claim(request):
                 raise RuntimeError("The OTP delivery cache did not accept the verification code.")
     except ClaimInvitationUnavailable:
         discard_claim_otp_code(row.id, otp_hash)
-        return Response(
-            {"error": "No claimable invitation found for that information."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return Response({"sent": True}, status=status.HTTP_200_OK)
     except Exception:
         logger.exception("Unable to prepare claim OTP delivery for ListedStudent %s.", row.id)
         _clear_failed_otp_state(row.id, otp_hash)
-        return Response(
-            {"error": "Verification code could not be prepared. Please try again."},
-            status=status.HTTP_503_SERVICE_UNAVAILABLE,
-        )
+        return Response({"sent": True}, status=status.HTTP_200_OK)
 
     try:
         send_claim_otp_email_task.delay(row.id, otp_hash)
     except Exception:
         logger.exception("Unable to queue claim OTP delivery for ListedStudent %s.", row.id)
         _clear_failed_otp_state(row.id, otp_hash)
-        return Response(
-            {"error": "Verification code could not be sent. Please try again."},
-            status=status.HTTP_503_SERVICE_UNAVAILABLE,
-        )
+        return Response({"sent": True}, status=status.HTTP_200_OK)
 
     # Preserve the established public response contract used by released
     # student clients; delivery is an implementation detail.
-    return Response(
-        {"masked_email": _mask_email(row.email)},
-        status=status.HTTP_200_OK,
-    )
+    return Response({"sent": True}, status=status.HTTP_200_OK)
