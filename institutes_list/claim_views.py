@@ -71,7 +71,7 @@ def start_claim(request):
         )
 
     code = f"{secrets.randbelow(10**6):06d}"
-    otp_hash = _hash_otp(code)
+    otp_hash = _hash_otp(row.id, code)
     expires_at = timezone.now() + timezone.timedelta(seconds=OTP_TTL_SECONDS)
 
     # Keep the database state and short-lived delivery payload aligned. No
