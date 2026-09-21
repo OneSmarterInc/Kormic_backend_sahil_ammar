@@ -18,7 +18,6 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-      DB_ENGINE: postgresql
           POSTGRES_DB: kormic_ci
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -40,6 +39,7 @@ jobs:
           --health-retries 10
 
     env:
+      DB_ENGINE: postgresql
       DJANGO_SECRET_KEY: claim-flow-ci-secret-key-32-bytes-minimum-value
       DJANGO_DEBUG: "false"
       DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,testserver
