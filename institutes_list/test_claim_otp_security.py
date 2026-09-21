@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
+from unittest import skipIf
 
-from django.db import close_old_connections, connections
+from django.db import close_old_connections, connection, connections
 from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -80,6 +81,7 @@ class ClaimOtpConcurrentAttemptTests(TransactionTestCase):
         finally:
             connections.close_all()
 
+    @skipIf(connection.vendor == "sqlite", "SQLite serializes concurrent writers; PostgreSQL CI covers atomic lockout.")
     def test_five_parallel_wrong_guesses_lock_the_row(self):
         with ThreadPoolExecutor(max_workers=OTP_MAX_ATTEMPTS) as executor:
             statuses = list(
