@@ -26,6 +26,7 @@ from institutes.services import register_institute
 
 from .models import ListedStudent, InstituteStudentList
 from .tasks import claim_otp_cache_key, purge_expired_source_files
+from .views import OTP_MAX_ATTEMPTS
 
 CSV = (
     "full_name,email,field_of_study,degree_level,expected_graduation,phone\n"
