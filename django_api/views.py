@@ -67,6 +67,9 @@ from django_api.services import (
     ProfileImageTooLargeError,
     ProfileImageValidationError,
     ProfileValidationError,
+    UploadTooLargeError,
+    UploadValidationError,
+    resolve_upload_path,
 )
 from institutes_list.models import ListedStudent
 
@@ -191,6 +194,15 @@ def api_error(message: str, http_status=status.HTTP_400_BAD_REQUEST):
     return Response({"status": "error", "message": str(message)}, status=http_status)
 
 
+def unexpected_server_error(context: str, exc: Exception):
+    """Log full diagnostic detail server-side without exposing it to clients."""
+    logger.exception("%s", context, exc_info=exc)
+    return api_error(
+        "Something went wrong. Please try again.",
+        status.HTTP_500_INTERNAL_SERVER_ERROR,
+    )
+
+
 def load_intake_session(student_key: str) -> Optional[Dict[str, Any]]:
     session = IntakeSession.objects.filter(student_key=student_key).first()
 
@@ -310,7 +322,7 @@ class ProfileCreateUpdateAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except Exception as exc:
-            return api_error(str(exc), status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return unexpected_server_error("Unexpected error while updating student profile.", exc)
 
 
 class ProfileDetailAPIView(APIView):
@@ -333,7 +345,7 @@ class ProfileDetailAPIView(APIView):
         except FileNotFoundError as exc:
             return api_error(str(exc), status.HTTP_404_NOT_FOUND)
         except Exception as exc:
-            return api_error(str(exc), status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return unexpected_server_error("Unexpected error while loading student profile.", exc)
 
 
 class ProfileImageUploadAPIView(APIView):
@@ -368,7 +380,7 @@ class ProfileImageUploadAPIView(APIView):
         except ProfileImageValidationError as exc:
             return api_error(str(exc), status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
-            return api_error(str(exc), status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return unexpected_server_error("Unexpected error while uploading profile image.", exc)
 
 
 class ProfileImageDetailAPIView(APIView):
@@ -461,8 +473,12 @@ class ResumeUploadAPIView(APIView):
                 },
                 status=status.HTTP_200_OK,
             )
+        except UploadTooLargeError as exc:
+            return api_error(str(exc), status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+        except UploadValidationError as exc:
+            return api_error(str(exc), status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
-            return api_error(str(exc), status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return unexpected_server_error("Unexpected error while processing resume upload.", exc)
 
 
 class ResumeDetailAPIView(APIView):
@@ -489,7 +505,11 @@ class ResumeDetailAPIView(APIView):
         if error_response:
             return error_response
 
-        file_path = Path(resume.file_path)
+        try:
+            file_path = resolve_upload_path(resume.file_path)
+        except UploadValidationError:
+            logger.warning("Refusing unsafe resume path for resume_id=%s", resume.id)
+            return api_error("Resume file is missing on the server.", status.HTTP_404_NOT_FOUND)
         if not file_path.exists():
             return api_error("Resume file is missing on the server.", status.HTTP_404_NOT_FOUND)
 
@@ -505,8 +525,12 @@ class ResumeDetailAPIView(APIView):
         if error_response:
             return error_response
 
-        file_path = Path(resume.file_path)
-        if file_path.exists():
+        try:
+            file_path = resolve_upload_path(resume.file_path)
+        except UploadValidationError:
+            logger.warning("Refusing unsafe resume delete path for resume_id=%s", resume.id)
+            file_path = None
+        if file_path and file_path.exists():
             file_path.unlink(missing_ok=True)
 
         resume.delete()
@@ -542,7 +566,7 @@ class GitHubAnalyzeAPIView(APIView):
         except GitHubNotConnectedError as exc:
             return api_error(str(exc), status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
-            return api_error(str(exc), status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return unexpected_server_error("Unexpected error while analyzing GitHub profile.", exc)
 
 
 def build_linkedin_images_payload(request, analysis_id: int, image_paths):
@@ -597,8 +621,12 @@ class LinkedInAnalyzeAPIView(APIView):
                 },
                 status=status.HTTP_200_OK,
             )
+        except UploadTooLargeError as exc:
+            return api_error(str(exc), status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+        except UploadValidationError as exc:
+            return api_error(str(exc), status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
-            return api_error(str(exc), status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return unexpected_server_error("Unexpected error while analyzing LinkedIn screenshots.", exc)
 
 
 class LinkedInImageDetailAPIView(APIView):
@@ -622,7 +650,11 @@ class LinkedInImageDetailAPIView(APIView):
         if index < 0 or index >= len(image_paths):
             return api_error("Image index out of range.", status.HTTP_404_NOT_FOUND)
 
-        file_path = Path(image_paths[index])
+        try:
+            file_path = resolve_upload_path(image_paths[index])
+        except UploadValidationError:
+            logger.warning("Refusing unsafe LinkedIn image path for analysis_id=%s index=%s", analysis.id, index)
+            return api_error("Image file is missing on the server.", status.HTTP_404_NOT_FOUND)
         if not file_path.exists():
             return api_error("Image file is missing on the server.", status.HTTP_404_NOT_FOUND)
 
