@@ -24,6 +24,16 @@ app.autodiscover_tasks(["pure_multi_agent"])
 @task_prerun.connect
 @task_postrun.connect
 def _close_old_db_connections(**kwargs):
+    from django.conf import settings
     from django.db import close_old_connections
+
+    # Eager tasks execute synchronously inside the caller (including an HTTP
+    # request or a Django TestCase transaction). Closing connections from the
+    # Celery signal would therefore close the caller's own PostgreSQL
+    # connection. Real worker tasks still get the stale-connection cleanup.
+    task = kwargs.get("task")
+    request = getattr(task, "request", None)
+    if getattr(request, "is_eager", False) or getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False):
+        return
 
     close_old_connections()
