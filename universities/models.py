@@ -56,6 +56,12 @@ class University(models.Model):
 
     class Meta:
         ordering = ["name"]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(country="US"),
+                name="university_country_us",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"University({self.id}, {self.name})"
