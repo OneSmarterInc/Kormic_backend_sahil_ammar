@@ -823,3 +823,70 @@ class SendPushNotificationsBatchTaskTests(TestCase):
         sent_messages = mock_send.call_args[0][0]
         self.assertEqual(len(sent_messages), 1)
         self.assertEqual(sent_messages[0]["to"], self.token_b.token)
+
+
+
+# ---------------------------------------------------------------------
+# Account-scoped notification inbox
+# ---------------------------------------------------------------------
+
+class NotificationInboxTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        _reset_inprocess_agent_caches()
+        self.student, self.student_id = make_student_client(email="notify-student@example.com")
+        self.officer, self.university_id = make_university_client(
+            email="notify-officer@example.com",
+            university_id="notify_university",
+        )
+        from accounts.models import Account
+
+        self.student_account = Account.objects.get(student_profile__uuid=self.student_id)
+        self.officer_account = Account.objects.get(university__uuid=self.university_id)
+
+        self.student_log = NotificationLog.objects.create(
+            account=self.student_account,
+            event_type=NotificationLog.EventType.AGENT_REPLY,
+            title="Student only",
+            body="Private student notification",
+        )
+        self.officer_log = NotificationLog.objects.create(
+            account=self.officer_account,
+            event_type=NotificationLog.EventType.UNIVERSITY_QUERY,
+            title="University only",
+            body="Private university notification",
+        )
+
+    def test_list_is_scoped_to_authenticated_account(self):
+        student_resp = self.student.get("/api/notifications/")
+        self.assertEqual(student_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual([row["id"] for row in student_resp.data["results"]], [self.student_log.id])
+
+        officer_resp = self.officer.get("/api/notifications/")
+        self.assertEqual(officer_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual([row["id"] for row in officer_resp.data["results"]], [self.officer_log.id])
+
+    def test_unread_count_and_mark_read(self):
+        count = self.student.get("/api/notifications/unread-count/")
+        self.assertEqual(count.data["unread_count"], 1)
+
+        marked = self.student.post(f"/api/notifications/{self.student_log.id}/read/")
+        self.assertEqual(marked.status_code, status.HTTP_200_OK)
+        self.assertIsNotNone(marked.data["read_at"])
+
+        count = self.student.get("/api/notifications/unread-count/")
+        self.assertEqual(count.data["unread_count"], 0)
+
+    def test_cannot_mark_another_accounts_notification(self):
+        resp = self.student.post(f"/api/notifications/{self.officer_log.id}/read/")
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+        self.officer_log.refresh_from_db()
+        self.assertIsNone(self.officer_log.read_at)
+
+    def test_mark_all_read_only_marks_current_account(self):
+        resp = self.student.post("/api/notifications/read-all/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.student_log.refresh_from_db()
+        self.officer_log.refresh_from_db()
+        self.assertIsNotNone(self.student_log.read_at)
+        self.assertIsNone(self.officer_log.read_at)
