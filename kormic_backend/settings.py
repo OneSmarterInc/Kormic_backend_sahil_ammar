@@ -312,24 +312,28 @@ SIMPLE_JWT = {
     "USER_ID_CLAIM": "user_id",
 }
 
-# Redis-backed, shared across every gunicorn worker process (unlike
-# LocMemCache, which is per-process and in-memory). This is load-bearing,
-# not just a performance nicety: DRF's ScopedRateThrottle rate limits (auth,
-# password_reset, claim_start/verify -- see DEFAULT_THROTTLE_RATES above)
-# and the TOTP replay/lockout cache (accounts/totp.py) both assume one
-# shared counter. With LocMemCache and >1 worker, each worker tracks its own
-# count, so the real effective rate limit becomes configured_rate ×
-# worker_count -- silently weaker than configured. Uses a separate Redis DB
-# index from the Celery broker/result-backend (0/1) to keep keyspaces apart.
-CACHES = {
-    "default": {
-        "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": os.environ.get("DJANGO_CACHE_URL", "redis://localhost:6379/2"),
-        "OPTIONS": {
-            "CLIENT_CLASS": "django_redis.client.DefaultClient",
-        },
+# Development must not require Redis or Docker. When DEBUG=True, use
+# Django's in-process cache so authentication throttles, TOTP replay/lockout
+# state, and other cache-backed development flows continue to work without a
+# separate service. Production keeps Redis because it is shared across
+# gunicorn workers; LocMemCache is deliberately development-only.
+if DEBUG:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "kormic-development-cache",
+        }
     }
-}
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django_redis.cache.RedisCache",
+            "LOCATION": os.environ.get("DJANGO_CACHE_URL", "redis://localhost:6379/2"),
+            "OPTIONS": {
+                "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            },
+        }
+    }
 
 
 # Celery -- background delivery for push notifications (see notifications/).
@@ -360,7 +364,12 @@ CELERY_TIMEZONE = TIME_ZONE
 # vanishing silently mid-loop.
 CELERY_TASK_TIME_LIMIT = 30
 CELERY_TASK_SOFT_TIME_LIMIT = 25
-CELERY_TASK_ALWAYS_EAGER = os.environ.get("CELERY_TASK_ALWAYS_EAGER", "false").lower() == "true"
+# Run Celery tasks synchronously during local development so starting the
+# Django server does not also require Redis, a Celery worker, or Docker.
+# Production remains asynchronous unless explicitly overridden.
+CELERY_TASK_ALWAYS_EAGER = (
+    os.environ.get("CELERY_TASK_ALWAYS_EAGER", "true" if DEBUG else "false").lower() == "true"
+)
 
 # Proactive agent outreach (notifications.tasks.run_proactive_checkins_task):
 # once a day, the agent scans for students it hasn't nudged in
