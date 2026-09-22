@@ -507,19 +507,37 @@ class AdminRosterStudentListAPIView(APIView):
         page_rows = list(qs[start : start + page_size])
 
         emails = [row.email for row in page_rows if row.has_account and row.email]
+        claimed_ids = [row.claimed_student_id for row in page_rows if row.claimed_student_id]
+
+        account_filter = Q(student_profile__uuid__in=claimed_ids)
+        for email in emails:
+            account_filter |= Q(user__email__iexact=email)
+
+        page_accounts = (
+            Account.objects
+            .filter(role=Account.Role.STUDENT)
+            .filter(account_filter)
+            .select_related("user", "student_profile")
+        ) if (emails or claimed_ids) else Account.objects.none()
+
+        accounts_by_student_uuid = {
+            str(account.student_profile.uuid): account
+            for account in page_accounts
+            if account.student_profile_id
+        }
         accounts_by_email = {
             (account.user.email or "").lower(): account
-            for account in (
-                Account.objects
-                .filter(role=Account.Role.STUDENT, user__email__in=emails)
-                .select_related("user", "student_profile")
-            )
+            for account in page_accounts
             if account.user.email
         }
 
         results = []
         for row in page_rows:
-            account = accounts_by_email.get((row.email or "").lower())
+            account = (
+                accounts_by_student_uuid.get(row.claimed_student_id)
+                if row.claimed_student_id
+                else None
+            ) or accounts_by_email.get((row.email or "").lower())
             institute = row.source_list.institute
             results.append({
                 "id": row.id,
@@ -573,7 +591,7 @@ class AdminRosterStudentListAPIView(APIView):
 
 class AdminUserListAPIView(APIView):
     """
-    GET /api/superuser/users/   ?role=student|university|superuser   &search=<email substring>
+    GET /api/superuser/users/   ?role=student|university|institute|superuser   &search=<email substring>
     Every login account across all roles -- the cross-role view /students/
     and /universities/ don't give you.
     """
