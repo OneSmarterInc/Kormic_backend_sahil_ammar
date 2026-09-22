@@ -1039,7 +1039,7 @@ def agent_chat_history(request):
     total = base_qs.count()
     # Take the most recent `limit` turns, then flip back to chronological
     # order for the client.
-    messages = base_qs.prefetch_related("attachments").order_by("-created_at")[:limit]
+    messages = base_qs.prefetch_related("attachments").order_by("-created_at", "-id")[:limit]
     # Escalation state, computed at read time: collect every query_id any
     # message's meta references, fetch their current status in one query, and
     # annotate. A message tagged escalation_pending whose query has since been
