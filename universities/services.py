@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from personas.university_persona_builder import build_constitution
+from institutes.country_codes import normalize_country_code
 from universities.identity import ensure_agent_name
 from universities.models import University
 
@@ -47,9 +48,13 @@ def register_university(institution_name: str, country: str) -> University:
     agent name -- the registration-time half of the two-phase flow. Setup
     (description/contacts/eligibility/scrape URLs/knowledge) all happens
     afterward via the universities-admin endpoints."""
+    country_code = normalize_country_code(country)
+    if country_code != "US":
+        raise ValueError("Universities must use country US.")
+
     university = University.objects.create(
         name=institution_name.strip(),
-        country=country.strip().upper(),
+        country=country_code,
     )
     ensure_agent_name(university)
     return university
