@@ -252,19 +252,34 @@ def upload_list(request):
             .first()
         )
         if existing and existing.status == ListedStudent.Status.CLAIMED:
-            # Never overwrite a claimed profile from a list (spec S3); report
-            # list-side changes for human review instead.
-            skipped_claimed.append({"row": i, "email": _mask_email(email)})
-            continue
-        if existing and existing.status == ListedStudent.Status.UNCLAIMED:
-            for field in REQUIRED_COLUMNS + OPTIONAL_COLUMNS:
-                setattr(existing, field, row[field])
-            existing.source_list = source_list
-            existing.save()
-        else:
+            # Preserve the newly uploaded row as immutable roster provenance,
+            # but do not reopen an already-claimed identity. The snapshot
+            # remains linked to the same claimed student/account.
             ListedStudent.objects.create(
-                source_list=source_list, institute_id=str(institute.uuid), **row
+                source_list=source_list,
+                institute_id=str(institute.uuid),
+                status=ListedStudent.Status.CLAIMED,
+                claimed_at=existing.claimed_at,
+                claimed_student_id=existing.claimed_student_id,
+                divergences=existing.divergences,
+                **row,
             )
+            skipped_claimed.append({"row": i, "email": _mask_email(email)})
+            accepted += 1
+            continue
+
+        if existing and existing.status == ListedStudent.Status.UNCLAIMED:
+            # Roster uploads are immutable provenance. Expire the prior
+            # claimable row rather than mutating/moving it to this upload.
+            # The new row below becomes the one current claim link source.
+            existing.status = ListedStudent.Status.EXPIRED
+            existing.save(update_fields=["status"])
+
+        ListedStudent.objects.create(
+            source_list=source_list,
+            institute_id=str(institute.uuid),
+            **row,
+        )
         accepted += 1
 
     source_list.row_count = accepted
