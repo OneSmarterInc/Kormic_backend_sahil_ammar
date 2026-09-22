@@ -144,11 +144,11 @@ def upload_list(request):
     POST /api/institute-lists/upload/
     multipart: file=<csv>; fields: institute_id, contact_name, contact_email,
     contact_verification.
-    Creates the provenance record and one unclaimed pre-profile per accepted
-    row. Rejected rows are reported back, accepted rows ingested (spec S3).
-    Re-uploads reconcile by email within the same institute: unclaimed rows
-    update; CLAIMED rows are never overwritten (the student owns their data
-    after claiming) -- changed claimed rows are reported for review instead.
+    Creates the provenance record and one roster entry per accepted row.
+    Rejected rows are reported back, accepted rows are persisted (spec S3).
+    Re-uploads are immutable: a previous unclaimed row is expired and a new
+    claimable row is inserted; claimed identities are never overwritten and
+    the newly uploaded snapshot remains linked to the existing student.
     """
     account = getattr(request.user, "account", None)
     role = getattr(account, "role", "")
@@ -351,13 +351,20 @@ def list_lists(request):
         for row in (
             ListedStudent.objects.filter(source_list__in=qs)
             .values("source_list_id")
-            .annotate(claimed=Count("id", filter=Q(status=ListedStudent.Status.CLAIMED)))
+            .annotate(
+                claimed=Count("id", filter=Q(status=ListedStudent.Status.CLAIMED)),
+                unclaimed=Count("id", filter=Q(status=ListedStudent.Status.UNCLAIMED)),
+                expired=Count("id", filter=Q(status=ListedStudent.Status.EXPIRED)),
+                revoked=Count("id", filter=Q(status=ListedStudent.Status.REVOKED)),
+            )
         )
     }
 
     lists = []
     for lst in qs:
-        counts = status_counts_by_list.get(lst.id, {"claimed": 0})
+        counts = status_counts_by_list.get(
+            lst.id, {"claimed": 0, "unclaimed": 0, "expired": 0, "revoked": 0}
+        )
         claimed_count = counts.get("claimed", 0)
         lists.append(
             {
@@ -369,10 +376,9 @@ def list_lists(request):
                 "status": lst.status,
                 "row_count": lst.row_count,
                 "claimed_count": claimed_count,
-                # row_count is the last upload's accepted-row count while
-                # claimed_count is all-time; clamp so a re-upload can't yield
-                # a negative "unclaimed" here.
-                "unclaimed_count": max(0, lst.row_count - claimed_count),
+                "unclaimed_count": counts.get("unclaimed", 0),
+                "expired_count": counts.get("expired", 0),
+                "revoked_count": counts.get("revoked", 0),
                 "source_file_url": _source_file_url(request, lst),
                 "source_file_name": lst.source_file_name or None,
                 "source_file_size": lst.source_file_size or None,
