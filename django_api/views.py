@@ -949,7 +949,7 @@ def agent_chat(request):
             "attachments": [_serialize_attachment(request, a) for a in attachments],
         })
     except Exception as exc:
-        return api_error(f"Agent chat failed: {exc}", status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return unexpected_server_error("Unexpected error during agent chat.", exc)
 
 
 @api_view(["PATCH"])
@@ -1923,7 +1923,7 @@ def university_agent_chat(request, university_id: str):
             "trust": result.get("trust"),
         })
     except Exception as exc:
-        return api_error(f"University agent chat failed: {exc}", status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return unexpected_server_error("Unexpected error during university agent chat.", exc)
 
 
 @api_view(["GET", "DELETE"])
