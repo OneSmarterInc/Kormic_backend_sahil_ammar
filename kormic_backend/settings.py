@@ -39,17 +39,24 @@ TESTING = "test" in sys.argv or "pytest" in Path(sys.argv[0]).name.lower()
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-# Falls back to the original dev-only value so local setups are unaffected;
-# set DJANGO_SECRET_KEY in .env for any server that's reachable off localhost.
-SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY") or \
-    'django-insecure-0zav109$orgckjm3w+%%8v!lxt&4)qv68d^w*f%@fid@_y!c83'
-
 # SECURITY WARNING: don't run with debug turned on in production!
 # Defaults to False (fail closed): an unset/misconfigured DJANGO_DEBUG in a
 # deploy environment must never silently open a debug server to the
 # internet. Local dev sets DJANGO_DEBUG=true explicitly in .env.
 DEBUG = os.environ.get("DJANGO_DEBUG", "false").lower() == "true"
+
+# Keep the generated key strictly development-only. Production must provide
+# an explicit strong secret rather than silently falling back to an
+# insecure checked-in value.
+_DEV_SECRET_KEY = 'django-insecure-0zav109$orgckjm3w+%%8v!lxt&4)qv68d^w*f%@fid@_y!c83'
+if DEBUG:
+    SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY") or _DEV_SECRET_KEY
+else:
+    SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "").strip()
+    if not SECRET_KEY:
+        raise ImproperlyConfigured(
+            "DJANGO_SECRET_KEY must be set to a long random value when DJANGO_DEBUG=false."
+        )
 
 # Defaults to localhost only (fail closed) so a missing env var on a real
 # server rejects Host headers instead of accepting anything ("*"). Any
