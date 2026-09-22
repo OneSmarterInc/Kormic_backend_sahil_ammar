@@ -44,6 +44,11 @@ class NotificationLog(models.Model):
         PENDING_QUERY_RESOLVED = "pending_query_resolved", "Pending Query Resolved"
         AGENT_INITIATED = "agent_initiated", "Agent Initiated"
         PROACTIVE_CHECKIN = "proactive_checkin", "Proactive Check-in"
+        UNIVERSITY_QUERY = "university_query", "University Query"
+        STUDENT_CLAIMED = "student_claimed", "Student Claimed"
+        JOB_COMPLETED = "job_completed", "Job Completed"
+        JOB_FAILED = "job_failed", "Job Failed"
+        SYSTEM_ALERT = "system_alert", "System Alert"
         OTHER = "other", "Other"
 
     class Status(models.TextChoices):
@@ -59,6 +64,7 @@ class NotificationLog(models.Model):
     data = models.JSONField(default=dict, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     error = models.TextField(blank=True, default="")
+    read_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
 
