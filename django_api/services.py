@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+from django.conf import settings
+
 from django_api.models import (
     ChatAttachment,
     GitHubAnalysis,
@@ -908,8 +910,65 @@ CHAT_ATTACHMENT_MAX_BYTES = 15 * 1024 * 1024  # 15 MB per file
 CHAT_ATTACHMENT_MAX_PER_MESSAGE = 5
 
 
+UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+RESUME_ALLOWED_TYPES = {
+    "application/pdf": {".pdf"},
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {".docx"},
+}
+LINKEDIN_ALLOWED_TYPES = {
+    "image/png": {".png"},
+    "image/jpeg": {".jpg", ".jpeg"},
+}
+
+
+class UploadValidationError(ValueError):
+    pass
+
+
+class UploadTooLargeError(UploadValidationError):
+    pass
+
+
+def resolve_upload_path(stored_path: str) -> Path:
+    """Resolve new relative upload paths and legacy absolute paths safely.
+
+    Stored values must remain inside MEDIA_ROOT/UPLOADS_DIR. This preserves
+    existing rows while preventing a corrupted DB value from reading or
+    deleting an arbitrary server file.
+    """
+    uploads_root = Path(settings.MEDIA_ROOT).resolve()
+    path = Path(stored_path)
+    candidate = path.resolve() if path.is_absolute() else (uploads_root / path).resolve()
+    try:
+        candidate.relative_to(uploads_root)
+    except ValueError as exc:
+        raise UploadValidationError("Stored upload path is outside MEDIA_ROOT.") from exc
+    return candidate
+
+
+def relative_upload_path(file_path: Path) -> str:
+    uploads_root = Path(settings.MEDIA_ROOT).resolve()
+    resolved = file_path.resolve()
+    try:
+        return resolved.relative_to(uploads_root).as_posix()
+    except ValueError as exc:
+        raise UploadValidationError("Upload path is outside MEDIA_ROOT.") from exc
+
+
+def validate_upload(uploaded_file, *, allowed_types, label: str) -> None:
+    size = getattr(uploaded_file, "size", None)
+    if size is not None and size > UPLOAD_MAX_BYTES:
+        raise UploadTooLargeError(f"{label} files must be 10 MB or smaller.")
+
+    content_type = (getattr(uploaded_file, "content_type", "") or "").lower()
+    suffix = Path(getattr(uploaded_file, "name", "") or "").suffix.lower()
+    allowed_suffixes = allowed_types.get(content_type)
+    if allowed_suffixes is None or suffix not in allowed_suffixes:
+        raise UploadValidationError(f"Unsupported {label.lower()} file type.")
+
+
 def save_uploaded_file(student_id: str, uploaded_file, folder_name: str) -> Path:
-    target_dir = UPLOADS_DIR / folder_name / str(student_id)
+    target_dir = Path(settings.MEDIA_ROOT) / folder_name / str(student_id)
     target_dir.mkdir(parents=True, exist_ok=True)
 
     safe_name = Path(uploaded_file.name).name
@@ -1006,6 +1065,7 @@ def merge_resume_data_into_profile(student_id: str, extracted_data: Dict[str, An
 
 
 def parse_resume(student_id: str, uploaded_file) -> Dict[str, Any]:
+    validate_upload(uploaded_file, allowed_types=RESUME_ALLOWED_TYPES, label="Resume")
     file_path = save_uploaded_file(student_id, uploaded_file, "resumes")
 
     from agents.resume_parser import ResumeParserAgent
@@ -1016,8 +1076,8 @@ def parse_resume(student_id: str, uploaded_file) -> Dict[str, Any]:
 
     resume_row = ResumeUpload.objects.create(
         student=StudentProfile.objects.get(uuid=student_id),
-        file_path=str(file_path),
-        original_filename=uploaded_file.name,
+        file_path=relative_upload_path(file_path),
+        original_filename=Path(uploaded_file.name).name,
         extracted_data=extracted_data,
     )
 
@@ -1251,15 +1311,18 @@ def get_priority_tier_counts(university_id: str) -> Dict[str, int]:
 
 
 def analyze_linkedin(student_id: str, uploaded_images: List[Any]) -> Dict[str, Any]:
-    image_paths = []
+    absolute_image_paths = []
+    stored_image_paths = []
     for image in uploaded_images:
+        validate_upload(image, allowed_types=LINKEDIN_ALLOWED_TYPES, label="LinkedIn image")
         saved_path = save_uploaded_file(student_id, image, "linkedin")
-        image_paths.append(str(saved_path))
+        absolute_image_paths.append(str(saved_path))
+        stored_image_paths.append(relative_upload_path(saved_path))
 
     from agents.linkedin_agent import LinkedInAgent
 
     linkedin_agent = LinkedInAgent()
-    extracted = linkedin_agent.extract(image_paths)
+    extracted = linkedin_agent.extract(absolute_image_paths)
 
     profile = load_profile_data(student_id)
     profile["linkedin_profile"] = extracted
@@ -1281,20 +1344,20 @@ def analyze_linkedin(student_id: str, uploaded_images: List[Any]) -> Dict[str, A
 
     profile["skills"] = existing_skills[:80]
     profile.setdefault("evidence", {})
-    profile["evidence"]["linkedin"] = {"image_paths": image_paths, "result": extracted}
+    profile["evidence"]["linkedin"] = {"image_paths": stored_image_paths, "result": extracted}
     generate_summary(profile)
     save_profile_data(student_id, profile)
 
     analysis = LinkedInAnalysis.objects.create(
         student=StudentProfile.objects.get(uuid=student_id),
-        image_paths=image_paths,
+        image_paths=stored_image_paths,
         extracted=extracted,
     )
 
     return {
         "student_id": student_id,
         "analysis_id": analysis.id,
-        "image_paths": image_paths,
+        "image_paths": stored_image_paths,
         "extracted": extracted,
         "skills_added": skills_added,
         "profile": profile,
