@@ -33,6 +33,17 @@ class ProductionDatabaseGuardTests(SimpleTestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("DB_ENGINE=postgresql", result.stderr + result.stdout)
 
+    def test_production_explicit_sqlite_fails_closed(self):
+        result = self._settings_import(
+            {
+                "DJANGO_DEBUG": "false",
+                "DB_ENGINE": "sqlite",
+                "POSTGRES_PASSWORD": "not-used",
+            },
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Production requires DB_ENGINE=postgresql", result.stderr + result.stdout)
+
     def test_production_postgres_without_password_fails_closed(self):
         result = self._settings_import(
             {
