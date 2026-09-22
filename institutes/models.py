@@ -27,6 +27,12 @@ class Institute(models.Model):
 
     class Meta:
         ordering = ["name"]
+        constraints = [
+            models.CheckConstraint(
+                condition=~models.Q(country="US"),
+                name="institute_country_not_us",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"Institute({self.id}, {self.name})"
