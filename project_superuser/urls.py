@@ -17,6 +17,7 @@ urlpatterns = [
         views.AdminInstituteDetailAPIView.as_view(),
         name="superuser-institute-detail",
     ),
+    path("roster-students/", views.AdminRosterStudentListAPIView.as_view(), name="superuser-roster-students"),
     path("users/", views.AdminUserListAPIView.as_view(), name="superuser-users"),
     path(
         "users/create-superuser/",
