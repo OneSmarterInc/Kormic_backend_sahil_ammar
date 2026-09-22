@@ -454,7 +454,7 @@ class AdminRosterStudentListAPIView(APIView):
     permission_classes = SUPERUSER_PERMISSIONS
 
     def get(self, request):
-        from django.db.models import Q
+        from django.db.models import Count, Q
         from institutes_list.models import ListedStudent
 
         qs = (
