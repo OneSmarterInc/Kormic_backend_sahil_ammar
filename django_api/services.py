@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import base64
+import io
 import re
 import uuid
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from django_api.models import (
     ChatAttachment,
@@ -761,23 +765,114 @@ def get_profile_image_path(student_id: str) -> Optional[str]:
     return profile.profile_image_path
 
 
+PROFILE_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+PROFILE_IMAGE_MAX_PIXELS = 25_000_000
+PROFILE_IMAGE_ALLOWED_TYPES = {
+    "image/png": ("PNG", "png"),
+    "image/jpeg": ("JPEG", "jpg"),
+    "image/webp": ("WEBP", "webp"),
+}
+PROFILE_IMAGE_FORMAT_TYPES = {
+    "PNG": "image/png",
+    "JPEG": "image/jpeg",
+    "WEBP": "image/webp",
+}
+
+
+class ProfileImageValidationError(ValueError):
+    pass
+
+
+class ProfileImageTooLargeError(ProfileImageValidationError):
+    pass
+
+
+def _verified_profile_image_format(image_source) -> str:
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(image_source) as image:
+                image_format = image.format
+                image.verify()
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombWarning) as exc:
+        raise ProfileImageValidationError("The uploaded file is not a valid supported image.") from exc
+
+    if image_format not in PROFILE_IMAGE_FORMAT_TYPES:
+        raise ProfileImageValidationError("Only PNG, JPEG, and WebP profile images are allowed.")
+    return image_format
+
+
+def get_safe_profile_image_content_type(file_path: Path) -> str:
+    """Validate a stored raster image before serving it, including legacy files."""
+    image_format = _verified_profile_image_format(file_path)
+    return PROFILE_IMAGE_FORMAT_TYPES[image_format]
+
+
 def upload_profile_image(student_id: str, uploaded_file) -> Dict[str, Any]:
     """
-    Save/replace the student's single current profile picture.
+    Validate, decode, and re-encode the student's profile picture.
 
-    Unlike resumes or LinkedIn screenshots, a profile picture isn't a
-    history -- each upload replaces the previous one, and the old file is
-    removed from disk.
+    The stored filename and extension are server-generated. The previous
+    picture is removed only after the replacement has been saved and the
+    database row updated successfully.
     """
+    content_type = (getattr(uploaded_file, "content_type", "") or "").lower()
+    expected = PROFILE_IMAGE_ALLOWED_TYPES.get(content_type)
+    if expected is None:
+        raise ProfileImageValidationError("Only PNG, JPEG, and WebP profile images are allowed.")
+
+    size = getattr(uploaded_file, "size", None)
+    if size is not None and size > PROFILE_IMAGE_MAX_BYTES:
+        raise ProfileImageTooLargeError("Profile images must be 5 MB or smaller.")
+
+    raw = uploaded_file.read(PROFILE_IMAGE_MAX_BYTES + 1)
+    if len(raw) > PROFILE_IMAGE_MAX_BYTES:
+        raise ProfileImageTooLargeError("Profile images must be 5 MB or smaller.")
+    if not raw:
+        raise ProfileImageValidationError("The uploaded image is empty.")
+
+    image_format = _verified_profile_image_format(io.BytesIO(raw))
+    expected_format, extension = expected
+    if image_format != expected_format:
+        raise ProfileImageValidationError("The file contents do not match the declared image type.")
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(raw)) as source:
+                source.load()
+                image = ImageOps.exif_transpose(source)
+                if image.width * image.height > PROFILE_IMAGE_MAX_PIXELS:
+                    raise ProfileImageValidationError("The image dimensions are too large.")
+
+                if image_format == "JPEG" and image.mode not in ("RGB", "L"):
+                    image = image.convert("RGB")
+                elif image_format == "WEBP" and image.mode not in ("RGB", "RGBA"):
+                    image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+
+                encoded = io.BytesIO()
+                image.save(encoded, format=image_format)
+    except ProfileImageValidationError:
+        raise
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombWarning) as exc:
+        raise ProfileImageValidationError("The uploaded file is not a valid supported image.") from exc
+
+    target_dir = UPLOADS_DIR / "profile_images" / str(student_id)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    file_path = target_dir / f"profile_{uuid.uuid4().hex}.{extension}"
+    file_path.write_bytes(encoded.getvalue())
+
     profile, _ = StudentProfile.objects.get_or_create(uuid=student_id)
-
-    old_path = profile.profile_image_path
-    if old_path and Path(old_path).exists():
-        Path(old_path).unlink(missing_ok=True)
-
-    file_path = save_uploaded_file(student_id, uploaded_file, "profile_images")
+    old_path = Path(profile.profile_image_path) if profile.profile_image_path else None
     profile.profile_image_path = str(file_path)
-    profile.save()
+    try:
+        profile.save(update_fields=["profile_image_path", "updated_at"])
+    except Exception:
+        file_path.unlink(missing_ok=True)
+        raise
+
+    if old_path and old_path != file_path:
+        old_path.unlink(missing_ok=True)
 
     return {"student_id": student_id}
 

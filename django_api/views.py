@@ -52,6 +52,7 @@ from django_api.services import (
     format_profile_response,
     get_profile,
     get_profile_image_path,
+    get_safe_profile_image_content_type,
     get_priority_tier_bounds,
     get_priority_tier_counts,
     get_shortlisted_profiles,
@@ -63,6 +64,8 @@ from django_api.services import (
     save_profile_data,
     student_has_university_interest,
     upload_profile_image,
+    ProfileImageTooLargeError,
+    ProfileImageValidationError,
     ProfileValidationError,
 )
 from institutes_list.models import ListedStudent
@@ -350,9 +353,6 @@ class ProfileImageUploadAPIView(APIView):
         if not image:
             return api_error("An image file is required using key 'image'.")
 
-        if image.content_type and not image.content_type.startswith("image/"):
-            return api_error(f"Unsupported file type: {image.content_type}. Upload an image file.")
-
         try:
             upload_profile_image(student_id=student_id, uploaded_file=image)
             return Response(
@@ -363,6 +363,10 @@ class ProfileImageUploadAPIView(APIView):
                 },
                 status=status.HTTP_200_OK,
             )
+        except ProfileImageTooLargeError as exc:
+            return api_error(str(exc), status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+        except ProfileImageValidationError as exc:
+            return api_error(str(exc), status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
             return api_error(str(exc), status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -379,8 +383,13 @@ class ProfileImageDetailAPIView(APIView):
 
     def get(self, request, student_id):
         account = get_account(request)
-        if account.role == "student" and account.student_uuid != student_id:
-            return api_error("You may only access your own profile picture.", status.HTTP_403_FORBIDDEN)
+        if account.role == Account.Role.STUDENT:
+            if account.student_uuid != student_id:
+                return api_error("You may only access your own profile picture.", status.HTTP_403_FORBIDDEN)
+        elif account.role == Account.Role.UNIVERSITY:
+            scope_error = _student_in_university_scope_or_404(account.university_uuid, student_id)
+            if scope_error:
+                return scope_error
 
         image_path = get_profile_image_path(student_id)
         if not image_path:
@@ -390,8 +399,20 @@ class ProfileImageDetailAPIView(APIView):
         if not file_path.exists():
             return api_error("Profile picture file is missing on the server.", status.HTTP_404_NOT_FOUND)
 
-        content = file_path.read_bytes()
-        return FileResponse(io.BytesIO(content), as_attachment=False, filename=file_path.name)
+        try:
+            content_type = get_safe_profile_image_content_type(file_path)
+        except ProfileImageValidationError:
+            logger.warning("Refusing to serve unsafe profile image for student %s", student_id)
+            return api_error("No valid profile picture is available for this student.", status.HTTP_404_NOT_FOUND)
+
+        response = FileResponse(
+            file_path.open("rb"),
+            as_attachment=True,
+            filename=file_path.name,
+            content_type=content_type,
+        )
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
 
     def delete(self, request, student_id):
         account = get_account(request)
