@@ -428,6 +428,7 @@ class ClaimFlowTests(TestCase):
         self.assertIn("https://app.kormic.example/claim?token=", mail.outbox[0].body)
         self.assertEqual(mail.outbox[0].to, [row.email])
 
+    @override_settings(CLAIM_PAGE_URL="")
     def test_send_invites_requires_claim_page_url_configured(self):
         user = get_user_model().objects.get(username="officer@wsfi.edu")
         self.client.force_authenticate(user=user)
