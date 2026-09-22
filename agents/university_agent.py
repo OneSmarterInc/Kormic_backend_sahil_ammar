@@ -575,6 +575,24 @@ STUDENT CONTEXT:
 
             send_escalation_routed_alert(query=query, group=group)
 
+        from notifications.models import NotificationLog
+        from notifications.services import notify_university
+
+        notify_university(
+            self.university_id,
+            event_type=NotificationLog.EventType.UNIVERSITY_QUERY,
+            title="New student question",
+            body=f"{query.student_name or 'A student'} asked: {query.question}",
+            data={
+                "type": "university_query",
+                "query_id": query.id,
+                "student_id": query.student_id,
+                "university_id": self.university_id,
+                "priority": query.priority,
+                "route": f"/university/{self.university_id}/queries",
+            },
+        )
+
         return self._serialize_pending_query(query)
 
     def show_pending_queries(self) -> None:
