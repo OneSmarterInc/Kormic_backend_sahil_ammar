@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 import os
+import sys
 from datetime import timedelta
 from pathlib import Path
 
@@ -30,6 +31,10 @@ TOTP_SECRET_KEYS = tuple(
     key.strip() for key in os.getenv('TOTP_SECRET_KEYS', '').split(',') if key.strip()
 )
 
+
+# Tests must be hermetic: they should never require Redis/Celery services.
+# This covers both `python manage.py test` and direct pytest runs.
+TESTING = "test" in sys.argv or "pytest" in Path(sys.argv[0]).name.lower()
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
@@ -317,7 +322,7 @@ SIMPLE_JWT = {
 # state, and other cache-backed development flows continue to work without a
 # separate service. Production keeps Redis because it is shared across
 # gunicorn workers; LocMemCache is deliberately development-only.
-if DEBUG:
+if DEBUG or TESTING:
     CACHES = {
         "default": {
             "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
@@ -367,9 +372,10 @@ CELERY_TASK_SOFT_TIME_LIMIT = 25
 # Run Celery tasks synchronously during local development so starting the
 # Django server does not also require Redis, a Celery worker, or Docker.
 # Production remains asynchronous unless explicitly overridden.
-CELERY_TASK_ALWAYS_EAGER = (
+CELERY_TASK_ALWAYS_EAGER = TESTING or (
     os.environ.get("CELERY_TASK_ALWAYS_EAGER", "true" if DEBUG else "false").lower() == "true"
 )
+CELERY_TASK_EAGER_PROPAGATES = TESTING
 
 # Proactive agent outreach (notifications.tasks.run_proactive_checkins_task):
 # once a day, the agent scans for students it hasn't nudged in
