@@ -1263,10 +1263,7 @@ class RoadmapView(APIView):
                 status=status.HTTP_501_NOT_IMPLEMENTED,
             )
         except Exception as exc:
-            return Response(
-                {"status": "failed", "message": "Roadmap generation failed.", "error": str(exc)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+            return unexpected_server_error("Unexpected error while generating roadmap.", exc)
 
 
 class RoadmapHistoryView(APIView):
@@ -1496,10 +1493,7 @@ class AnswerPendingQueryView(APIView):
                 status=status.HTTP_200_OK,
             )
         except Exception as exc:
-            return Response(
-                {"status": "failed", "message": "Failed to save human-verified answer.", "error": str(exc)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+            return unexpected_server_error("Unexpected error while saving verified answer.", exc)
 
 
 # ---------------------------------------------------------------------
@@ -1560,10 +1554,7 @@ class ExportProfilePDFView(APIView):
                 io.BytesIO(content), as_attachment=True, filename=pdf_path.name, content_type="application/pdf"
             )
         except Exception as exc:
-            return Response(
-                {"status": "failed", "message": "PDF export failed.", "error": str(exc)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+            return unexpected_server_error("Unexpected error while exporting profile PDF.", exc)
 
 
 # ---------------------------------------------------------------------
@@ -2079,10 +2070,7 @@ class EditPendingQueryView(APIView):
                 status=status.HTTP_200_OK,
             )
         except Exception as exc:
-            return Response(
-                {"status": "failed", "message": "Failed to update query answer.", "error": str(exc)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+            return unexpected_server_error("Unexpected error while updating query answer.", exc)
 
 
 class IgnorePendingQueryView(APIView):
