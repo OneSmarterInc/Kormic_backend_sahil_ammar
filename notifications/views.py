@@ -133,6 +133,7 @@ class PollNotificationsView(APIView):
                         "body": log.body,
                         "data": log.data,
                         "status": log.status,
+                        "read_at": log.read_at.isoformat() if log.read_at else None,
                         "created_at": log.created_at.isoformat(),
                     }
                     for log in logs
@@ -141,3 +142,92 @@ class PollNotificationsView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+def _serialize_notification(log: NotificationLog):
+    return {
+        "id": log.id,
+        "event_type": log.event_type,
+        "title": log.title,
+        "body": log.body,
+        "data": log.data,
+        "status": log.status,
+        "read_at": log.read_at.isoformat() if log.read_at else None,
+        "created_at": log.created_at.isoformat(),
+    }
+
+
+class NotificationListView(APIView):
+    """Account-scoped notification inbox for every authenticated role."""
+
+    permission_classes = [IsAuthenticated, IsTOTPEnrolled]
+
+    def get(self, request):
+        account = get_account(request)
+        if account is None:
+            return Response({"error": "No account associated with this user."}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            page = max(1, int(request.query_params.get("page", "1")))
+            page_size = min(100, max(1, int(request.query_params.get("page_size", "20"))))
+        except (TypeError, ValueError):
+            return Response({"error": "page and page_size must be positive integers."}, status=status.HTTP_400_BAD_REQUEST)
+
+        qs = NotificationLog.objects.filter(account=account)
+        unread_only = request.query_params.get("unread_only", "").lower() == "true"
+        if unread_only:
+            qs = qs.filter(read_at__isnull=True)
+
+        total = qs.count()
+        unread_count = NotificationLog.objects.filter(account=account, read_at__isnull=True).count()
+        start = (page - 1) * page_size
+        logs = list(qs.order_by("-created_at", "-id")[start : start + page_size])
+
+        return Response({
+            "results": [_serialize_notification(log) for log in logs],
+            "unread_count": unread_count,
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "has_next": start + page_size < total,
+            },
+        })
+
+
+class NotificationUnreadCountView(APIView):
+    permission_classes = [IsAuthenticated, IsTOTPEnrolled]
+
+    def get(self, request):
+        account = get_account(request)
+        if account is None:
+            return Response({"error": "No account associated with this user."}, status=status.HTTP_403_FORBIDDEN)
+        count = NotificationLog.objects.filter(account=account, read_at__isnull=True).count()
+        return Response({"unread_count": count})
+
+
+class NotificationMarkReadView(APIView):
+    permission_classes = [IsAuthenticated, IsTOTPEnrolled]
+
+    def post(self, request, notification_id: int):
+        account = get_account(request)
+        if account is None:
+            return Response({"error": "No account associated with this user."}, status=status.HTTP_403_FORBIDDEN)
+        log = NotificationLog.objects.filter(id=notification_id, account=account).first()
+        if log is None:
+            return Response({"error": "Notification not found."}, status=status.HTTP_404_NOT_FOUND)
+        if log.read_at is None:
+            log.read_at = timezone.now()
+            log.save(update_fields=["read_at", "updated_at"])
+        return Response(_serialize_notification(log))
+
+
+class NotificationMarkAllReadView(APIView):
+    permission_classes = [IsAuthenticated, IsTOTPEnrolled]
+
+    def post(self, request):
+        account = get_account(request)
+        if account is None:
+            return Response({"error": "No account associated with this user."}, status=status.HTTP_403_FORBIDDEN)
+        updated = NotificationLog.objects.filter(account=account, read_at__isnull=True).update(read_at=timezone.now())
+        return Response({"marked_read": updated, "unread_count": 0})
