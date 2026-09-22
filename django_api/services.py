@@ -64,7 +64,7 @@ def as_uuid(value: Any) -> Optional[str]:
         return None
 
 
-def _profile_to_dict(profile: StudentProfile) -> Dict[str, Any]:
+def profile_row_to_dict(profile: StudentProfile) -> Dict[str, Any]:
     data: Dict[str, Any] = dict(profile.extra_data or {})
 
     for field in PROFILE_FIELDS:
@@ -124,7 +124,7 @@ def load_profile_data(student_id: str) -> Dict[str, Any]:
             "verified": False,
         }
 
-    return _profile_to_dict(profile)
+    return profile_row_to_dict(profile)
 
 
 def save_profile_data(student_id: str, data: Dict[str, Any]) -> str:
