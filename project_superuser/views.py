@@ -445,21 +445,26 @@ class AdminRosterStudentListAPIView(APIView):
         &account_state=with_account|without_account
         &page=<n>&page_size=<1-100>
 
-    This is deliberately separate from Users & Access. Every accepted roster
-    row exists here immediately after upload, even before the student claims
-    it or creates a login. account_user_id is populated only when a real
-    student Account exists.
+    Every accepted institute roster row is visible here immediately, before
+    or after claim/registration. Login-account state is annotated in SQL so
+    filtering and pagination remain bounded for large datasets.
     """
 
     permission_classes = SUPERUSER_PERMISSIONS
 
     def get(self, request):
-        from django.db.models import Count, Q
+        from django.db.models import Count, Exists, OuterRef, Q
         from institutes_list.models import ListedStudent
+
+        student_account_for_email = Account.objects.filter(
+            role=Account.Role.STUDENT,
+            user__email__iexact=OuterRef("email"),
+        )
 
         qs = (
             ListedStudent.objects
             .select_related("source_list__institute")
+            .annotate(has_account=Exists(student_account_for_email))
             .order_by("-created_at", "-id")
         )
 
@@ -483,60 +488,38 @@ class AdminRosterStudentListAPIView(APIView):
         if institute_id:
             qs = qs.filter(source_list__institute__uuid=institute_id)
 
+        account_state = request.query_params.get("account_state", "").strip().lower()
+        if account_state not in {"", "with_account", "without_account"}:
+            return _error("account_state must be with_account or without_account.")
+        if account_state == "with_account":
+            qs = qs.filter(has_account=True)
+        elif account_state == "without_account":
+            qs = qs.filter(has_account=False)
+
         try:
             page = max(1, int(request.query_params.get("page", "1")))
             page_size = min(100, max(1, int(request.query_params.get("page_size", "25"))))
         except (TypeError, ValueError):
             return _error("page and page_size must be positive integers.")
 
-        # Determine real account linkage without one query per roster row.
-        matched_rows = list(qs)
-        claimed_ids = [row.claimed_student_id for row in matched_rows if row.claimed_student_id]
-        emails = [row.email for row in matched_rows if row.email]
-        student_accounts = (
-            Account.objects
-            .filter(role=Account.Role.STUDENT)
-            .filter(
-                Q(student_profile__uuid__in=claimed_ids)
-                | Q(user__email__in=emails)
-            )
-            .select_related("user", "student_profile")
-        )
-        accounts_by_student_uuid = {
-            str(account.student_profile.uuid): account
-            for account in student_accounts
-            if account.student_profile_id
-        }
+        total = qs.count()
+        start = (page - 1) * page_size
+        page_rows = list(qs[start : start + page_size])
+
+        emails = [row.email for row in page_rows if row.has_account and row.email]
         accounts_by_email = {
             (account.user.email or "").lower(): account
-            for account in student_accounts
+            for account in (
+                Account.objects
+                .filter(role=Account.Role.STUDENT, user__email__in=emails)
+                .select_related("user", "student_profile")
+            )
             if account.user.email
         }
 
-        account_state = request.query_params.get("account_state", "").strip().lower()
-        if account_state not in {"", "with_account", "without_account"}:
-            return _error("account_state must be with_account or without_account.")
-
-        rows_with_accounts = []
-        for row in matched_rows:
-            account = (
-                accounts_by_student_uuid.get(row.claimed_student_id)
-                if row.claimed_student_id
-                else None
-            ) or accounts_by_email.get((row.email or "").lower())
-
-            if account_state == "with_account" and account is None:
-                continue
-            if account_state == "without_account" and account is not None:
-                continue
-            rows_with_accounts.append((row, account))
-
-        total = len(rows_with_accounts)
-        start = (page - 1) * page_size
-        page_rows = rows_with_accounts[start : start + page_size]
-
         results = []
-        for row, account in page_rows:
+        for row in page_rows:
+            account = accounts_by_email.get((row.email or "").lower())
             institute = row.source_list.institute
             results.append({
                 "id": row.id,
@@ -554,20 +537,18 @@ class AdminRosterStudentListAPIView(APIView):
                 "invited_at": row.invited_at,
                 "claimed_at": row.claimed_at,
                 "claimed_student_id": row.claimed_student_id or None,
+                "has_account": bool(row.has_account),
                 "account_user_id": account.user_id if account else None,
                 "account_email": account.user.email if account else None,
                 "account_active": account.user.is_active if account else None,
                 "created_at": row.created_at,
             })
 
+        base_rows = ListedStudent.objects.annotate(has_account=Exists(student_account_for_email))
         status_counts = {
             item["status"]: item["count"]
-            for item in ListedStudent.objects.values("status").annotate(count=Count("id"))
+            for item in base_rows.values("status").annotate(count=Count("id"))
         }
-        total_all = ListedStudent.objects.count()
-        account_linked_total = sum(
-            1 for row, account in rows_with_accounts if account is not None
-        ) if not search and not row_status and not institute_id and not account_state else None
 
         return Response({
             "results": results,
@@ -578,10 +559,10 @@ class AdminRosterStudentListAPIView(APIView):
                 "has_next": start + page_size < total,
             },
             "summary": {
-                "total": total_all,
+                "total": base_rows.count(),
                 "unclaimed": status_counts.get(ListedStudent.Status.UNCLAIMED, 0),
                 "claimed": status_counts.get(ListedStudent.Status.CLAIMED, 0),
-                "with_account": account_linked_total,
+                "with_account": base_rows.filter(has_account=True).count(),
             },
         })
 
