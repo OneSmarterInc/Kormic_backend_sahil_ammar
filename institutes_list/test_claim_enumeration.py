@@ -1,5 +1,6 @@
 from unittest import mock
 
+from django.core.cache import cache
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -10,6 +11,7 @@ from institutes_list.models import ListedStudent, InstituteStudentList
 
 class ClaimEnumerationResistanceTests(TestCase):
     def setUp(self):
+        cache.clear()
         self.client = APIClient()
         institute = register_institute("Enumeration Safe Institute", country="IN")
         source_list = InstituteStudentList.objects.create(
@@ -23,6 +25,9 @@ class ClaimEnumerationResistanceTests(TestCase):
             full_name="Listed Student",
             email="listed@example.edu",
         )
+
+    def tearDown(self):
+        cache.clear()
 
     @mock.patch("institutes_list.claim_views.send_claim_otp_email_task.delay")
     def test_listed_and_unlisted_start_are_identical(self, _mock_delay):
