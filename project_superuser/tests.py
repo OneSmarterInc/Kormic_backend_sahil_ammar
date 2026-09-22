@@ -782,3 +782,101 @@ class PilotEscalationMetricsTests(TestCase):
         self.assertEqual(resp.data["university_id"], "all")
         total_escalations = sum(week["total_escalations"] for week in resp.data["weeks"])
         self.assertEqual(total_escalations, 2)
+
+
+
+class SuperuserRosterStudentAPITests(TestCase):
+    def setUp(self):
+        cache.clear()
+        _reset_inprocess_agent_caches()
+        self.admin = make_superuser_client()
+
+        from django.contrib.auth.models import User
+        from django_api.models import StudentProfile
+        from institutes.services import register_institute
+        from institutes_list.models import InstituteStudentList, ListedStudent
+
+        self.institute = register_institute("Roster Test Institute", country="IN")
+        self.source_list = InstituteStudentList.objects.create(
+            institute=self.institute,
+            contact_name="Roster Officer",
+            contact_email="officer@roster.example",
+            row_count=2,
+        )
+
+        self.pending_row = ListedStudent.objects.create(
+            source_list=self.source_list,
+            institute_id=str(self.institute.uuid),
+            full_name="Pending Student",
+            email="pending.roster@example.com",
+            field_of_study="Computer Science",
+            degree_level="MS",
+            expected_graduation="05/2027",
+            country="IN",
+        )
+
+        profile = StudentProfile.objects.create(
+            name="Claimed Student",
+            email="claimed.roster@example.com",
+            extra_data={
+                "claimed_from_institute": True,
+                "institute_sourced": {
+                    "institute_id": str(self.institute.uuid),
+                    "institute_name": self.institute.name,
+                },
+            },
+        )
+        user = User.objects.create_user(
+            username="claimed.roster@example.com",
+            email="claimed.roster@example.com",
+            password="S3curePassw0rd!",
+            first_name="Claimed Student",
+        )
+        self.student_account = Account.objects.create(
+            user=user,
+            role=Account.Role.STUDENT,
+            student_profile=profile,
+        )
+        self.claimed_row = ListedStudent.objects.create(
+            source_list=self.source_list,
+            institute_id=str(self.institute.uuid),
+            full_name="Claimed Student",
+            email="claimed.roster@example.com",
+            field_of_study="Engineering",
+            degree_level="MS",
+            expected_graduation="05/2027",
+            country="IN",
+            status=ListedStudent.Status.CLAIMED,
+            claimed_student_id=str(profile.uuid),
+            claimed_at=timezone.now(),
+        )
+
+    def test_admin_roster_table_includes_unclaimed_and_account_linked_rows(self):
+        resp = self.admin.get("/api/superuser/roster-students/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        by_email = {row["email"]: row for row in resp.data["results"]}
+        self.assertIn("pending.roster@example.com", by_email)
+        self.assertIn("claimed.roster@example.com", by_email)
+        self.assertFalse(by_email["pending.roster@example.com"]["has_account"])
+        self.assertIsNone(by_email["pending.roster@example.com"]["account_user_id"])
+        self.assertTrue(by_email["claimed.roster@example.com"]["has_account"])
+        self.assertEqual(
+            by_email["claimed.roster@example.com"]["account_user_id"],
+            self.student_account.user_id,
+        )
+
+    def test_admin_roster_table_filters_account_state(self):
+        resp = self.admin.get("/api/superuser/roster-students/?account_state=with_account")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual([row["email"] for row in resp.data["results"]], ["claimed.roster@example.com"])
+
+        resp = self.admin.get("/api/superuser/roster-students/?account_state=without_account")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual([row["email"] for row in resp.data["results"]], ["pending.roster@example.com"])
+
+    def test_roster_created_account_is_identified_in_users_panel(self):
+        resp = self.admin.get("/api/superuser/users/?role=student")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        row = next(user for user in resp.data["users"] if user["user_id"] == self.student_account.user_id)
+        self.assertEqual(row["account_source"], "institute_roster")
+        self.assertEqual(row["source_institute_name"], self.institute.name)
