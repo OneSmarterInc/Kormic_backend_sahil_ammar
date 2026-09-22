@@ -38,6 +38,16 @@ def _error(message: str, http_status=status.HTTP_400_BAD_REQUEST) -> Response:
 
 def _serialize_account(account: Account) -> Dict[str, Any]:
     user = account.user
+    account_source = "direct"
+    source_institute_name = None
+    if account.role == Account.Role.STUDENT and account.student_profile_id:
+        extra = account.student_profile.extra_data if isinstance(account.student_profile.extra_data, dict) else {}
+        institute_source = extra.get("institute_sourced")
+        if institute_source or extra.get("claimed_from_institute"):
+            account_source = "institute_roster"
+            if isinstance(institute_source, dict):
+                source_institute_name = institute_source.get("institute_name")
+
     return {
         "user_id": user.id,
         "email": user.email,
@@ -49,6 +59,8 @@ def _serialize_account(account: Account) -> Dict[str, Any]:
         "is_active": user.is_active,
         "totp_enrolled": TOTPDevice.objects.filter(user=user, confirmed_at__isnull=False).exists(),
         "date_joined": user.date_joined,
+        "account_source": account_source,
+        "source_institute_name": source_institute_name,
     }
 
 
@@ -421,6 +433,160 @@ class AdminInstituteDetailAPIView(APIView):
 
 
 # ---------------------------------------------------------------------
+# Roster students (all institute-uploaded database rows)
+# ---------------------------------------------------------------------
+
+class AdminRosterStudentListAPIView(APIView):
+    """
+    GET /api/superuser/roster-students/
+        ?search=<name/email/program>
+        &status=unclaimed|claimed|revoked|expired
+        &institute_id=<uuid>
+        &account_state=with_account|without_account
+        &page=<n>&page_size=<1-100>
+
+    This is deliberately separate from Users & Access. Every accepted roster
+    row exists here immediately after upload, even before the student claims
+    it or creates a login. account_user_id is populated only when a real
+    student Account exists.
+    """
+
+    permission_classes = SUPERUSER_PERMISSIONS
+
+    def get(self, request):
+        from django.db.models import Q
+        from institutes_list.models import ListedStudent
+
+        qs = (
+            ListedStudent.objects
+            .select_related("source_list__institute")
+            .order_by("-created_at", "-id")
+        )
+
+        search = request.query_params.get("search", "").strip()
+        if search:
+            qs = qs.filter(
+                Q(full_name__icontains=search)
+                | Q(email__icontains=search)
+                | Q(field_of_study__icontains=search)
+                | Q(program_name__icontains=search)
+                | Q(source_list__institute__name__icontains=search)
+            )
+
+        row_status = request.query_params.get("status", "").strip().lower()
+        if row_status:
+            if row_status not in ListedStudent.Status.values:
+                return _error("Invalid roster status.")
+            qs = qs.filter(status=row_status)
+
+        institute_id = request.query_params.get("institute_id", "").strip()
+        if institute_id:
+            qs = qs.filter(source_list__institute__uuid=institute_id)
+
+        try:
+            page = max(1, int(request.query_params.get("page", "1")))
+            page_size = min(100, max(1, int(request.query_params.get("page_size", "25"))))
+        except (TypeError, ValueError):
+            return _error("page and page_size must be positive integers.")
+
+        # Determine real account linkage without one query per roster row.
+        matched_rows = list(qs)
+        claimed_ids = [row.claimed_student_id for row in matched_rows if row.claimed_student_id]
+        emails = [row.email for row in matched_rows if row.email]
+        student_accounts = (
+            Account.objects
+            .filter(role=Account.Role.STUDENT)
+            .filter(
+                Q(student_profile__uuid__in=claimed_ids)
+                | Q(user__email__in=emails)
+            )
+            .select_related("user", "student_profile")
+        )
+        accounts_by_student_uuid = {
+            str(account.student_profile.uuid): account
+            for account in student_accounts
+            if account.student_profile_id
+        }
+        accounts_by_email = {
+            (account.user.email or "").lower(): account
+            for account in student_accounts
+            if account.user.email
+        }
+
+        account_state = request.query_params.get("account_state", "").strip().lower()
+        if account_state not in {"", "with_account", "without_account"}:
+            return _error("account_state must be with_account or without_account.")
+
+        rows_with_accounts = []
+        for row in matched_rows:
+            account = (
+                accounts_by_student_uuid.get(row.claimed_student_id)
+                if row.claimed_student_id
+                else None
+            ) or accounts_by_email.get((row.email or "").lower())
+
+            if account_state == "with_account" and account is None:
+                continue
+            if account_state == "without_account" and account is not None:
+                continue
+            rows_with_accounts.append((row, account))
+
+        total = len(rows_with_accounts)
+        start = (page - 1) * page_size
+        page_rows = rows_with_accounts[start : start + page_size]
+
+        results = []
+        for row, account in page_rows:
+            institute = row.source_list.institute
+            results.append({
+                "id": row.id,
+                "list_id": row.source_list_id,
+                "institute_id": str(institute.uuid),
+                "institute_name": institute.name,
+                "full_name": row.full_name,
+                "email": row.email,
+                "field_of_study": row.field_of_study,
+                "degree_level": row.degree_level,
+                "program_name": row.program_name,
+                "expected_graduation": row.expected_graduation,
+                "country": row.country,
+                "status": row.status,
+                "invited_at": row.invited_at,
+                "claimed_at": row.claimed_at,
+                "claimed_student_id": row.claimed_student_id or None,
+                "account_user_id": account.user_id if account else None,
+                "account_email": account.user.email if account else None,
+                "account_active": account.user.is_active if account else None,
+                "created_at": row.created_at,
+            })
+
+        status_counts = {
+            item["status"]: item["count"]
+            for item in ListedStudent.objects.values("status").annotate(count=Count("id"))
+        }
+        total_all = ListedStudent.objects.count()
+        account_linked_total = sum(
+            1 for row, account in rows_with_accounts if account is not None
+        ) if not search and not row_status and not institute_id and not account_state else None
+
+        return Response({
+            "results": results,
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "has_next": start + page_size < total,
+            },
+            "summary": {
+                "total": total_all,
+                "unclaimed": status_counts.get(ListedStudent.Status.UNCLAIMED, 0),
+                "claimed": status_counts.get(ListedStudent.Status.CLAIMED, 0),
+                "with_account": account_linked_total,
+            },
+        })
+
+
+# ---------------------------------------------------------------------
 # Users (cross-role)
 # ---------------------------------------------------------------------
 
@@ -434,7 +600,7 @@ class AdminUserListAPIView(APIView):
     permission_classes = SUPERUSER_PERMISSIONS
 
     def get(self, request):
-        accounts = Account.objects.select_related("user").order_by("-created_at")
+        accounts = Account.objects.select_related("user", "student_profile").order_by("-created_at")
 
         role = request.query_params.get("role", "").strip()
         if role:
