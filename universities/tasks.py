@@ -49,9 +49,51 @@ def run_scrape_now_job(self, job_id: int) -> None:
         job.error_message = str(exc)[:1000]
         job.completed_at = timezone.now()
         job.save(update_fields=["status", "error_message", "completed_at"])
+
+        from notifications.models import NotificationLog
+        from notifications.services import notify_superusers, notify_university
+
+        payload = {
+            "type": "job_failed",
+            "job_id": job.id,
+            "university_id": str(job.university.uuid),
+            "route": f"/university/{job.university.uuid}/settings/sources",
+        }
+        notify_university(
+            str(job.university.uuid),
+            event_type=NotificationLog.EventType.JOB_FAILED,
+            title="Knowledge refresh failed",
+            body=f"The source refresh for {job.university.name} failed and needs attention.",
+            data=payload,
+        )
+        notify_superusers(
+            event_type=NotificationLog.EventType.SYSTEM_ALERT,
+            title="University knowledge job failed",
+            body=f"Source refresh failed for {job.university.name}.",
+            data={
+                **payload,
+                "route": f"/admin/universities/{job.university.uuid}/view",
+            },
+        )
         return
 
     job.status = ScrapeJob.Status.COMPLETED
     job.result = result
     job.completed_at = timezone.now()
     job.save(update_fields=["status", "result", "completed_at"])
+
+    from notifications.models import NotificationLog
+    from notifications.services import notify_university
+
+    notify_university(
+        str(job.university.uuid),
+        event_type=NotificationLog.EventType.JOB_COMPLETED,
+        title="Knowledge refresh completed",
+        body=f"The source refresh for {job.university.name} completed successfully.",
+        data={
+            "type": "job_completed",
+            "job_id": job.id,
+            "university_id": str(job.university.uuid),
+            "route": f"/university/{job.university.uuid}/settings/knowledge-base",
+        },
+    )
