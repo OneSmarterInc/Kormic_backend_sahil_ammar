@@ -57,6 +57,7 @@ from django_api.services import (
     get_priority_tier_counts,
     get_shortlisted_profiles,
     parse_resume,
+    profile_row_to_dict,
     analyze_github,
     analyze_linkedin,
     load_profile_data,
@@ -1656,30 +1657,68 @@ class UniversityProfilesListView(APIView):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
-        profiles = []
+        shortlist = get_shortlisted_profiles(
+            university_id, min_score=min_score, priority_tiers=priority_tiers
+        )
 
-        for entry in get_shortlisted_profiles(university_id, min_score=min_score, priority_tiers=priority_tiers):
-            row = StudentProfile.objects.filter(uuid=entry["student_id"]).first()
+        try:
+            page = max(1, int(request.query_params.get("page", "1")))
+            page_size = min(100, max(1, int(request.query_params.get("page_size", "50"))))
+        except ValueError:
+            return Response(
+                {"error": "page and page_size must be positive integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        total = len(shortlist)
+        start = (page - 1) * page_size
+        page_entries = shortlist[start : start + page_size]
+        student_ids = [entry["student_id"] for entry in page_entries]
+
+        rows = list(StudentProfile.objects.filter(uuid__in=student_ids))
+        rows_by_uuid = {str(row.uuid): row for row in rows}
+
+        accounts = (
+            Account.objects.filter(student_profile__uuid__in=student_ids)
+            .select_related("user", "student_profile")
+        )
+        accounts_by_uuid = {
+            str(account.student_profile.uuid): account
+            for account in accounts
+            if account.student_profile_id
+        }
+
+        claimed_rows = (
+            ListedStudent.objects.filter(
+                claimed_student_id__in=student_ids,
+                status=ListedStudent.Status.CLAIMED,
+            )
+            .select_related("source_list__institute")
+            .order_by("claimed_student_id", "-claimed_at", "-id")
+        )
+        institutes_by_uuid = {}
+        for listed_student in claimed_rows:
+            institutes_by_uuid.setdefault(
+                listed_student.claimed_student_id,
+                listed_student.source_list.institute.name,
+            )
+
+        profiles = []
+        for entry in page_entries:
+            row = rows_by_uuid.get(entry["student_id"])
             if row is None:
                 continue
 
             row_uuid = str(row.uuid)
-            data = load_profile_data(row_uuid)
+            data = profile_row_to_dict(row)
             assessment = entry["assessment"]
-
-            account = Account.objects.filter(student_profile=row).select_related("user").first()
-            listed_student = (
-                ListedStudent.objects.filter(claimed_student_id=row_uuid, status=ListedStudent.Status.CLAIMED)
-                .select_related("source_list__institute")
-                .order_by("-claimed_at")
-                .first()
-            )
+            account = accounts_by_uuid.get(row_uuid)
 
             profile = {
                 "profile_id": data.get("student_id"),
                 "name": data.get("name"),
                 "student_email": (account.user.email if account else None) or data.get("email") or None,
-                "institute_name": listed_student.source_list.institute.name if listed_student else None,
+                "institute_name": institutes_by_uuid.get(row_uuid),
                 "is_active": account.user.is_active if account else None,
                 "date_joined": account.user.date_joined if account else None,
                 "profile_image_url": (
@@ -1699,13 +1738,18 @@ class UniversityProfilesListView(APIView):
                 "fit_summary": assessment.get("fit_summary", data.get("summary", "")),
                 "recommendation": assessment.get("recommendation", "review"),
             }
-
             profiles.append({key: value for key, value in profile.items() if value is not None})
 
         return Response({
             "university_id": university_id,
             "priority_tier_bounds": get_priority_tier_bounds(university_id),
             "tier_counts": get_priority_tier_counts(university_id),
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "has_next": start + page_size < total,
+            },
             "profiles": profiles,
         })
 
