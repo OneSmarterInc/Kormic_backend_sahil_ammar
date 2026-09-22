@@ -63,6 +63,19 @@ ALLOWED_HOSTS = [
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
+# HTTPS hardening. Keep local development HTTP-friendly; deployments behind
+# the trusted proxy are redirected to HTTPS and receive an initial one-hour
+# HSTS policy. Raise HSTS to one year after the production HTTPS path has
+# been observed stable.
+if not DEBUG:
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = 3600
+else:
+    SECURE_SSL_REDIRECT = False
+    SESSION_COOKIE_SECURE = False
+    SECURE_HSTS_SECONDS = 0
+
 
 # Application definition
 
