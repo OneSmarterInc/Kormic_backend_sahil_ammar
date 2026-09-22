@@ -312,6 +312,33 @@ class ClaimFlowTests(TestCase):
 
     # -------------------------------------------------------------- reconciliation
 
+    def test_reupload_preserves_prior_unclaimed_row(self):
+        original = ListedStudent.objects.get(email="arjun.rao@gmail.com")
+        original_list_id = original.source_list_id
+
+        user = get_user_model().objects.get(username="officer@wsfi.edu")
+        self.client.force_authenticate(user=user)
+        resp = self.client.post(
+            "/api/institute-lists/upload/",
+            {
+                "file": _csv_upload(),
+                "institute_id": str(self.institute.uuid),
+                "contact_name": "Dr. John",
+                "contact_email": "john@wsfi.edu",
+            },
+            format="multipart",
+        )
+        self.assertEqual(resp.status_code, 200)
+
+        rows = list(
+            ListedStudent.objects.filter(email="arjun.rao@gmail.com").order_by("created_at", "id")
+        )
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].source_list_id, original_list_id)
+        self.assertEqual(rows[0].status, ListedStudent.Status.EXPIRED)
+        self.assertEqual(rows[1].source_list_id, resp.json()["list_id"])
+        self.assertEqual(rows[1].status, ListedStudent.Status.UNCLAIMED)
+
     def test_reupload_never_overwrites_claimed(self):
         session = self._verified_session()
         self.client.post("/api/claim/confirm/", {"claim_session": session, "fields": {}}, format="json")
