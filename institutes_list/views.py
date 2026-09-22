@@ -697,6 +697,24 @@ def confirm_claim(request):
     row.otp_hash = ""
     row.save()
 
+    from notifications.models import NotificationLog
+    from notifications.services import notify_institute
+
+    notify_institute(
+        str(row.source_list.institute.uuid),
+        event_type=NotificationLog.EventType.STUDENT_CLAIMED,
+        title="Student completed account claim",
+        body=f"{row.full_name or row.email} completed their institute-linked account claim.",
+        data={
+            "type": "student_claimed",
+            "student_id": student_id,
+            "list_id": row.source_list_id,
+            "listed_student_id": row.id,
+            "institute_id": str(row.source_list.institute.uuid),
+            "route": f"/institute/lists/{row.source_list_id}",
+        },
+    )
+
     return Response(
         {
             "status": "claimed",
