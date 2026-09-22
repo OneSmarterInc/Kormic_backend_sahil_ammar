@@ -251,11 +251,11 @@ def load_profile_or_404(student_id):
         )
 
     except Exception as exc:
+        logger.exception("Unexpected error while loading student profile %s", student_id, exc_info=exc)
         return None, Response(
             {
                 "status": "failed",
-                "message": "Could not load student profile",
-                "error": str(exc),
+                "message": "Something went wrong. Please try again.",
             },
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
@@ -571,8 +571,8 @@ class GitHubAnalyzeAPIView(APIView):
 
 def build_linkedin_images_payload(request, analysis_id: int, image_paths):
     """
-    Turns the absolute on-disk paths stored on a LinkedInAnalysis row into a
-    frontend-usable shape: a full, directly-fetchable URL to the image
+    Turns the stored private-image references on a LinkedInAnalysis row into
+    a frontend-usable shape: a full, directly-fetchable URL to the image
     (raw MEDIA_URL static serving isn't used here since these screenshots
     are private -- serving must stay behind the same JWT+ownership check as
     the rest of the API, so the URL still requires an Authorization header
