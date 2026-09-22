@@ -1,3 +1,4 @@
+# Python 3.10+ is required by the current dependency set; production uses Python 3.11.
 anthropic>=0.110.0
 langgraph>=1.2.0
 langchain-anthropic>=1.4.0
@@ -13,19 +14,19 @@ langgraph-checkpoint-postgres>=3.1.0
 langgraph-checkpoint-sqlite>=3.1.1
 psycopg[binary]>=3.2.0
 psycopg-pool>=3.2.0
-requests==2.31.0
+requests==2.33.0
 beautifulsoup4==4.12.0
 httpx==0.28.1
 PyYAML==6.0.3
-python-dotenv==1.0.0
+python-dotenv==1.2.2
 rich==13.7.0
 psycopg2-binary==2.9.9
-cryptography==42.0.5
-pytest==8.0.0
+cryptography==49.0.0
+pytest==9.0.3
 python-docx>=1.1.0
-django==5.2.15
-djangorestframework==3.15.2
-djangorestframework-simplejwt==5.3.1
+django==5.2.17
+djangorestframework==3.17.2
+djangorestframework-simplejwt==5.5.1
 drf-spectacular==0.28.0
 pyotp==2.9.0
 django-cors-headers
