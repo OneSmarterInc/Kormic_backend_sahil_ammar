@@ -1,7 +1,7 @@
 # Python 3.10+ is required by the current dependency set; production uses Python 3.11.
-anthropic>=0.110.0
-langgraph>=1.2.0
-langchain-anthropic>=1.4.0
+anthropic==0.125.0
+langgraph==1.7.0
+langchain-anthropic==1.5.5
 # Durable, multi-worker-safe backend for pure_multi_agent.runtime's LangGraph
 # checkpointer (replaces the in-process MemorySaver -- see runtime.py's
 # _build_checkpointer). Uses the same Postgres database Django already
@@ -9,11 +9,11 @@ langchain-anthropic>=1.4.0
 # (psycopg v3, required by langgraph-checkpoint-postgres) bundling its own
 # libpq, same reason psycopg2-binary was chosen over plain psycopg2 -- no
 # system libpq needs to be installed in the container.
-langgraph-checkpoint-postgres>=3.1.0
+langgraph-checkpoint-postgres==3.1.2
 # File-backed local development checkpointer; never used in production.
-langgraph-checkpoint-sqlite>=3.1.1
-psycopg[binary]>=3.2.0
-psycopg-pool>=3.2.0
+langgraph-checkpoint-sqlite==3.1.1
+psycopg[binary]==3.3.6
+psycopg-pool==3.3.1
 requests==2.33.0
 beautifulsoup4==4.12.0
 httpx==0.28.1
@@ -30,9 +30,9 @@ djangorestframework==3.17.2
 djangorestframework-simplejwt==5.5.1
 drf-spectacular==0.28.0
 pyotp==2.9.0
-django-cors-headers
+django-cors-headers==4.9.0
 python-multipart==0.0.32
-reportlab
+reportlab==5.0.1
 celery>=5.3.6,<6
 redis>=5.0.1,<6
 django-redis==5.4.0
