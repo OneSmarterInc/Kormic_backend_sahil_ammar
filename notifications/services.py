@@ -23,6 +23,34 @@ def _truncate(text: str, limit: int = PREVIEW_LENGTH) -> str:
     return text[: limit - 3] + "..."
 
 
+def notify_account(
+    *,
+    account: Account,
+    event_type: str,
+    title: str,
+    body: str,
+    data: Optional[Dict[str, Any]] = None,
+    queue_push: bool = False,
+) -> NotificationLog:
+    """Create one durable, account-scoped notification.
+
+    Web roles consume this through the notification inbox API. Student
+    notifications may additionally set queue_push=True to preserve native
+    Expo delivery. Account ownership is resolved server-side; clients never
+    choose another account's notification scope.
+    """
+    log = NotificationLog.objects.create(
+        account=account,
+        event_type=event_type,
+        title=title,
+        body=_truncate(body),
+        data=data or {},
+    )
+    if queue_push:
+        send_push_notification_task.delay(log.id)
+    return log
+
+
 def _queue_push(
     *,
     account: Account,
@@ -32,16 +60,79 @@ def _queue_push(
     data: Optional[Dict[str, Any]] = None,
     queue_push: bool = True,
 ) -> NotificationLog:
-    log = NotificationLog.objects.create(
+    return notify_account(
         account=account,
         event_type=event_type,
         title=title,
         body=body,
-        data=data or {},
+        data=data,
+        queue_push=queue_push,
     )
-    if queue_push:
-        send_push_notification_task.delay(log.id)
-    return log
+
+
+def notify_university(
+    university_id: str,
+    *,
+    event_type: str,
+    title: str,
+    body: str,
+    data: Optional[Dict[str, Any]] = None,
+) -> list[NotificationLog]:
+    logs = []
+    for account in Account.objects.filter(
+        role=Account.Role.UNIVERSITY,
+        university__uuid=university_id,
+    ):
+        logs.append(notify_account(
+            account=account,
+            event_type=event_type,
+            title=title,
+            body=body,
+            data=data,
+        ))
+    return logs
+
+
+def notify_institute(
+    institute_id: str,
+    *,
+    event_type: str,
+    title: str,
+    body: str,
+    data: Optional[Dict[str, Any]] = None,
+) -> list[NotificationLog]:
+    logs = []
+    for account in Account.objects.filter(
+        role=Account.Role.INSTITUTE,
+        institute__uuid=institute_id,
+    ):
+        logs.append(notify_account(
+            account=account,
+            event_type=event_type,
+            title=title,
+            body=body,
+            data=data,
+        ))
+    return logs
+
+
+def notify_superusers(
+    *,
+    event_type: str,
+    title: str,
+    body: str,
+    data: Optional[Dict[str, Any]] = None,
+) -> list[NotificationLog]:
+    logs = []
+    for account in Account.objects.filter(role=Account.Role.SUPERUSER):
+        logs.append(notify_account(
+            account=account,
+            event_type=event_type,
+            title=title,
+            body=body,
+            data=data,
+        ))
+    return logs
 
 
 def notify_agent_reply(*, student_id: str, agent_name: str, reply: str) -> Optional[NotificationLog]:
