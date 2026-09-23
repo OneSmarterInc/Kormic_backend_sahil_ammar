@@ -85,10 +85,20 @@ class WebTOTPLoginVerifyView(WebCSRF, TOTPLoginVerifyView):
         return response
 
 
-class WebRefreshView(WebCSRF, APIView):
+class WebRefreshView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
     throttle_scope = 'auth'
+
+    def initial(self, request, *args, **kwargs):
+        # Refresh is a read-only credential exchange: it only validates the
+        # existing HttpOnly refresh cookie and returns a short-lived access
+        # token. Do not require a CSRF token here, so a full-page redirect
+        # after TOTP can restore the browser session without a second CSRF
+        # bootstrap request. All state-changing browser auth endpoints remain
+        # protected by WebCSRF.
+        self.portal = portal_for(request)
+        super().initial(request, *args, **kwargs)
 
     def post(self, request):
         try:
