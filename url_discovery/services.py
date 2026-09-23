@@ -95,8 +95,18 @@ def start_discovery(
             "Set the university's website URL first (see the profile's website_url field)."
         )
 
-    active = university.discovery_jobs.filter(status__in=DiscoveryJob.ACTIVE_STATUSES).order_by("-created_at").first()
-    if active and not _reap_if_stale(active):
+    # There should normally be at most one active job, but older versions
+    # did not enforce that invariant at the database level. Reap every stale
+    # active row before deciding whether a retry is allowed, so one abandoned
+    # row cannot block a healthy new crawl.
+    active_jobs = list(
+        university.discovery_jobs
+        .filter(status__in=DiscoveryJob.ACTIVE_STATUSES)
+        .order_by("-created_at")
+    )
+    for active in active_jobs:
+        if _reap_if_stale(active):
+            continue
         raise ValueError(f"A discovery job is already in progress for this university (job {active.id}).")
 
     base_url = _canonical_base_url(university.website_url)
