@@ -549,6 +549,14 @@ class ScrapeNowAPIView(APIView):
         job = university.scrape_jobs.first()
         if job is None:
             return _error("No scrape job has been run yet.", status.HTTP_404_NOT_FOUND)
+
+        # A queued/running job must not leave the UI saying "Scraping..."
+        # forever if the worker died or the queued message was never consumed.
+        # Reuse the same recovery rules as the POST guard.
+        if job.status in services.ScrapeJob.ACTIVE_STATUSES:
+            if services._reap_stale_scrape_job(job):
+                job.refresh_from_db()
+
         return Response(services.serialize_scrape_job(job))
 
 
@@ -568,6 +576,11 @@ class ScrapeNowJobDetailAPIView(APIView):
         job = university.scrape_jobs.filter(id=job_id).first()
         if job is None:
             return _error("Scrape job not found.", status.HTTP_404_NOT_FOUND)
+
+        if job.status in services.ScrapeJob.ACTIVE_STATUSES:
+            if services._reap_stale_scrape_job(job):
+                job.refresh_from_db()
+
         return Response(services.serialize_scrape_job(job))
 
 
