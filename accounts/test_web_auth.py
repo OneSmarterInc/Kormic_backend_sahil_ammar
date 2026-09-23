@@ -63,7 +63,8 @@ class WebAuthTests(TestCase):
         raw = self.client.cookies[cookie_name('university')].value
         refreshed = self.post('refresh')
         self.assertEqual(refreshed.status_code, 200)
-        self.assertEqual(set(refreshed.data), {'access'})
+        self.assertEqual(set(refreshed.data), {'access', 'user'})
+        self.assertEqual(refreshed.data['user']['role'], 'university')
         self.assertEqual(self.post('logout').status_code, 204)
         self.assertEqual(self.client.cookies[cookie_name('university')]['max-age'], 0)
         self.client.cookies[cookie_name('university')] = raw
