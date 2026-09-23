@@ -1744,6 +1744,9 @@ class UniversityProfilesListView(APIView):
                 "match_tier": assessment.get("match_tier", "unassessed"),
                 "match_score": assessment.get("match_score"),
                 "priority_tier": entry["priority_tier"],
+                "qualified": entry.get("qualified", False),
+                "qualification_status": entry.get("qualification_status", "unassessed"),
+                "qualification_threshold": entry.get("qualification_threshold"),
                 "fit_summary": assessment.get("fit_summary", data.get("summary", "")),
                 "recommendation": assessment.get("recommendation", "review"),
             }
