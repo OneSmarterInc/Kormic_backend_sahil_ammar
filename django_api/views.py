@@ -64,6 +64,7 @@ from django_api.services import (
     save_chat_attachment,
     save_profile_data,
     student_has_university_interest,
+    record_chat_university_interests,
     upload_profile_image,
     ProfileImageTooLargeError,
     ProfileImageValidationError,
@@ -925,6 +926,14 @@ def agent_chat(request):
         "(Shared file(s) with no additional message: "
         + ", ".join(a.original_filename for a in attachments) + ")"
     )
+
+    # Capture explicit university interest from the student's own message
+    # before the LLM turn. Dashboard visibility must not depend on the model
+    # deciding to call a university tool.
+    try:
+        record_chat_university_interests(student_id, effective_message)
+    except Exception:
+        logger.exception("Failed to record university interest from chat for %s", student_id)
 
     try:
         _existing_pq_ids = _existing_pending_query_ids(student_id)
