@@ -400,8 +400,13 @@ CELERY_WORKER_POOL = os.environ.get(
 # Run Celery tasks synchronously during local development so starting the
 # Django server does not also require Redis, a Celery worker, or Docker.
 # Production remains asynchronous unless explicitly overridden.
+# Discovery/scrape jobs are intentionally asynchronous even in local DEBUG,
+# because the UI polls their persisted job rows for progress and completion.
+# Running them eagerly inside the HTTP request can make the frontend appear
+# stuck and also prevents the dedicated Celery worker from exercising the
+# real production execution path.
 CELERY_TASK_ALWAYS_EAGER = TESTING or (
-    os.environ.get("CELERY_TASK_ALWAYS_EAGER", "true" if DEBUG else "false").lower() == "true"
+    os.environ.get("CELERY_TASK_ALWAYS_EAGER", "false" if DEBUG else "false").lower() == "true"
 )
 CELERY_TASK_EAGER_PROPAGATES = TESTING
 
