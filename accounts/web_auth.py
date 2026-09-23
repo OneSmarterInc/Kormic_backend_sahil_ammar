@@ -13,7 +13,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenRefreshView
 
 from accounts.models import Account, TOTPDevice
-from accounts.views import LoginView, RegisterView, TOTPLoginVerifyView
+from accounts.views import LoginView, RegisterView, TOTPLoginVerifyView, _serialize_user_with_verification
 
 
 def cookie_name(portal):
@@ -104,7 +104,12 @@ class WebRefreshView(WebCSRF, APIView):
             clear_cookie(response, self.portal)
             return response
         # Preserve the original seven-day expiry; refresh does not extend it.
-        return Response({'access': str(token.access_token)})
+        # Return the same server-validated user representation used by /auth/me.
+        # This lets browser clients restore the session without a second auth hop.
+        return Response({
+            'access': str(token.access_token),
+            'user': _serialize_user_with_verification(user),
+        })
 
 
 class WebLogoutView(WebCSRF, APIView):
