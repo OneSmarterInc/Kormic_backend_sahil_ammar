@@ -424,7 +424,8 @@ class ClaimFlowTests(TestCase):
 
         resp = self.client.post(f"/api/institute-lists/lists/{self.upload['list_id']}/send-invites/")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json()["invites_sent"], 2)
+        self.assertEqual(resp.json()["invites_queued"], 2)
+        self.assertEqual(resp.json()["invites_failed_to_queue"], 0)
         self.assertEqual(mock_delay.call_count, 2)
 
         queued_ids = {call.args[0] for call in mock_delay.call_args_list}
@@ -439,7 +440,8 @@ class ClaimFlowTests(TestCase):
         # calling again does not re-invite already-invited unclaimed rows
         mock_delay.reset_mock()
         resp = self.client.post(f"/api/institute-lists/lists/{self.upload['list_id']}/send-invites/")
-        self.assertEqual(resp.json()["invites_sent"], 0)
+        self.assertEqual(resp.json()["invites_queued"], 0)
+        self.assertEqual(resp.json()["invites_failed_to_queue"], 0)
         mock_delay.assert_not_called()
 
     @override_settings(CLAIM_PAGE_URL="https://app.kormic.example/claim")
