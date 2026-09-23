@@ -1312,7 +1312,16 @@ def get_shortlisted_profiles(
 
     shortlisted: List[Dict[str, Any]] = []
 
+    student_rows = {
+        row.pk: row
+        for row in StudentProfile.objects.filter(pk__in=interested_student_pks)
+    }
+
     for student_pk in interested_student_pks:
+        student_row = student_rows.get(student_pk)
+        if student_row is None:
+            continue
+
         assessment_row = (
             FitAssessment.objects.filter(student_id=student_pk, university_id=university_id)
             .order_by("-created_at")
@@ -1323,7 +1332,7 @@ def get_shortlisted_profiles(
             if priority_tiers and "unranked" not in priority_tiers:
                 continue
             shortlisted.append({
-                "student_id": str(StudentProfile.objects.get(pk=student_pk).uuid),
+                "student_id": str(student_row.uuid),
                 "assessment": {},
                 "match_score": None,
                 "priority_tier": "unranked",
