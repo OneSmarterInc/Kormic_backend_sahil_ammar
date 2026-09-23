@@ -207,10 +207,7 @@ class UniversityInterestTests(TestCase):
         )
 
     def test_interested_student_is_visible_without_fit_assessment(self):
-        from django_api.models import UniversityInterestEvent
-        from django_api.services import get_shortlisted_profiles
-
-        from django_api.services import record_chat_university_interests
+        from django_api.services import get_shortlisted_profiles, record_chat_university_interests
 
         record_chat_university_interests(
             self.student_id,
