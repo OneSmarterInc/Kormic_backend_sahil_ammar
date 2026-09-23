@@ -183,11 +183,21 @@ class UniversityInterestTests(TestCase):
         cache.clear()
         _reset_inprocess_agent_caches()
         self.student, self.student_id = make_student_client(email="interest@example.com")
-        self.student.post("/api/profile/", {"name": "Interested Student"}, format="json")
+        self.student.post(
+            "/api/profile/",
+            {"name": "Interested Student", "gpa": 3.7, "gpa_scale": 4.0},
+            format="json",
+        )
         self.officer, self.university_id = make_university_client(
             email="interest-officer@example.com",
             university_id="wright_state_cs",
         )
+        from universities.models import University
+        university = University.objects.get(uuid=self.university_id)
+        university.eligibility_criteria = [
+            {"criterion": "Min GPA", "detail": "3.5 to 4.0 scale"}
+        ]
+        university.save(update_fields=["eligibility_criteria"])
 
     def test_explicit_chat_interest_creates_university_interest_event(self):
         from django_api.models import UniversityInterestEvent
@@ -220,6 +230,10 @@ class UniversityInterestTests(TestCase):
         self.assertEqual(len(matching), 1)
         self.assertIsNone(matching[0]["match_score"])
         self.assertEqual(matching[0]["priority_tier"], "unranked")
+        self.assertTrue(matching[0]["qualified"])
+        self.assertEqual(matching[0]["qualification_status"], "qualified")
+        self.assertEqual(matching[0]["eligibility"]["details"][0]["actual"], 3.7)
+        self.assertEqual(matching[0]["eligibility"]["details"][0]["required"], 3.5)
 
 
 class ChatHistoryTests(TestCase):
