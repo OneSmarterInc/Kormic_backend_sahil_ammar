@@ -1,7 +1,10 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any, Dict, List, Optional
+
+from django.utils import timezone
 
 from personas.university_persona_builder import build_constitution
 from institutes.country_codes import normalize_country_code
