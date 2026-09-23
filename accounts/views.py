@@ -5,6 +5,7 @@ import os
 from django.contrib.auth import authenticate
 from io import BytesIO
 import qrcode
+from PIL import ImageDraw, ImageFont
 from django.contrib.auth.models import User
 from django.db import transaction
 from django.http import HttpResponse, HttpResponseRedirect
@@ -281,7 +282,35 @@ class TOTPQRCodeView(APIView):
         if not provisioning_uri or len(provisioning_uri) > 2048 or not provisioning_uri.startswith("otpauth://totp/"):
             return Response({"detail": "A valid TOTP provisioning URI is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        image = qrcode.make(provisioning_uri, box_size=8, border=4)
+        image = qrcode.make(provisioning_uri, box_size=8, border=4).convert("RGB")
+        # Keep the center mark small and surrounded by a white quiet zone so
+        # standard authenticator apps can still decode the QR reliably.
+        draw = ImageDraw.Draw(image)
+        center_x = image.width // 2
+        center_y = image.height // 2
+        mark_size = max(48, image.width // 7)
+        left = center_x - mark_size // 2
+        top = center_y - mark_size // 2
+        draw.rounded_rectangle(
+            (left, top, left + mark_size, top + mark_size),
+            radius=mark_size // 5,
+            fill="white",
+        )
+        inset = max(4, mark_size // 7)
+        draw.rounded_rectangle(
+            (left + inset, top + inset, left + mark_size - inset, top + mark_size - inset),
+            radius=max(3, mark_size // 10),
+            fill="#455be8",
+        )
+        font = ImageFont.load_default()
+        bbox = draw.textbbox((0, 0), "K", font=font)
+        text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        draw.text(
+            (center_x - text_w / 2, center_y - text_h / 2 - 1),
+            "K",
+            fill="white",
+            font=font,
+        )
         output = BytesIO()
         image.save(output, format="PNG")
         return HttpResponse(output.getvalue(), content_type="image/png", headers={"Cache-Control": "no-store"})
