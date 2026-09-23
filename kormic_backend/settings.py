@@ -389,6 +389,14 @@ CELERY_TIMEZONE = TIME_ZONE
 # vanishing silently mid-loop.
 CELERY_TASK_TIME_LIMIT = 30
 CELERY_TASK_SOFT_TIME_LIMIT = 25
+# Windows does not reliably support Celery's prefork worker pool under the
+# local development environment (billiard can fail with WinError 5 while
+# managing spawned child processes). Use the single-process pool on Windows;
+# Linux/Docker keeps the normal prefork pool unless explicitly overridden.
+CELERY_WORKER_POOL = os.environ.get(
+    "CELERY_WORKER_POOL",
+    "solo" if os.name == "nt" else "prefork",
+)
 # Run Celery tasks synchronously during local development so starting the
 # Django server does not also require Redis, a Celery worker, or Docker.
 # Production remains asynchronous unless explicitly overridden.
