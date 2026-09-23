@@ -210,12 +210,8 @@ class UniversityInterestTests(TestCase):
         from django_api.models import UniversityInterestEvent
         from django_api.services import get_shortlisted_profiles
 
-        UniversityInterestEvent.objects.create(
-            student_id=None,
-        ) if False else None
-        record_chat_university_interests = __import__(
-            "django_api.services", fromlist=["record_chat_university_interests"]
-        ).record_chat_university_interests
+        from django_api.services import record_chat_university_interests
+
         record_chat_university_interests(
             self.student_id,
             "I am interested in Wright State and want to apply there.",
