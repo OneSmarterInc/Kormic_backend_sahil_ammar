@@ -255,6 +255,11 @@ class AutoDiscoverUrlsAPIView(APIView):
         job = university.discovery_jobs.first()
         if job is None:
             return _error("No discovery job has been run yet.", status.HTTP_404_NOT_FOUND)
+        # Recover legacy jobs left in stop_requested by an older worker/UI
+        # version. Stopping is terminal, so the dashboard must not remain
+        # stuck on that state after a reload.
+        if job.status == "stop_requested":
+            job = discovery_services.request_stop(job)
         return Response(discovery_services.serialize_job(job))
 
 
