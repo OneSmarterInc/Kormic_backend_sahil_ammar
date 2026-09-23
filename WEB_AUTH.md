@@ -34,9 +34,12 @@ refresh tokens cannot be exchanged on the legacy JSON refresh endpoint.
    responses uncached (`Cache-Control: no-store`) and preserve Set-Cookie.
 
 Browser requests use `credentials: include` / Axios `withCredentials`.
-Before every cookie-authentication POST, clients GET `/api/auth/web/csrf/`
-and send the returned masked token in `X-CSRFToken`. Django verifies the CSRF
-cookie/token pair and Origin/Referer even for unauthenticated login and logout.
+State-changing cookie-authentication POSTs (login, registration, TOTP verification,
+and logout) first GET `/api/auth/web/csrf/` and send the returned masked token in
+`X-CSRFToken`. The browser refresh endpoint is the one exception: it only validates
+the existing HttpOnly refresh cookie and returns a short-lived access token, so it
+is intentionally CSRF-free and relies on the CORS allow-list to control which
+origins can read its response.
 The CSRF cookie is also HttpOnly; clients obtain the masked value through JSON,
 not document.cookie. Only allow-listed origins may read credentialed responses.
 
