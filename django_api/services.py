@@ -1264,6 +1264,107 @@ def get_priority_tier_bounds(university_id: str) -> Dict[str, int]:
     return {**DEFAULT_PRIORITY_TIER_BOUNDS, **configured}
 
 
+def _eligibility_number(value: Any) -> Optional[float]:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def evaluate_university_eligibility(profile: Dict[str, Any], university: Any) -> Dict[str, Any]:
+    """Evaluate explicit university eligibility criteria against student facts.
+
+    This is intentionally deterministic for admission requirements shown in the
+    university profile. The fit-score/LLM assessment is a separate signal and
+    must not decide whether a student meets an explicit requirement.
+    """
+    criteria = university.eligibility_criteria or []
+    if not criteria:
+        return {"status": "unassessed", "qualified": False, "matched": 0, "total": 0, "details": []}
+
+    facts = {str(k).lower(): v for k, v in profile.items()}
+    details = []
+    recognized = 0
+    failed = 0
+
+    for item in criteria:
+        if not isinstance(item, dict):
+            continue
+        criterion = str(item.get("criterion", "")).strip()
+        detail = str(item.get("detail", "")).strip()
+        text = f"{criterion} {detail}".lower()
+        required = None
+        actual = None
+        field = None
+
+        if "gpa" in text:
+            field = "gpa"
+        elif "toefl" in text:
+            field = "toefl"
+        elif "ielts" in text:
+            field = "ielts"
+        elif "gre" in text and "quant" in text:
+            field = "gre_quant"
+        elif "gre" in text and "verbal" in text:
+            field = "gre_verbal"
+        elif "gre" in text:
+            field = "gre_total"
+
+        if field:
+            numbers = [float(n) for n in re.findall(r"(?<![a-z])\\d+(?:\\.\\d+)?", text)]
+            if numbers:
+                required = numbers[0]
+                actual = _eligibility_number(facts.get(field))
+                if actual is not None:
+                    recognized += 1
+                    passed = actual >= required
+                    if not passed:
+                        failed += 1
+                    details.append({
+                        "criterion": criterion,
+                        "detail": detail,
+                        "field": field,
+                        "required": required,
+                        "actual": actual,
+                        "passed": passed,
+                    })
+                    continue
+                details.append({
+                    "criterion": criterion,
+                    "detail": detail,
+                    "field": field,
+                    "required": required,
+                    "actual": None,
+                    "passed": False,
+                })
+                failed += 1
+                continue
+
+        # Unknown/non-numeric criteria are not guessed. They require manual or
+        # model review rather than incorrectly marking a student as qualified.
+        details.append({"criterion": criterion, "detail": detail, "passed": None})
+
+    unknown = sum(1 for item in details if item.get("passed") is None)
+    if failed:
+        status = "not_qualified"
+    elif unknown:
+        status = "unassessed"
+    elif recognized:
+        status = "qualified"
+    else:
+        status = "unassessed"
+
+    return {
+        "status": status,
+        "qualified": status == "qualified",
+        "matched": recognized - failed,
+        "total": len(details),
+        "details": details,
+    }
+
+
 def compute_priority_tier(match_score: int, bounds: Dict[str, int]) -> str:
     """Map a match_score to a priority band using the given bounds (see
     get_priority_tier_bounds). "unranked" covers interested students who
@@ -1332,15 +1433,17 @@ def get_shortlisted_profiles(
         if assessment_row is None:
             if priority_tiers and "unranked" not in priority_tiers:
                 continue
+            eligibility = evaluate_university_eligibility(profile_row_to_dict(student_row), university)
             shortlisted.append({
                 "student_id": str(student_row.uuid),
                 "assessment": {},
                 "match_score": None,
                 "priority_tier": "unranked",
                 "interested": True,
-                "qualified": False,
-                "qualification_status": "unassessed",
+                "qualified": eligibility["qualified"],
+                "qualification_status": eligibility["status"],
                 "qualification_threshold": qualification_threshold,
+                "eligibility": eligibility,
             })
             continue
 
@@ -1370,17 +1473,17 @@ def get_shortlisted_profiles(
         if priority_tiers and tier not in priority_tiers:
             continue
 
+        eligibility = evaluate_university_eligibility(profile_row_to_dict(student_row), university)
         shortlisted.append({
             "student_id": str(assessment_row.student.uuid),
             "assessment": assessment,
             "match_score": match_score,
             "priority_tier": tier,
             "interested": True,
-            "qualified": match_score >= qualification_threshold,
-            "qualification_status": (
-                "qualified" if match_score >= qualification_threshold else "not_qualified"
-            ),
+            "qualified": eligibility["qualified"],
+            "qualification_status": eligibility["status"],
             "qualification_threshold": qualification_threshold,
+            "eligibility": eligibility,
         })
 
     shortlisted.sort(
