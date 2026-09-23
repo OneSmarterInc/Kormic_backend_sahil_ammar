@@ -491,6 +491,8 @@ ETHEREAL_HOST = os.getenv("ETHEREAL_HOST", "smtp.ethereal.email")
 ETHEREAL_PORT = int(os.getenv("ETHEREAL_PORT", "587"))
 ETHEREAL_USE_TLS = os.getenv("ETHEREAL_USE_TLS", "true").lower() == "true"
 ETHEREAL_USE_SSL = os.getenv("ETHEREAL_USE_SSL", "false").lower() == "true"
+# Never let a broken SMTP endpoint keep an invite request hanging indefinitely.
+EMAIL_TIMEOUT = float(os.getenv("EMAIL_TIMEOUT", "15"))
 
 if EMAIL_MODE == "dev":
     EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
