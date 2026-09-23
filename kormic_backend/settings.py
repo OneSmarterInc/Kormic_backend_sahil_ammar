@@ -377,14 +377,18 @@ CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://localhost:6379/1")
 
 # Local development must work when Django/Vite are run directly on the host
-# without a Redis/Celery service. Celery's eager mode executes .delay() locally,
+# without a Redis/Celery service. Celery eager mode executes .delay() locally,
 # so institute invite requests do not hang trying to publish to an unavailable
 # Redis broker. Production keeps the real asynchronous worker path.
+#
+# Important: the final value is controlled here once only. The previous
+# duplicate assignment later in this file could override DEBUG=True and leave
+# local invite requests waiting on Redis.
 CELERY_TASK_ALWAYS_EAGER = os.getenv(
     "CELERY_TASK_ALWAYS_EAGER",
     "true" if DEBUG else "false",
 ).strip().lower() == "true"
-CELERY_TASK_EAGER_PROPAGATES = True
+CELERY_TASK_EAGER_PROPAGATES = False if DEBUG else True
 
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
@@ -408,20 +412,7 @@ CELERY_WORKER_POOL = os.environ.get(
     "CELERY_WORKER_POOL",
     "solo" if os.name == "nt" else "prefork",
 )
-# Run Celery tasks synchronously during local development so starting the
-# Django server does not also require Redis, a Celery worker, or Docker.
-# Production remains asynchronous unless explicitly overridden.
-# Discovery/scrape jobs are intentionally asynchronous even in local DEBUG,
-# because the UI polls their persisted job rows for progress and completion.
-# Running them eagerly inside the HTTP request can make the frontend appear
-# stuck and also prevents the dedicated Celery worker from exercising the
-# real production execution path.
-CELERY_TASK_ALWAYS_EAGER = TESTING or (
-    os.environ.get("CELERY_TASK_ALWAYS_EAGER", "false" if DEBUG else "false").lower() == "true"
-)
-CELERY_TASK_EAGER_PROPAGATES = TESTING
-
-# Proactive agent outreach (notifications.tasks.run_proactive_checkins_task):
+# CELERY_TASK_ALWAYS_EAGER is configured once above.\n\n# Proactive agent outreach (notifications.tasks.run_proactive_checkins_task):
 # once a day, the agent scans for students it hasn't nudged in
 # PROACTIVE_CHECKIN_COOLDOWN_DAYS and, if their profile has a genuine gap
 # worth mentioning, messages them on its own. Requires a `celery beat`
