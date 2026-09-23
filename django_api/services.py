@@ -1166,6 +1166,58 @@ def analyze_github(student_id: str) -> Dict[str, Any]:
     }
 
 
+CHAT_INTEREST_PATTERNS = (
+    r"\binterested\s+in\b",
+    r"\bwant\s+to\s+apply\b",
+    r"\bplan(?:ning)?\s+to\s+apply\b",
+    r"\bconsider(?:ing)?\b",
+    r"\bthinking\s+about\s+applying\b",
+    r"\bmy\s+(?:target|choice|top\s+choice)\s+is\b",
+    r"\b(?:i'?d|i\s+would)\s+(?:like|love)\s+to\s+apply\b",
+    r"\bapplying\s+to\b",
+    r"\b(?:favorite|favou?rite)\s+university\b",
+)
+
+
+def record_chat_university_interests(student_id: str, message: str) -> List[str]:
+    """Record explicit university interest from a student's chat message.
+    This happens before the LLM turn, so dashboard visibility does not
+    depend on the model choosing to call a university tool."""
+    text = re.sub(r"\s+", " ", str(message or "").strip().lower())
+    if not text or not any(re.search(pattern, text) for pattern in CHAT_INTEREST_PATTERNS):
+        return []
+
+    from django_api.models import UniversityInterestEvent
+    from pure_multi_agent.preprocessing import UNIVERSITY_ALIASES
+    from universities.models import University
+
+    profile = StudentProfile.objects.filter(uuid=student_id).first()
+    if profile is None:
+        return []
+
+    interested_ids: List[str] = []
+    for row in University.objects.values("uuid", "name"):
+        university_id = str(row["uuid"])
+        name = str(row["name"] or "").strip().lower()
+        aliases = {name}
+        for alias, canonical in UNIVERSITY_ALIASES.items():
+            if canonical.lower() in name:
+                aliases.add(alias.lower())
+
+        matched = any(
+            alias and re.search(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", text)
+            for alias in aliases
+        )
+        if matched:
+            UniversityInterestEvent.objects.get_or_create(
+                student=profile,
+                university_id=university_id,
+                source="searched",
+            )
+            interested_ids.append(university_id)
+
+    return interested_ids
+
 def record_university_interest(student_id: str, university_id: str, source: str) -> None:
 
     from django_api.models import UniversityInterestEvent
