@@ -152,6 +152,12 @@ def send_invite_email_task(self, listed_student_id: int) -> None:
             invite_delivery_status="failed",
             invite_delivery_error=error_text,
         )
+        # In local eager mode there is no worker to perform a delayed retry.
+        # Retrying here would keep the HTTP request blocked while repeatedly
+        # attempting the same broken SMTP connection. Production workers keep
+        # the normal Celery retry behavior.
+        if settings.CELERY_TASK_ALWAYS_EAGER:
+            return
         raise self.retry(exc=exc)
 
     ListedStudent.objects.filter(id=listed_student_id).update(
