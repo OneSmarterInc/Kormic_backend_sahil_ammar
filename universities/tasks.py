@@ -37,6 +37,12 @@ def run_scrape_now_job(self, job_id: int) -> None:
         logger.warning("run_scrape_now_job: ScrapeJob %s no longer exists.", job_id)
         return
 
+    # A stale queued message may arrive after the API has reaped its
+    # database row. Only a genuinely queued job may transition to running.
+    if job.status != ScrapeJob.Status.QUEUED:
+        logger.info("Ignoring stale scrape task for job %s in status %s", job_id, job.status)
+        return
+
     job.status = ScrapeJob.Status.RUNNING
     job.started_at = timezone.now()
     job.save(update_fields=["status", "started_at"])
