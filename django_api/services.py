@@ -1294,14 +1294,15 @@ def get_shortlisted_profiles(
     from universities.models import University
 
     bounds = get_priority_tier_bounds(university_id)
+    university = University.objects.filter(uuid=university_id).first()
+    qualification_threshold = university.min_fit_score_threshold if university else 40
 
     if min_score is None:
         if priority_tiers:
             tier_floor = {**bounds, "unranked": 0}
             min_score = min(tier_floor.get(tier, 0) for tier in priority_tiers)
         else:
-            university = University.objects.filter(uuid=university_id).first()
-            min_score = university.min_fit_score_threshold if university else 40
+            min_score = qualification_threshold
 
     interested_student_pks = (
         UniversityInterestEvent.objects.filter(university_id=university_id)
@@ -1337,6 +1338,9 @@ def get_shortlisted_profiles(
                 "match_score": None,
                 "priority_tier": "unranked",
                 "interested": True,
+                "qualified": False,
+                "qualification_status": "unassessed",
+                "qualification_threshold": qualification_threshold,
             })
             continue
 
@@ -1372,6 +1376,11 @@ def get_shortlisted_profiles(
             "match_score": match_score,
             "priority_tier": tier,
             "interested": True,
+            "qualified": match_score >= qualification_threshold,
+            "qualification_status": (
+                "qualified" if match_score >= qualification_threshold else "not_qualified"
+            ),
+            "qualification_threshold": qualification_threshold,
         })
 
     shortlisted.sort(
