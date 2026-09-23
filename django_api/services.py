@@ -1313,7 +1313,7 @@ def evaluate_university_eligibility(profile: Dict[str, Any], university: Any) ->
             field = "gre_total"
 
         if field:
-            numbers = [float(n) for n in re.findall(r"(?<![a-z])\\d+(?:\\.\\d+)?", text)]
+            numbers = [float(n) for n in re.findall(r"(?<![a-z])\d+(?:\.\d+)?", text)]
             if numbers:
                 required = numbers[0]
                 actual = _eligibility_number(facts.get(field))
