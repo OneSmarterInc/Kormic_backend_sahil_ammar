@@ -178,6 +178,57 @@ class OwnershipTests(TestCase):
         self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
 
 
+class UniversityInterestTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        _reset_inprocess_agent_caches()
+        self.student, self.student_id = make_student_client(email="interest@example.com")
+        self.student.post("/api/profile/", {"name": "Interested Student"}, format="json")
+        self.officer, self.university_id = make_university_client(
+            email="interest-officer@example.com",
+            university_id="wright_state_cs",
+        )
+
+    def test_explicit_chat_interest_creates_university_interest_event(self):
+        from django_api.models import UniversityInterestEvent
+
+        from django_api.services import record_chat_university_interests
+        matched = record_chat_university_interests(
+            self.student_id,
+            "I am interested in Wright State and want to apply there.",
+        )
+
+        self.assertIn(self.university_id, matched)
+        self.assertTrue(
+            UniversityInterestEvent.objects.filter(
+                student__uuid=self.student_id,
+                university_id=self.university_id,
+            ).exists()
+        )
+
+    def test_interested_student_is_visible_without_fit_assessment(self):
+        from django_api.models import UniversityInterestEvent
+        from django_api.services import get_shortlisted_profiles
+
+        UniversityInterestEvent.objects.create(
+            student_id=None,
+        ) if False else None
+        record_chat_university_interests = __import__(
+            "django_api.services", fromlist=["record_chat_university_interests"]
+        ).record_chat_university_interests
+        record_chat_university_interests(
+            self.student_id,
+            "I am interested in Wright State and want to apply there.",
+        )
+
+        rows = get_shortlisted_profiles(self.university_id)
+        matching = [row for row in rows if row["student_id"] == self.student_id]
+
+        self.assertEqual(len(matching), 1)
+        self.assertIsNone(matching[0]["match_score"])
+        self.assertEqual(matching[0]["priority_tier"], "unranked")
+
+
 class ChatHistoryTests(TestCase):
     def setUp(self):
         cache.clear()
