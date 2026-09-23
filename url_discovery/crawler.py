@@ -325,6 +325,12 @@ class DirectUniversityCrawler:
         self.user_agent = "Mozilla/5.0 (compatible; KormicUniversityURLDiscovery/1.0; +educational-indexer)"
 
     def run(self) -> None:
+        # The officer may have cancelled the job while it was still queued.
+        # Do not transition a terminal stopped job back to running when the
+        # Celery worker eventually picks up the queued message.
+        if self._job_status() in {"stop_requested", "stopped"}:
+            self._finish("stopped")
+            return
         self._mark_running()
         try:
             self._seed()
