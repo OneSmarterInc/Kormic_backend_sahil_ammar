@@ -1747,6 +1747,7 @@ class UniversityProfilesListView(APIView):
                 "qualified": entry.get("qualified", False),
                 "qualification_status": entry.get("qualification_status", "unassessed"),
                 "qualification_threshold": entry.get("qualification_threshold"),
+                "eligibility": entry.get("eligibility"),
                 "fit_summary": assessment.get("fit_summary", data.get("summary", "")),
                 "recommendation": assessment.get("recommendation", "review"),
             }
