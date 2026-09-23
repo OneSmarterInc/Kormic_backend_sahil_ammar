@@ -172,13 +172,38 @@ def sync_profile_facts_to_kb(university: University) -> None:
 
 from universities.models import ScrapeJob
 from universities.tasks import run_scrape_now_job
-def start_scrape_job(university: University) -> "ScrapeJob":
-    """Queue a Celery run of scrape_now() for this university instead of
-    running it in the request. Raises ValueError if a run is already in
-    progress, mirroring start_discovery's guard against duplicate jobs."""
+SCRAPE_QUEUED_STALE_SECONDS = 60
+SCRAPE_RUNNING_STALE_MINUTES = 20
 
+
+def _reap_stale_scrape_job(job: "ScrapeJob") -> bool:
+    now = timezone.now()
+    if job.status == ScrapeJob.Status.QUEUED:
+        if (now - job.created_at).total_seconds() < SCRAPE_QUEUED_STALE_SECONDS:
+            return False
+        message = (
+            f"Automatically marked failed: queued for over {SCRAPE_QUEUED_STALE_SECONDS} seconds "
+            "without reaching a worker. Restart the Celery worker and try again."
+        )
+    else:
+        if not job.started_at or now - job.started_at < timedelta(minutes=SCRAPE_RUNNING_STALE_MINUTES):
+            return False
+        message = (
+            f"Automatically marked failed: running for over {SCRAPE_RUNNING_STALE_MINUTES} minutes "
+            "without completing."
+        )
+    job.status = ScrapeJob.Status.FAILED
+    job.error_message = message
+    job.completed_at = now
+    job.save(update_fields=["status", "error_message", "completed_at"])
+    return True
+
+
+def start_scrape_job(university: University) -> "ScrapeJob":
+    """Queue scrape_now() and recover stale jobs so one lost Celery message
+    cannot permanently block the university's knowledge refresh button."""
     active = university.scrape_jobs.filter(status__in=ScrapeJob.ACTIVE_STATUSES).first()
-    if active:
+    if active and not _reap_stale_scrape_job(active):
         raise ValueError(f"A scrape is already in progress for this university (job {active.id}).")
 
     job = ScrapeJob.objects.create(university=university)
