@@ -5,6 +5,7 @@ from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
 from django.utils import timezone
+from celery import current_app
 
 from personas.university_persona_builder import build_constitution
 from institutes.country_codes import normalize_country_code
@@ -213,8 +214,6 @@ def start_scrape_job(university: University) -> "ScrapeJob":
     # Scraping is a background operation. Use send_task so a global Celery
     # task_always_eager setting can never turn this HTTP endpoint into a
     # blocking scrape request.
-    from celery import current_app
-
     try:
         current_app.send_task("universities.tasks.run_scrape_now_job", args=[job.id], retry=False)
     except Exception as exc:  # noqa: BLE001
