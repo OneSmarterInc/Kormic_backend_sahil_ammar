@@ -266,25 +266,8 @@ class TOTPEnrollView(APIView):
             )
         )
 
-        return Response(
-            {"secret": device.secret, "provisioning_uri": build_provisioning_uri(device.secret, user.email)},
-            status=status.HTTP_200_OK,
-        )
-
-
-class TOTPQRCodeView(APIView):
-    """Return the enrollment provisioning URI as a QR PNG for the shared login page."""
-
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        provisioning_uri = request.query_params.get("data", "").strip()
-        if not provisioning_uri or len(provisioning_uri) > 2048 or not provisioning_uri.startswith("otpauth://totp/"):
-            return Response({"detail": "A valid TOTP provisioning URI is required."}, status=status.HTTP_400_BAD_REQUEST)
-
+        provisioning_uri = build_provisioning_uri(device.secret, user.email)
         image = qrcode.make(provisioning_uri, box_size=8, border=4).convert("RGB")
-        # Keep the center mark small and surrounded by a white quiet zone so
-        # standard authenticator apps can still decode the QR reliably.
         draw = ImageDraw.Draw(image)
         center_x = image.width // 2
         center_y = image.height // 2
@@ -305,15 +288,16 @@ class TOTPQRCodeView(APIView):
         font = ImageFont.load_default()
         bbox = draw.textbbox((0, 0), "K", font=font)
         text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        draw.text(
-            (center_x - text_w / 2, center_y - text_h / 2 - 1),
-            "K",
-            fill="white",
-            font=font,
-        )
+        draw.text((center_x - text_w / 2, center_y - text_h / 2 - 1), "K", fill="white", font=font)
         output = BytesIO()
         image.save(output, format="PNG")
-        return HttpResponse(output.getvalue(), content_type="image/png", headers={"Cache-Control": "no-store"})
+        import base64
+        qr_data = "data:image/png;base64," + base64.b64encode(output.getvalue()).decode("ascii")
+
+        return Response(
+            {"secret": device.secret, "provisioning_uri": provisioning_uri, "qr_code": qr_data},
+            status=status.HTTP_200_OK,
+        )
 
 
 class TOTPVerifyEnrollmentView(APIView):
