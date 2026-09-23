@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 
 from django.contrib.auth import authenticate
+from io import BytesIO
+import qrcode
 from django.contrib.auth.models import User
 from django.db import transaction
 from django.http import HttpResponse, HttpResponseRedirect
@@ -267,6 +269,22 @@ class TOTPEnrollView(APIView):
             {"secret": device.secret, "provisioning_uri": build_provisioning_uri(device.secret, user.email)},
             status=status.HTTP_200_OK,
         )
+
+
+class TOTPQRCodeView(APIView):
+    """Return the enrollment provisioning URI as a QR PNG for the shared login page."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        provisioning_uri = request.query_params.get("data", "").strip()
+        if not provisioning_uri or len(provisioning_uri) > 2048 or not provisioning_uri.startswith("otpauth://totp/"):
+            return Response({"detail": "A valid TOTP provisioning URI is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        image = qrcode.make(provisioning_uri, box_size=8, border=4)
+        output = BytesIO()
+        image.save(output, format="PNG")
+        return HttpResponse(output.getvalue(), content_type="image/png", headers={"Cache-Control": "no-store"})
 
 
 class TOTPVerifyEnrollmentView(APIView):
