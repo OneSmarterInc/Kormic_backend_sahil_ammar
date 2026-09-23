@@ -210,7 +210,25 @@ def start_scrape_job(university: University) -> "ScrapeJob":
         raise ValueError(f"A scrape is already in progress for this university (job {active.id}).")
 
     job = ScrapeJob.objects.create(university=university)
-    run_scrape_now_job.delay(job.id)
+
+    # Scraping is a background operation. Use send_task so a global Celery
+    # task_always_eager setting can never turn this HTTP endpoint into a
+    # blocking scrape request.
+    from celery import current_app
+
+    try:
+        current_app.send_task("universities.tasks.run_scrape_now_job", args=[job.id], retry=False)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Could not enqueue scrape job %s", job.id)
+        job.status = ScrapeJob.Status.FAILED
+        job.error_message = (
+            "Could not enqueue the scrape on the Celery worker. "
+            "Make sure Redis and the Celery worker are running, then try again."
+        )
+        job.completed_at = timezone.now()
+        job.save(update_fields=["status", "error_message", "completed_at"])
+        raise ValueError(job.error_message) from exc
+
     return job
 
 
