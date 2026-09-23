@@ -1720,7 +1720,7 @@ class UniversityProfilesListView(APIView):
 
             row_uuid = str(row.uuid)
             data = profile_row_to_dict(row)
-            assessment = entry["assessment"]
+            assessment = entry.get("assessment") or {}
             account = accounts_by_uuid.get(row_uuid)
 
             profile = {
