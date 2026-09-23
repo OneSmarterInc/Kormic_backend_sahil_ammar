@@ -282,6 +282,12 @@ class AutoDiscoverJobDetailAPIView(APIView):
 
         from url_discovery import services as discovery_services
 
+        # Older versions left jobs in stop_requested. Treat that state as
+        # terminal even from the detail/polling endpoint, not only from the
+        # latest-job endpoint, so an already-open browser cannot remain stuck.
+        if job.status == "stop_requested":
+            job = discovery_services.request_stop(job)
+
         return Response(discovery_services.serialize_job(job))
 
 
