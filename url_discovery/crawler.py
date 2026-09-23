@@ -328,8 +328,14 @@ class DirectUniversityCrawler:
         # The officer may have cancelled the job while it was still queued.
         # Do not transition a terminal stopped job back to running when the
         # Celery worker eventually picks up the queued message.
-        if self._job_status() in {"stop_requested", "stopped"}:
+        initial_status = self._job_status()
+        if initial_status in {"stop_requested", "stopped"}:
             self._finish("stopped")
+            return
+        if initial_status != "queued":
+            # The service layer may have reaped a stale queued task while its
+            # Celery message was still sitting in Redis. Never resurrect a
+            # terminal job when that old message is eventually delivered.
             return
         self._mark_running()
         try:
