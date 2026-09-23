@@ -121,20 +121,14 @@ def request_stop(job: DiscoveryJob) -> DiscoveryJob:
     if job.status not in DiscoveryJob.ACTIVE_STATUSES:
         raise ValueError(f"Cannot stop a job with status '{job.status}'.")
 
-    # A queued task may not have started yet. Mark it terminal immediately so
-    # the UI never gets stuck on "Stopping..." waiting for a worker that may
-    # be busy with another task. The crawler also checks the status before it
-    # starts, so a late-arriving worker will not resurrect the cancelled job.
-    if job.status == DiscoveryJob.Status.QUEUED:
-        job.status = DiscoveryJob.Status.STOPPED
-        job.completed_at = timezone.now()
-        job.save(update_fields=["status", "completed_at", "updated_at"])
-        return job
-
-    job.status = DiscoveryJob.Status.STOP_REQUESTED
-    job.save(update_fields=["status", "updated_at"])
+    # Stopping is a terminal user action. Mark the DB row stopped immediately
+    # so the dashboard never remains on "Stopping..." indefinitely. A worker
+    # that is currently inside a page fetch will see this status on its next
+    # loop/check and exit cleanly; a queued task will also refuse to restart.
+    job.status = DiscoveryJob.Status.STOPPED
+    job.completed_at = timezone.now()
+    job.save(update_fields=["status", "completed_at", "updated_at"])
     return job
-
 
 def recommended_urls(job: DiscoveryJob, mode: str = "student_essential", limit: Optional[int] = None) -> List[DiscoveredUrl]:
     """Rank this job's crawled pages into a curated candidate list.
