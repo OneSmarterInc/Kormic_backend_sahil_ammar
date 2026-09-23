@@ -18,6 +18,15 @@ MODEL_NAME = "claude-haiku-4-5-20251001"
 _model = None
 
 
+def _model_env_status() -> str:
+    key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    if not key:
+        return "missing"
+    if key.startswith("your_") or key.startswith("sk-ant-api03-your"):
+        return "placeholder"
+    return "configured"
+
+
 # Every turn can chain up to `recursion_limit` (see runtime.run_turn) model
 # calls in a tool loop. With no timeout, a single hung upstream call ties up
 # a Django worker indefinitely -- on the highest-traffic endpoint in the
@@ -31,6 +40,12 @@ CHAT_MODEL_TIMEOUT_SECONDS = 120.0
 def _get_model() -> ChatAnthropic:
     global _model
     if _model is None:
+        status = _model_env_status()
+        if status != "configured":
+            raise RuntimeError(
+                "Student chat AI is not configured on the backend "
+                f"(ANTHROPIC_API_KEY: {status})."
+            )
         _model = ChatAnthropic(
             model=MODEL_NAME,
             max_tokens=1200,
