@@ -604,11 +604,25 @@ def send_invite(request, list_id, student_id):
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
 
+    # In local eager mode the task may already have finished (or failed)
+    # before .delay() returns. Reload the row so the API does not report
+    # "queued" after an actual SMTP failure/success.
+    row.refresh_from_db(
+        fields=[
+            "invited_at",
+            "invite_delivery_status",
+            "invite_delivery_error",
+            "invite_delivered_at",
+        ]
+    )
+
     return Response({
         "list_id": lst.id,
         "student_id": row.id,
         "invited_at": row.invited_at,
         "invite_delivery_status": row.invite_delivery_status,
+        "invite_delivery_error": row.invite_delivery_error,
+        "invite_delivered_at": row.invite_delivered_at,
     })
 
 
