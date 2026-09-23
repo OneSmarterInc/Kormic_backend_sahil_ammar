@@ -907,8 +907,13 @@ class DirectUniversityCrawler:
             record.is_discovery_only = False
         record.save()
 
+        # QuerySet.update() bypasses Django's auto_now handling, so update
+        # updated_at explicitly. The service layer uses this field as the
+        # discovery heartbeat when deciding whether a running worker died.
         DiscoveryJob.objects.filter(id=self.job_id).update(
-            pages_crawled=F("pages_crawled") + 1, current_url=final_url
+            pages_crawled=F("pages_crawled") + 1,
+            current_url=final_url,
+            updated_at=utcnow(),
         )
         self._refresh_counts()
 
@@ -922,7 +927,11 @@ class DirectUniversityCrawler:
             if excluded and record.decision_status == "pending":
                 record.decision_status = "review"
             record.save()
-        DiscoveryJob.objects.filter(id=self.job_id).update(failed_count=F("failed_count") + 1, current_url=url)
+        DiscoveryJob.objects.filter(id=self.job_id).update(
+            failed_count=F("failed_count") + 1,
+            current_url=url,
+            updated_at=utcnow(),
+        )
         self._refresh_counts()
 
     def _refresh_counts(self) -> None:
@@ -936,6 +945,7 @@ class DirectUniversityCrawler:
             relevant_count=int(counts.get("relevant", 0)),
             review_count=int(counts.get("review", 0) + counts.get("pending", 0)),
             excluded_count=int(counts.get("excluded", 0)),
+            updated_at=utcnow(),
         )
 
     def _mark_running(self) -> None:
