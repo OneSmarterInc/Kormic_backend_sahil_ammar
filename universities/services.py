@@ -174,7 +174,6 @@ def sync_profile_facts_to_kb(university: University) -> None:
         )
 
 from universities.models import ScrapeJob
-from universities.tasks import run_scrape_now_job
 SCRAPE_QUEUED_STALE_SECONDS = 60
 SCRAPE_RUNNING_STALE_MINUTES = 20
 
