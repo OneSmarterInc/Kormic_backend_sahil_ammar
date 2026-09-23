@@ -1283,18 +1283,12 @@ def get_shortlisted_profiles(
     priority_tiers: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Students who (a) have shown interest in this university (an
-    UniversityInterestEvent row -- searched it or ran a fit check) and
-    (b) whose latest FitAssessment.match_score meets min_score. min_score
-    defaults to the university's configured min_fit_score_threshold, unless
-    priority_tiers is given without an explicit min_score -- then it defaults
-    to the lowest bound among the requested tiers, so e.g. filtering to
-    priority_tiers=["low"] isn't silently blocked by a stricter default gate.
-    Each result carries a "priority_tier" (high/medium/low/unranked, see
-    compute_priority_tier) so callers can group/filter without recomputing
-    bounds themselves. Sorted by match_score descending. Backs
-    UniversityProfilesListView -- the officer-facing dashboard only ever sees
-    this shortlist, never every StudentProfile row.
+    Return students who have explicitly engaged with this university.
+
+    Interest is the primary visibility rule. A fit assessment is optional:
+    students who have expressed interest but do not have a fit score yet are
+    returned as unassessed/unranked so the university can see the lead and
+    evaluate it later.
     """
     from django_api.models import FitAssessment, UniversityInterestEvent
     from universities.models import University
@@ -1311,7 +1305,6 @@ def get_shortlisted_profiles(
 
     interested_student_pks = (
         UniversityInterestEvent.objects.filter(university_id=university_id)
-
         .order_by()
         .values_list("student_id", flat=True)
         .distinct()
@@ -1325,12 +1318,36 @@ def get_shortlisted_profiles(
             .order_by("-created_at")
             .first()
         )
+
         if assessment_row is None:
+            if priority_tiers and "unranked" not in priority_tiers:
+                continue
+            shortlisted.append({
+                "student_id": str(StudentProfile.objects.get(pk=student_pk).uuid),
+                "assessment": {},
+                "match_score": None,
+                "priority_tier": "unranked",
+                "interested": True,
+            })
             continue
 
+        assessment = assessment_row.assessment or {}
         try:
-            match_score = int(assessment_row.assessment.get("match_score"))
+            match_score = int(assessment.get("match_score"))
         except (TypeError, ValueError):
+            match_score = None
+
+        # Explicit score filters apply only to students who have a score.
+        if match_score is None:
+            if priority_tiers and "unranked" not in priority_tiers:
+                continue
+            shortlisted.append({
+                "student_id": str(assessment_row.student.uuid),
+                "assessment": assessment,
+                "match_score": None,
+                "priority_tier": "unranked",
+                "interested": True,
+            })
             continue
 
         if match_score < min_score:
@@ -1342,14 +1359,17 @@ def get_shortlisted_profiles(
 
         shortlisted.append({
             "student_id": str(assessment_row.student.uuid),
-            "assessment": assessment_row.assessment,
+            "assessment": assessment,
             "match_score": match_score,
             "priority_tier": tier,
+            "interested": True,
         })
 
-    shortlisted.sort(key=lambda item: item["match_score"], reverse=True)
+    shortlisted.sort(
+        key=lambda item: (item["match_score"] is not None, item["match_score"] or -1),
+        reverse=True,
+    )
     return shortlisted
-
 
 def get_priority_tier_counts(university_id: str) -> Dict[str, int]:
     """Tally of every interested-and-scored student for this university by
