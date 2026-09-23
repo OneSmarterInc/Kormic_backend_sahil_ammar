@@ -35,6 +35,7 @@ STUDENT_ESSENTIAL_FLOOR = 30
 # terminates the task without letting it reach a terminal status) instead of
 # blocking every future discovery attempt forever.
 STALE_ACTIVE_JOB_MINUTES = 10
+STALE_QUEUED_JOB_SECONDS = 60
 
 
 def _canonical_base_url(raw_url: str) -> str:
@@ -46,17 +47,28 @@ def _canonical_base_url(raw_url: str) -> str:
 
 
 def _reap_if_stale(job: DiscoveryJob) -> bool:
-    """Mark a stuck active job as failed if it's gone quiet too long. Returns
-    True if it was reaped (caller is then free to start a new job)."""
-    cutoff = timezone.now() - timedelta(minutes=STALE_ACTIVE_JOB_MINUTES)
-    if job.updated_at >= cutoff:
-        return False
-    job.status = "failed"
-    job.error_message = (
-        f"Automatically marked failed: no progress for over {STALE_ACTIVE_JOB_MINUTES} minutes "
-        "(the worker process likely died or was restarted mid-crawl)."
-    )
-    job.completed_at = timezone.now()
+    """Recover jobs that cannot make progress because their Celery message
+    was never consumed or their worker died. Queued jobs get a short timeout;
+    running jobs get the longer crawl timeout."""
+    now = timezone.now()
+    if job.status == DiscoveryJob.Status.QUEUED:
+        if (now - job.created_at).total_seconds() < STALE_QUEUED_JOB_SECONDS:
+            return False
+        reason = (
+            f"Automatically marked failed: queued for over {STALE_QUEUED_JOB_SECONDS} seconds "
+            "without reaching a worker. Restart the Celery worker and try again."
+        )
+    else:
+        cutoff = now - timedelta(minutes=STALE_ACTIVE_JOB_MINUTES)
+        if job.updated_at >= cutoff:
+            return False
+        reason = (
+            f"Automatically marked failed: no progress for over {STALE_ACTIVE_JOB_MINUTES} minutes "
+            "(the worker process likely died or was restarted mid-crawl)."
+        )
+    job.status = DiscoveryJob.Status.FAILED
+    job.error_message = reason
+    job.completed_at = now
     job.save(update_fields=["status", "error_message", "completed_at", "updated_at"])
     return True
 
