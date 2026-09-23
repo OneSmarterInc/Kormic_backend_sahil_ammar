@@ -375,6 +375,17 @@ else:
 
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://localhost:6379/1")
+
+# Local development must work when Django/Vite are run directly on the host
+# without a Redis/Celery service. Celery's eager mode executes .delay() locally,
+# so institute invite requests do not hang trying to publish to an unavailable
+# Redis broker. Production keeps the real asynchronous worker path.
+CELERY_TASK_ALWAYS_EAGER = os.getenv(
+    "CELERY_TASK_ALWAYS_EAGER",
+    "true" if DEBUG else "false",
+).strip().lower() == "true"
+CELERY_TASK_EAGER_PROPAGATES = True
+
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
