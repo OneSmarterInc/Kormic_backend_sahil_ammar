@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from datetime import timedelta
 from typing import Any, Dict, List, Optional
+import threading
 
+from django.conf import settings
 from django.utils import timezone
 from celery import current_app
 
@@ -202,6 +204,28 @@ def _reap_stale_scrape_job(job: "ScrapeJob") -> bool:
     return True
 
 
+def _run_scrape_job_in_local_thread(job_id: int) -> None:
+    """Execute one scrape job in a background thread for direct local Django runs.
+
+    Local development intentionally does not require Redis/Celery. The scraper
+    is still kept off the HTTP request because network + LLM extraction can
+    take minutes. Production continues to use the real Celery broker/worker.
+    """
+    from universities.tasks import run_scrape_now_job
+
+    def runner() -> None:
+        try:
+            run_scrape_now_job.apply(args=[job_id])
+        except Exception:
+            logger.exception("Local background scrape job %s crashed", job_id)
+
+    threading.Thread(
+        target=runner,
+        name=f"kormic-scrape-{job_id}",
+        daemon=True,
+    ).start()
+
+
 def start_scrape_job(university: University) -> "ScrapeJob":
     """Queue scrape_now() and recover stale jobs so one lost Celery message
     cannot permanently block the university's knowledge refresh button."""
@@ -211,11 +235,14 @@ def start_scrape_job(university: University) -> "ScrapeJob":
 
     job = ScrapeJob.objects.create(university=university)
 
-    # Scraping is a background operation. Use send_task so a global Celery
-    # task_always_eager setting can never turn this HTTP endpoint into a
-    # blocking scrape request.
+    # Scraping must never block the HTTP request. In direct local
+    # development, run the Celery task body in a daemon thread so Redis is
+    # optional; Docker/production keeps the real broker-backed task queue.
     try:
-        current_app.send_task("universities.tasks.run_scrape_now_job", args=[job.id], retry=False)
+        if settings.DEBUG and not getattr(settings, "TESTING", False):
+            _run_scrape_job_in_local_thread(job.id)
+        else:
+            current_app.send_task("universities.tasks.run_scrape_now_job", args=[job.id], retry=False)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Could not enqueue scrape job %s", job.id)
         job.status = ScrapeJob.Status.FAILED
