@@ -255,6 +255,20 @@ class AutoDiscoverUrlsAPIView(APIView):
         job = university.discovery_jobs.first()
         if job is None:
             return _error("No discovery job has been run yet.", status.HTTP_404_NOT_FOUND)
+
+        # Keep the status endpoint self-healing. A queued job whose Celery
+        # message was never consumed, or a running job whose worker died,
+        # should not remain stuck forever just because the browser only polls
+        # this endpoint. Use the same stale-job recovery as start_discovery().
+        if job.status in discovery_services.DiscoveryJob.ACTIVE_STATUSES:
+            if discovery_services._reap_if_stale(job):
+                job.refresh_from_db()
+
+        # Recover legacy jobs left in stop_requested by an older worker/UI
+        # version. Stopping is terminal, so the dashboard must not remain
+        # stuck on that state after a reload.
+        if job.status == "stop_requested":
+            job = discovery_services.request_stop(job)
         return Response(discovery_services.serialize_job(job))
 
 
@@ -276,6 +290,18 @@ class AutoDiscoverJobDetailAPIView(APIView):
             return _error("Discovery job not found.", status.HTTP_404_NOT_FOUND)
 
         from url_discovery import services as discovery_services
+
+        # Recover the same stale queued/running states during polling. This
+        # prevents an open browser from waiting forever on a dead worker.
+        if job.status in discovery_services.DiscoveryJob.ACTIVE_STATUSES:
+            if discovery_services._reap_if_stale(job):
+                job.refresh_from_db()
+
+        # Older versions left jobs in stop_requested. Treat that state as
+        # terminal even from the detail/polling endpoint, not only from the
+        # latest-job endpoint, so an already-open browser cannot remain stuck.
+        if job.status == "stop_requested":
+            job = discovery_services.request_stop(job)
 
         return Response(discovery_services.serialize_job(job))
 
@@ -523,6 +549,14 @@ class ScrapeNowAPIView(APIView):
         job = university.scrape_jobs.first()
         if job is None:
             return _error("No scrape job has been run yet.", status.HTTP_404_NOT_FOUND)
+
+        # A queued/running job must not leave the UI saying "Scraping..."
+        # forever if the worker died or the queued message was never consumed.
+        # Reuse the same recovery rules as the POST guard.
+        if job.status in services.ScrapeJob.ACTIVE_STATUSES:
+            if services._reap_stale_scrape_job(job):
+                job.refresh_from_db()
+
         return Response(services.serialize_scrape_job(job))
 
 
@@ -542,6 +576,11 @@ class ScrapeNowJobDetailAPIView(APIView):
         job = university.scrape_jobs.filter(id=job_id).first()
         if job is None:
             return _error("Scrape job not found.", status.HTTP_404_NOT_FOUND)
+
+        if job.status in services.ScrapeJob.ACTIVE_STATUSES:
+            if services._reap_stale_scrape_job(job):
+                job.refresh_from_db()
+
         return Response(services.serialize_scrape_job(job))
 
 

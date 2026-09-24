@@ -417,6 +417,9 @@ def list_students(request, list_id):
             "status": row.status,
             "invited_at": row.invited_at,
             "claimed_at": row.claimed_at,
+            "invite_delivery_status": row.invite_delivery_status,
+            "invite_delivery_error": row.invite_delivery_error,
+            "invite_delivered_at": row.invite_delivered_at,
         }
         for row in lst.students.all()
     ]
@@ -510,12 +513,32 @@ def send_invites(request, list_id):
         rows = rows.filter(invited_at__isnull=True)
 
     row_ids = list(rows.values_list("id", flat=True))
-    ListedStudent.objects.filter(id__in=row_ids).update(invited_at=timezone.now())
+    now = timezone.now()
+    ListedStudent.objects.filter(id__in=row_ids).update(
+        invited_at=now,
+        invite_delivery_status="queued",
+        invite_delivery_error="",
+        invite_delivered_at=None,
+    )
 
+    queued = 0
+    failed_to_queue = 0
     for row_id in row_ids:
-        send_invite_email_task.delay(row_id)
+        try:
+            send_invite_email_task.delay(row_id)
+            queued += 1
+        except Exception as exc:
+            failed_to_queue += 1
+            ListedStudent.objects.filter(id=row_id).update(
+                invite_delivery_status="failed",
+                invite_delivery_error=str(exc)[:500],
+            )
 
-    return Response({"list_id": lst.id, "invites_sent": len(row_ids)})
+    return Response({
+        "list_id": lst.id,
+        "invites_queued": queued,
+        "invites_failed_to_queue": failed_to_queue,
+    })
 
 
 @api_view(["POST"])
@@ -557,11 +580,50 @@ def send_invite(request, list_id, student_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    row.invited_at = timezone.now()
-    row.save(update_fields=["invited_at"])
-    send_invite_email_task.delay(row.id)
+    now = timezone.now()
+    row.invited_at = now
+    row.invite_delivery_status = "queued"
+    row.invite_delivery_error = ""
+    row.invite_delivered_at = None
+    row.save(
+        update_fields=[
+            "invited_at",
+            "invite_delivery_status",
+            "invite_delivery_error",
+            "invite_delivered_at",
+        ]
+    )
+    try:
+        send_invite_email_task.delay(row.id)
+    except Exception as exc:
+        row.invite_delivery_status = "failed"
+        row.invite_delivery_error = str(exc)[:500]
+        row.save(update_fields=["invite_delivery_status", "invite_delivery_error"])
+        return Response(
+            {"error": "invite could not be queued", "detail": str(exc)[:500]},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
 
-    return Response({"list_id": lst.id, "student_id": row.id, "invited_at": row.invited_at})
+    # In local eager mode the task may already have finished (or failed)
+    # before .delay() returns. Reload the row so the API does not report
+    # "queued" after an actual SMTP failure/success.
+    row.refresh_from_db(
+        fields=[
+            "invited_at",
+            "invite_delivery_status",
+            "invite_delivery_error",
+            "invite_delivered_at",
+        ]
+    )
+
+    return Response({
+        "list_id": lst.id,
+        "student_id": row.id,
+        "invited_at": row.invited_at,
+        "invite_delivery_status": row.invite_delivery_status,
+        "invite_delivery_error": row.invite_delivery_error,
+        "invite_delivered_at": row.invite_delivered_at,
+    })
 
 
 # ---------------------------------------------------------------------------

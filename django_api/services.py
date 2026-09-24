@@ -1166,6 +1166,58 @@ def analyze_github(student_id: str) -> Dict[str, Any]:
     }
 
 
+CHAT_INTEREST_PATTERNS = (
+    r"\binterested\s+in\b",
+    r"\bwant\s+to\s+apply\b",
+    r"\bplan(?:ning)?\s+to\s+apply\b",
+    r"\bconsider(?:ing)?\b",
+    r"\bthinking\s+about\s+applying\b",
+    r"\bmy\s+(?:target|choice|top\s+choice)\s+is\b",
+    r"\b(?:i'?d|i\s+would)\s+(?:like|love)\s+to\s+apply\b",
+    r"\bapplying\s+to\b",
+    r"\b(?:favorite|favou?rite)\s+university\b",
+)
+
+
+def record_chat_university_interests(student_id: str, message: str) -> List[str]:
+    """Record explicit university interest from a student's chat message.
+    This happens before the LLM turn, so dashboard visibility does not
+    depend on the model choosing to call a university tool."""
+    text = re.sub(r"\s+", " ", str(message or "").strip().lower())
+    if not text or not any(re.search(pattern, text) for pattern in CHAT_INTEREST_PATTERNS):
+        return []
+
+    from django_api.models import UniversityInterestEvent
+    from pure_multi_agent.preprocessing import UNIVERSITY_ALIASES
+    from universities.models import University
+
+    profile = StudentProfile.objects.filter(uuid=student_id).first()
+    if profile is None:
+        return []
+
+    interested_ids: List[str] = []
+    for row in University.objects.values("uuid", "name"):
+        university_id = str(row["uuid"])
+        name = str(row["name"] or "").strip().lower()
+        aliases = {name}
+        for alias, canonical in UNIVERSITY_ALIASES.items():
+            if canonical.lower() in name:
+                aliases.add(alias.lower())
+
+        matched = any(
+            alias and re.search(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", text)
+            for alias in aliases
+        )
+        if matched:
+            UniversityInterestEvent.objects.get_or_create(
+                student=profile,
+                university_id=university_id,
+                source="searched",
+            )
+            interested_ids.append(university_id)
+
+    return interested_ids
+
 def record_university_interest(student_id: str, university_id: str, source: str) -> None:
 
     from django_api.models import UniversityInterestEvent
@@ -1212,6 +1264,107 @@ def get_priority_tier_bounds(university_id: str) -> Dict[str, int]:
     return {**DEFAULT_PRIORITY_TIER_BOUNDS, **configured}
 
 
+def _eligibility_number(value: Any) -> Optional[float]:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def evaluate_university_eligibility(profile: Dict[str, Any], university: Any) -> Dict[str, Any]:
+    """Evaluate explicit university eligibility criteria against student facts.
+
+    This is intentionally deterministic for admission requirements shown in the
+    university profile. The fit-score/LLM assessment is a separate signal and
+    must not decide whether a student meets an explicit requirement.
+    """
+    criteria = university.eligibility_criteria or []
+    if not criteria:
+        return {"status": "unassessed", "qualified": False, "matched": 0, "total": 0, "details": []}
+
+    facts = {str(k).lower(): v for k, v in profile.items()}
+    details = []
+    recognized = 0
+    failed = 0
+
+    for item in criteria:
+        if not isinstance(item, dict):
+            continue
+        criterion = str(item.get("criterion", "")).strip()
+        detail = str(item.get("detail", "")).strip()
+        text = f"{criterion} {detail}".lower()
+        required = None
+        actual = None
+        field = None
+
+        if "gpa" in text:
+            field = "gpa"
+        elif "toefl" in text:
+            field = "toefl"
+        elif "ielts" in text:
+            field = "ielts"
+        elif "gre" in text and "quant" in text:
+            field = "gre_quant"
+        elif "gre" in text and "verbal" in text:
+            field = "gre_verbal"
+        elif "gre" in text:
+            field = "gre_total"
+
+        if field:
+            numbers = [float(n) for n in re.findall(r"(?<![a-z])\d+(?:\.\d+)?", text)]
+            if numbers:
+                required = numbers[0]
+                actual = _eligibility_number(facts.get(field))
+                if actual is not None:
+                    recognized += 1
+                    passed = actual >= required
+                    if not passed:
+                        failed += 1
+                    details.append({
+                        "criterion": criterion,
+                        "detail": detail,
+                        "field": field,
+                        "required": required,
+                        "actual": actual,
+                        "passed": passed,
+                    })
+                    continue
+                details.append({
+                    "criterion": criterion,
+                    "detail": detail,
+                    "field": field,
+                    "required": required,
+                    "actual": None,
+                    "passed": False,
+                })
+                failed += 1
+                continue
+
+        # Unknown/non-numeric criteria are not guessed. They require manual or
+        # model review rather than incorrectly marking a student as qualified.
+        details.append({"criterion": criterion, "detail": detail, "passed": None})
+
+    unknown = sum(1 for item in details if item.get("passed") is None)
+    if failed:
+        status = "not_qualified"
+    elif unknown:
+        status = "unassessed"
+    elif recognized:
+        status = "qualified"
+    else:
+        status = "unassessed"
+
+    return {
+        "status": status,
+        "qualified": status == "qualified",
+        "matched": recognized - failed,
+        "total": len(details),
+        "details": details,
+    }
+
+
 def compute_priority_tier(match_score: int, bounds: Dict[str, int]) -> str:
     """Map a match_score to a priority band using the given bounds (see
     get_priority_tier_bounds). "unranked" covers interested students who
@@ -1231,35 +1384,29 @@ def get_shortlisted_profiles(
     priority_tiers: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Students who (a) have shown interest in this university (an
-    UniversityInterestEvent row -- searched it or ran a fit check) and
-    (b) whose latest FitAssessment.match_score meets min_score. min_score
-    defaults to the university's configured min_fit_score_threshold, unless
-    priority_tiers is given without an explicit min_score -- then it defaults
-    to the lowest bound among the requested tiers, so e.g. filtering to
-    priority_tiers=["low"] isn't silently blocked by a stricter default gate.
-    Each result carries a "priority_tier" (high/medium/low/unranked, see
-    compute_priority_tier) so callers can group/filter without recomputing
-    bounds themselves. Sorted by match_score descending. Backs
-    UniversityProfilesListView -- the officer-facing dashboard only ever sees
-    this shortlist, never every StudentProfile row.
+    Return students who have explicitly engaged with this university.
+
+    Interest is the primary visibility rule. A fit assessment is optional:
+    students who have expressed interest but do not have a fit score yet are
+    returned as unassessed/unranked so the university can see the lead and
+    evaluate it later.
     """
     from django_api.models import FitAssessment, UniversityInterestEvent
     from universities.models import University
 
     bounds = get_priority_tier_bounds(university_id)
+    university = University.objects.filter(uuid=university_id).first()
+    qualification_threshold = university.min_fit_score_threshold if university else 40
 
     if min_score is None:
         if priority_tiers:
             tier_floor = {**bounds, "unranked": 0}
             min_score = min(tier_floor.get(tier, 0) for tier in priority_tiers)
         else:
-            university = University.objects.filter(uuid=university_id).first()
-            min_score = university.min_fit_score_threshold if university else 40
+            min_score = qualification_threshold
 
     interested_student_pks = (
         UniversityInterestEvent.objects.filter(university_id=university_id)
-
         .order_by()
         .values_list("student_id", flat=True)
         .distinct()
@@ -1267,18 +1414,56 @@ def get_shortlisted_profiles(
 
     shortlisted: List[Dict[str, Any]] = []
 
+    student_rows = {
+        row.pk: row
+        for row in StudentProfile.objects.filter(pk__in=interested_student_pks)
+    }
+
     for student_pk in interested_student_pks:
+        student_row = student_rows.get(student_pk)
+        if student_row is None:
+            continue
+
         assessment_row = (
             FitAssessment.objects.filter(student_id=student_pk, university_id=university_id)
             .order_by("-created_at")
             .first()
         )
+
         if assessment_row is None:
+            if priority_tiers and "unranked" not in priority_tiers:
+                continue
+            eligibility = evaluate_university_eligibility(profile_row_to_dict(student_row), university)
+            shortlisted.append({
+                "student_id": str(student_row.uuid),
+                "assessment": {},
+                "match_score": None,
+                "priority_tier": "unranked",
+                "interested": True,
+                "qualified": eligibility["qualified"],
+                "qualification_status": eligibility["status"],
+                "qualification_threshold": qualification_threshold,
+                "eligibility": eligibility,
+            })
             continue
 
+        assessment = assessment_row.assessment or {}
         try:
-            match_score = int(assessment_row.assessment.get("match_score"))
+            match_score = int(assessment.get("match_score"))
         except (TypeError, ValueError):
+            match_score = None
+
+        # Explicit score filters apply only to students who have a score.
+        if match_score is None:
+            if priority_tiers and "unranked" not in priority_tiers:
+                continue
+            shortlisted.append({
+                "student_id": str(assessment_row.student.uuid),
+                "assessment": assessment,
+                "match_score": None,
+                "priority_tier": "unranked",
+                "interested": True,
+            })
             continue
 
         if match_score < min_score:
@@ -1288,16 +1473,24 @@ def get_shortlisted_profiles(
         if priority_tiers and tier not in priority_tiers:
             continue
 
+        eligibility = evaluate_university_eligibility(profile_row_to_dict(student_row), university)
         shortlisted.append({
             "student_id": str(assessment_row.student.uuid),
-            "assessment": assessment_row.assessment,
+            "assessment": assessment,
             "match_score": match_score,
             "priority_tier": tier,
+            "interested": True,
+            "qualified": eligibility["qualified"],
+            "qualification_status": eligibility["status"],
+            "qualification_threshold": qualification_threshold,
+            "eligibility": eligibility,
         })
 
-    shortlisted.sort(key=lambda item: item["match_score"], reverse=True)
+    shortlisted.sort(
+        key=lambda item: (item["match_score"] is not None, item["match_score"] or -1),
+        reverse=True,
+    )
     return shortlisted
-
 
 def get_priority_tier_counts(university_id: str) -> Dict[str, int]:
     """Tally of every interested-and-scored student for this university by

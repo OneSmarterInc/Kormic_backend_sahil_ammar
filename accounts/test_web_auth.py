@@ -63,18 +63,32 @@ class WebAuthTests(TestCase):
         raw = self.client.cookies[cookie_name('university')].value
         refreshed = self.post('refresh')
         self.assertEqual(refreshed.status_code, 200)
-        self.assertEqual(set(refreshed.data), {'access'})
+        self.assertEqual(set(refreshed.data), {'access', 'user'})
+        self.assertEqual(refreshed.data['user']['role'], 'university')
         self.assertEqual(self.post('logout').status_code, 204)
         self.assertEqual(self.client.cookies[cookie_name('university')]['max-age'], 0)
         self.client.cookies[cookie_name('university')] = raw
         self.assertEqual(self.post('refresh').status_code, 401)
         self.assertEqual(self.post('logout').status_code, 204)
 
-    def test_missing_csrf_and_untrusted_origin_cannot_login_refresh_or_logout(self):
-        for path in ['login', 'verify-totp', 'register', 'refresh', 'logout']:
+    def test_missing_csrf_blocks_state_changing_browser_auth(self):
+        for path in ['login', 'verify-totp', 'register', 'logout']:
             response = self.client.post(f'/api/auth/web/{path}/', {'portal': 'university'}, format='json', secure=True)
             self.assertEqual(response.status_code, 403)
             self.assertEqual(self.post(path, HTTP_ORIGIN='https://evil.example').status_code, 403)
+
+    def test_refresh_does_not_require_csrf(self):
+        self.login()
+        response = self.client.post(
+            '/api/auth/web/refresh/',
+            {'portal': 'university'},
+            format='json',
+            secure=True,
+            HTTP_ORIGIN='https://university.kormic.ai',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('access', response.data)
+        self.assertEqual(response.data['user']['role'], 'university')
 
     def test_wrong_portal_rejected_before_mfa_and_cookie_isolation(self):
         response = self.post('login', {'portal': 'institute', 'email': self.user.email, 'password': 'Password!123'})

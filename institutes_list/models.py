@@ -99,6 +99,18 @@ class ListedStudent(models.Model):
     # never invited yet. Lets send_invites skip already-invited unclaimed
     # rows on a re-upload instead of re-spamming them every time.
     invited_at = models.DateTimeField(null=True, blank=True)
+    invite_delivery_status = models.CharField(
+        max_length=20,
+        choices=[
+            ("queued", "Queued"),
+            ("sent", "Sent"),
+            ("failed", "Failed"),
+        ],
+        blank=True,
+        default="",
+    )
+    invite_delivery_error = models.CharField(max_length=500, blank=True, default="")
+    invite_delivered_at = models.DateTimeField(null=True, blank=True)
 
     # OTP state: only ever a hash at rest; short-lived; attempt-limited.
     otp_hash = models.CharField(max_length=128, blank=True, default="")

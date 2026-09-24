@@ -141,12 +141,30 @@ def send_invite_email_task(self, listed_student_id: int) -> None:
                 "This link/token identifies you but reveals nothing on its own -- "
                 "you'll still need to verify your email with a one-time code."
             ),
-            from_email=None,  # DEFAULT_FROM_EMAIL
+            from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[row.email],
             fail_silently=False,
         )
     except Exception as exc:
+        error_text = str(exc)[:500]
+        logger.exception("Invite email failed for ListedStudent %s", listed_student_id)
+        ListedStudent.objects.filter(id=listed_student_id).update(
+            invite_delivery_status="failed",
+            invite_delivery_error=error_text,
+        )
+        # In local eager mode there is no worker to perform a delayed retry.
+        # Retrying here would keep the HTTP request blocked while repeatedly
+        # attempting the same broken SMTP connection. Production workers keep
+        # the normal Celery retry behavior.
+        if settings.CELERY_TASK_ALWAYS_EAGER:
+            return
         raise self.retry(exc=exc)
+
+    ListedStudent.objects.filter(id=listed_student_id).update(
+        invite_delivery_status="sent",
+        invite_delivery_error="",
+        invite_delivered_at=timezone.now(),
+    )
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=15)

@@ -375,6 +375,21 @@ else:
 
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://localhost:6379/1")
+
+# Local development must work when Django/Vite are run directly on the host
+# without a Redis/Celery service. Celery eager mode executes .delay() locally,
+# so institute invite requests do not hang trying to publish to an unavailable
+# Redis broker. Production keeps the real asynchronous worker path.
+#
+# Important: the final value is controlled here once only. The previous
+# duplicate assignment later in this file could override DEBUG=True and leave
+# local invite requests waiting on Redis.
+CELERY_TASK_ALWAYS_EAGER = os.getenv(
+    "CELERY_TASK_ALWAYS_EAGER",
+    "true" if DEBUG else "false",
+).strip().lower() == "true"
+CELERY_TASK_EAGER_PROPAGATES = False if DEBUG else True
+
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
@@ -389,15 +404,15 @@ CELERY_TIMEZONE = TIME_ZONE
 # vanishing silently mid-loop.
 CELERY_TASK_TIME_LIMIT = 30
 CELERY_TASK_SOFT_TIME_LIMIT = 25
-# Run Celery tasks synchronously during local development so starting the
-# Django server does not also require Redis, a Celery worker, or Docker.
-# Production remains asynchronous unless explicitly overridden.
-CELERY_TASK_ALWAYS_EAGER = TESTING or (
-    os.environ.get("CELERY_TASK_ALWAYS_EAGER", "true" if DEBUG else "false").lower() == "true"
+# Windows does not reliably support Celery's prefork worker pool under the
+# local development environment (billiard can fail with WinError 5 while
+# managing spawned child processes). Use the single-process pool on Windows;
+# Linux/Docker keeps the normal prefork pool unless explicitly overridden.
+CELERY_WORKER_POOL = os.environ.get(
+    "CELERY_WORKER_POOL",
+    "solo" if os.name == "nt" else "prefork",
 )
-CELERY_TASK_EAGER_PROPAGATES = TESTING
-
-# Proactive agent outreach (notifications.tasks.run_proactive_checkins_task):
+# CELERY_TASK_ALWAYS_EAGER is configured once above.\n\n# Proactive agent outreach (notifications.tasks.run_proactive_checkins_task):
 # once a day, the agent scans for students it hasn't nudged in
 # PROACTIVE_CHECKIN_COOLDOWN_DAYS and, if their profile has a genuine gap
 # worth mentioning, messages them on its own. Requires a `celery beat`
@@ -467,6 +482,8 @@ ETHEREAL_HOST = os.getenv("ETHEREAL_HOST", "smtp.ethereal.email")
 ETHEREAL_PORT = int(os.getenv("ETHEREAL_PORT", "587"))
 ETHEREAL_USE_TLS = os.getenv("ETHEREAL_USE_TLS", "true").lower() == "true"
 ETHEREAL_USE_SSL = os.getenv("ETHEREAL_USE_SSL", "false").lower() == "true"
+# Never let a broken SMTP endpoint keep an invite request hanging indefinitely.
+EMAIL_TIMEOUT = float(os.getenv("EMAIL_TIMEOUT", "15"))
 
 if EMAIL_MODE == "dev":
     EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"

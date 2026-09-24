@@ -35,6 +35,7 @@ STUDENT_ESSENTIAL_FLOOR = 30
 # terminates the task without letting it reach a terminal status) instead of
 # blocking every future discovery attempt forever.
 STALE_ACTIVE_JOB_MINUTES = 10
+STALE_QUEUED_JOB_SECONDS = 60
 
 
 def _canonical_base_url(raw_url: str) -> str:
@@ -46,17 +47,28 @@ def _canonical_base_url(raw_url: str) -> str:
 
 
 def _reap_if_stale(job: DiscoveryJob) -> bool:
-    """Mark a stuck active job as failed if it's gone quiet too long. Returns
-    True if it was reaped (caller is then free to start a new job)."""
-    cutoff = timezone.now() - timedelta(minutes=STALE_ACTIVE_JOB_MINUTES)
-    if job.updated_at >= cutoff:
-        return False
-    job.status = "failed"
-    job.error_message = (
-        f"Automatically marked failed: no progress for over {STALE_ACTIVE_JOB_MINUTES} minutes "
-        "(the worker process likely died or was restarted mid-crawl)."
-    )
-    job.completed_at = timezone.now()
+    """Recover jobs that cannot make progress because their Celery message
+    was never consumed or their worker died. Queued jobs get a short timeout;
+    running jobs get the longer crawl timeout."""
+    now = timezone.now()
+    if job.status == DiscoveryJob.Status.QUEUED:
+        if (now - job.created_at).total_seconds() < STALE_QUEUED_JOB_SECONDS:
+            return False
+        reason = (
+            f"Automatically marked failed: queued for over {STALE_QUEUED_JOB_SECONDS} seconds "
+            "without reaching a worker. Restart the Celery worker and try again."
+        )
+    else:
+        cutoff = now - timedelta(minutes=STALE_ACTIVE_JOB_MINUTES)
+        if job.updated_at >= cutoff:
+            return False
+        reason = (
+            f"Automatically marked failed: no progress for over {STALE_ACTIVE_JOB_MINUTES} minutes "
+            "(the worker process likely died or was restarted mid-crawl)."
+        )
+    job.status = DiscoveryJob.Status.FAILED
+    job.error_message = reason
+    job.completed_at = now
     job.save(update_fields=["status", "error_message", "completed_at", "updated_at"])
     return True
 
@@ -83,8 +95,18 @@ def start_discovery(
             "Set the university's website URL first (see the profile's website_url field)."
         )
 
-    active = university.discovery_jobs.filter(status__in=DiscoveryJob.ACTIVE_STATUSES).order_by("-created_at").first()
-    if active and not _reap_if_stale(active):
+    # There should normally be at most one active job, but older versions
+    # did not enforce that invariant at the database level. Reap every stale
+    # active row before deciding whether a retry is allowed, so one abandoned
+    # row cannot block a healthy new crawl.
+    active_jobs = list(
+        university.discovery_jobs
+        .filter(status__in=DiscoveryJob.ACTIVE_STATUSES)
+        .order_by("-created_at")
+    )
+    for active in active_jobs:
+        if _reap_if_stale(active):
+            continue
         raise ValueError(f"A discovery job is already in progress for this university (job {active.id}).")
 
     base_url = _canonical_base_url(university.website_url)
@@ -120,10 +142,15 @@ def start_discovery(
 def request_stop(job: DiscoveryJob) -> DiscoveryJob:
     if job.status not in DiscoveryJob.ACTIVE_STATUSES:
         raise ValueError(f"Cannot stop a job with status '{job.status}'.")
-    job.status = "stop_requested"
-    job.save(update_fields=["status", "updated_at"])
-    return job
 
+    # Stopping is a terminal user action. Mark the DB row stopped immediately
+    # so the dashboard never remains on "Stopping..." indefinitely. A worker
+    # that is currently inside a page fetch will see this status on its next
+    # loop/check and exit cleanly; a queued task will also refuse to restart.
+    job.status = DiscoveryJob.Status.STOPPED
+    job.completed_at = timezone.now()
+    job.save(update_fields=["status", "completed_at", "updated_at"])
+    return job
 
 def recommended_urls(job: DiscoveryJob, mode: str = "student_essential", limit: Optional[int] = None) -> List[DiscoveredUrl]:
     """Rank this job's crawled pages into a curated candidate list.

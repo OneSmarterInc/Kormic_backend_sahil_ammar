@@ -223,7 +223,7 @@ class ScrapeNowJobTests(TestCase):
         self.university.scrape_urls = ["https://write-state.example/admissions"]
         self.university.save(update_fields=["scrape_urls"])
 
-    @mock.patch("universities.tasks.run_scrape_now_job.delay")
+    @mock.patch("universities.services.current_app.send_task")
     def test_post_queues_job_and_returns_202(self, mock_delay):
         resp = self.client.post("/api/university-admin/scrape-urls/scrape-now/")
 
@@ -231,7 +231,7 @@ class ScrapeNowJobTests(TestCase):
         self.assertEqual(resp.data["status"], ScrapeJob.Status.QUEUED)
         job = ScrapeJob.objects.get(id=resp.data["id"])
         self.assertEqual(job.university_id, self.university.id)
-        mock_delay.assert_called_once_with(job.id)
+        mock_delay.assert_called_once_with("universities.tasks.run_scrape_now_job", args=[job.id], retry=False)
 
     @mock.patch("universities.tasks.run_scrape_now_job.delay")
     def test_post_rejects_second_job_while_one_is_active(self, mock_delay):
