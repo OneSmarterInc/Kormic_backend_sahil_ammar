@@ -1,6 +1,6 @@
 # Python 3.10+ is required by the current dependency set; production uses Python 3.11.
 anthropic==0.125.0
-langgraph==1.7.0
+langgraph==1.2.12
 langchain-anthropic==1.5.5
 # Durable, multi-worker-safe backend for pure_multi_agent.runtime's LangGraph
 # checkpointer (replaces the in-process MemorySaver -- see runtime.py's
@@ -40,3 +40,6 @@ django-redis==5.4.0
 whitenoise==6.12.0
 gunicorn==26.0.0
 Pillow==12.3.0
+
+# MeshKor SDK (From TestPyPI for Pilot)
+https://test-files.pythonhosted.org/packages/f9/31/5b44f8ca7dac34019ee1fa1091ead9b73c1a5571d724e66c8fcbb33a6707/meshkor-1.0.2-py3-none-any.whl

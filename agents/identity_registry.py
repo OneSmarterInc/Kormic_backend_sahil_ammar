@@ -26,6 +26,22 @@ def get_or_create_identity(owner_type: str, owner_id: str, agent_name: str = "")
         defaults={"agent_name": agent_name or ""},
     )
 
+    # --- MeshKor Integration: Agent Birth (Global Registry) ---
+    if not identity.ain:
+        try:
+            from meshkor.integrations.kormic import KormicMeshKorIntegration
+            meshkor = KormicMeshKorIntegration()
+            identity.ain = meshkor.enroll_agent(
+                agent_class=f"{owner_type}_agent".capitalize(),
+                instance_ref=f"agent_{identity.agent_id}",
+                manifest={"permissions": ["read_database", "interact_with_agents"], "owner": owner_id},
+                constitution_hash="pilot_hash_1"
+            )
+            identity.save(update_fields=["ain"])
+        except Exception:
+            pass # Fail-open in advisory mode
+    # ----------------------------------------------------------
+
     if not created and agent_name and identity.agent_name != agent_name:
         identity.agent_name = agent_name
         identity.save(update_fields=["agent_name"])
@@ -68,6 +84,26 @@ def log_conversation(
 
     asker = student_identity(student_id)
     responder = university_identity(university_id)
+
+    # --- MeshKor Integration: Agent Action Tracking (Inter-Agent Comms) ---
+    try:
+        from meshkor.integrations.kormic import KormicMeshKorIntegration
+        meshkor = KormicMeshKorIntegration()
+        if asker.ain:
+            meshkor.record_event(
+                ain=asker.ain,
+                event_type="agent_sent_message",
+                details={"target_agent": str(responder.agent_id), "question": question}
+            )
+        if responder.ain:
+            meshkor.record_event(
+                ain=responder.ain,
+                event_type="agent_responded",
+                details={"source_agent": str(asker.agent_id), "source": knowledge_source}
+            )
+    except Exception:
+        pass # Fail-open
+    # ----------------------------------------------------------------------
 
     return AgentConversationLog.objects.create(
         asker=asker,

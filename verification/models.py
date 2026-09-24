@@ -35,6 +35,10 @@ class VerificationCheck(models.Model):
     # frontend/admin so a fallback run is visibly distinguishable from a
     # full AI analysis rather than silently passing as equivalent.
     engine = models.CharField(max_length=20, choices=Engine.choices, blank=True, default="")
+    
+    # MeshKor Cryptographic Agent Identity Number
+    ain = models.CharField(max_length=120, null=True, blank=True, help_text="MeshKor Cryptographic Identity")
+    
     last_analyzed_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)

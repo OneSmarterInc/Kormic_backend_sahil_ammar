@@ -109,6 +109,19 @@ def _run_engine(
     open_items_context = [_item_context(i) for i in check.items.filter(is_resolved=False)]
 
     try:
+        # --- MeshKor Integration: Agent Action Tracking ---
+        if check.ain:
+            try:
+                from meshkor.integrations.kormic import KormicMeshKorIntegration
+                KormicMeshKorIntegration().record_event(
+                    ain=check.ain,
+                    event_type="agent_analysis_started",
+                    details={"sources": sources_present}
+                )
+            except Exception:
+                pass
+        # --------------------------------------------------
+
         result = AIVerificationAgent().analyze(
             expected_name=expected_name,
             profile_facts=profile_facts,
@@ -325,6 +338,22 @@ def run_verification(student_id: str, user: Any = None) -> Dict[str, Any]:
         }
 
     check, _ = VerificationCheck.objects.get_or_create(student=profile)
+
+    # --- MeshKor Integration: Agent Birth ---
+    if not check.ain:
+        try:
+            from meshkor.integrations.kormic import KormicMeshKorIntegration
+            meshkor = KormicMeshKorIntegration()
+            check.ain = meshkor.enroll_agent(
+                agent_class="AIVerificationAgent",
+                instance_ref=f"verif_{check.id}",
+                manifest={"permissions": ["read_profile", "read_resume", "read_github", "read_linkedin"], "owner": student_id},
+                constitution_hash="pilot_hash_1"
+            )
+            check.save(update_fields=["ain"])
+        except Exception as e:
+            pass # Fail-open: If MeshKor fails to import or enroll, don't crash Kormic!
+    # ----------------------------------------
 
     try:
         latest_resume = ResumeUpload.objects.filter(student=profile).order_by("-created_at").first()

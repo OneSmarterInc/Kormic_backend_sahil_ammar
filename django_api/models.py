@@ -487,6 +487,10 @@ class AgentIdentity(models.Model):
     # created, is never cascade-deleted by profile/university churn.
     owner_id = models.CharField(max_length=255, db_index=True)
     agent_name = models.CharField(max_length=255, blank=True, default="")
+    
+    # MeshKor Cryptographic Agent Identity Number
+    ain = models.CharField(max_length=120, null=True, blank=True, help_text="MeshKor Cryptographic Identity")
+    
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
