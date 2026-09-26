@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 from typing import Any, Dict, List, Optional
 
 from rich.console import Console
@@ -111,12 +113,9 @@ def get_university_agent_label(university_id: str) -> str:
 
 def get_university_agent(university_id: str, auto_scrape: Optional[bool] = None) -> Any:
     """
-    Return the cached university agent, building and registering it on
-    first use. Raises ValueError for an unknown university_id.
+    Construct an isolated university session. The versioned persona cache is
+    shared; mutable knowledge results are not. Unknown university IDs fail.
     """
-    if university_id in _university_agents:
-        return _university_agents[university_id]
-
     from agents.university_agent import UniversityAgent
     from django_api.services import as_uuid
     from universities.models import University
@@ -124,13 +123,9 @@ def get_university_agent(university_id: str, auto_scrape: Optional[bool] = None)
     if not as_uuid(university_id) or not University.objects.filter(uuid=university_id).exists():
         raise ValueError(f"Unknown university_id: {university_id}")
 
-    if auto_scrape is None:
-        auto_scrape = os.getenv("KORMIC_AUTO_SCRAPE", "false").lower() == "true"
-
-    agent = UniversityAgent(university_id, auto_scrape=auto_scrape)
-    register(university_id, agent)
-
-    return agent
+    # Every invocation owns its mutable context. Website ingestion belongs to
+    # the scraper queue, never to chat initialization.
+    return UniversityAgent(university_id, auto_scrape=False)
 
 
 def get_profile_presenter(university_id: str) -> Any:
@@ -313,19 +308,32 @@ def _assessment_failed(assessment: Any) -> bool:
     return False
 
 
-def generate_fit_assessment(student_id: str, university_id: str, force: bool = False) -> Dict[str, Any]:
+def generate_fit_assessment(student_id: str, university_id: str, force: bool = False,
+                            student_profile: Optional[dict] = None) -> Dict[str, Any]:
     """
     Generate (or return the cached) fit assessment for one student/university
     pair. This is the only way a fit assessment gets produced -- there is no
     direct student-facing endpoint; the student's personal agent calls this
     when a fit/match question comes up in chat.
     """
-    from django_api.models import FitAssessment, StudentProfile
+    from django_api.models import FitAssessment, StudentProfile, KnowledgeIndexWork
     from django_api.services import as_uuid, load_profile_data, save_profile_data
+    from agents.student_context import university_context
+    from universities.models import University
 
     student_key = as_uuid(student_id)
     if student_key is None:
         raise ValueError(f"Invalid student_id: {student_id!r}")
+
+    # Include in-turn profile corrections, before runtime persists the turn.
+    profile = dict(student_profile) if student_profile is not None else load_profile_data(student_id)
+    admissions_context = university_context(student_id, profile)
+    university = University.objects.get(uuid=university_id)
+    fingerprint = hashlib.sha256(json.dumps({
+        "student": admissions_context,
+        "university_updated_at": university.updated_at.isoformat(),
+        "knowledge_revision": KnowledgeIndexWork.objects.filter(university_id=university_id).values_list("revision", flat=True).first() or 0,
+    }, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
     if not force:
         cached = (
@@ -333,22 +341,23 @@ def generate_fit_assessment(student_id: str, university_id: str, force: bool = F
             .order_by("-created_at")
             .first()
         )
-        if cached:
+        if cached and cached.assessment.get("context_fingerprint") == fingerprint:
             response_data = dict(cached.assessment)
             response_data["cached"] = True
             response_data["generated_at"] = cached.created_at.isoformat()
             return response_data
 
-    profile = load_profile_data(student_id)
     agent = get_university_agent(university_id)
 
     try:
-        assessment = agent.assess_fit(profile)
+        assessment = agent.assess_fit(admissions_context)
     except Exception:
         assessment = None
 
     if _assessment_failed(assessment):
         assessment = _fallback_fit_assessment(profile, university_id, agent)
+
+    assessment["context_fingerprint"] = fingerprint
 
     profile.setdefault("assessments", {})
     profile["assessments"][university_id] = assessment

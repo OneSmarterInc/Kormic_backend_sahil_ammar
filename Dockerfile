@@ -16,7 +16,7 @@ COPY . .
 # fails with Permission denied. /home/app lives outside the bind-mounted
 # /app, so it stays valid regardless of the host directory's ownership.
 RUN addgroup --system app && adduser --system --home /home/app --ingroup app app \
-    && mkdir -p /home/app /app/uploads /app/staticfiles \
+    && mkdir -p /home/app/.cache/kormic-embeddings /app/uploads /app/staticfiles \
     && chown -R app:app /home/app /app
 ENV HOME=/home/app
 USER app

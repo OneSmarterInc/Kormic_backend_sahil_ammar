@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -122,6 +123,7 @@ def _load_context(student_id: str) -> Dict[str, Any]:
         "student_name": student_profile.get("name") or "there",
         "agent_name": agent_name,
         "student_profile": student_profile,
+        "profile_baseline": deepcopy(student_profile),
         "memory": memory,
         "response_mode": response_mode,
         "pending_verification_item_id": pending_item["id"] if pending_item else None,
@@ -130,13 +132,30 @@ def _load_context(student_id: str) -> Dict[str, Any]:
 
 
 def _persist_context(student_id: str, ctx: Dict[str, Any]) -> None:
-    from django_api.models import AriaMemory
-    from django_api.services import save_profile_data
+    from django_api.models import AriaMemory, StudentProfile
+    from django_api.services import _apply_dict_to_profile, profile_row_to_dict
+    from django.db import transaction
 
     key = student_id
 
     ctx["student_profile"]["response_mode"] = ctx["response_mode"]
-    save_profile_data(student_id, ctx["student_profile"])
+    baseline = ctx.get('profile_baseline', {})
+    def merge_changes(before, after, current):
+        merged = dict(current or {})
+        for field, value in after.items():
+            if field in before and before[field] == value:
+                continue
+            if isinstance(value, dict) and isinstance(before.get(field), dict):
+                merged[field] = merge_changes(before[field], value, merged.get(field, {}))
+            else:
+                merged[field] = value
+        return merged
+    # Background extraction may complete during a chat turn. Merge only fields
+    # changed by this turn into the latest locked profile, preserving its work.
+    with transaction.atomic():
+        row = StudentProfile.objects.select_for_update().get(uuid=student_id)
+        _apply_dict_to_profile(row, merge_changes(baseline, ctx['student_profile'], profile_row_to_dict(row)))
+        row.save()
 
     AriaMemory.objects.update_or_create(
         student_id=key,
@@ -221,10 +240,24 @@ def seed_conversation(student_id: str, turns: List[Tuple[str, str]]) -> None:
     )
 
 
+class TurnResult(tuple):
+    def __new__(cls, name, reply, metadata):
+        value = super().__new__(cls, (name, reply))
+        value.metadata = metadata
+        return value
+
+
 def run_turn(
-    student_id: str, message: str, image_blocks: Optional[List[Dict[str, Any]]] = None
+    student_id: str, message: str, image_blocks: Optional[List[Dict[str, Any]]] = None, *, raise_errors=False, resume_state=None
 ) -> tuple[str, str]:
     ctx = _load_context(student_id)
+    ctx['current_message'] = message
+    resume_keys = ('university_references', 'university_candidates', 'known_web_urls', 'read_web_pages',
+        'research_after_reply', 'model_steps', 'tool_errors', 'web_search_count', 'pages_read', 'university_reads', 'document_availability')
+    if resume_state is not None:
+        ctx.update({key: value for key, value in resume_state.items() if key in resume_keys})
+        for key in ('known_web_urls', 'research_after_reply'):
+            ctx[key] = set(ctx.get(key, []))
 
     if VERBOSE:
         console.print(
@@ -251,15 +284,26 @@ def run_turn(
 
     try:
         result = agent.invoke(
-            {"messages": [HumanMessage(content=human_content)]},
+            None if resume_state is not None else {"messages": [HumanMessage(content=human_content)]},
             config={
                 "configurable": {"thread_id": ctx["canonical_student_id"]},
-                "recursion_limit": 25,
+                "recursion_limit": 29,
                 "callbacks": [tracer],
             },
         )
         reply = _extract_reply_text(result)
     except Exception as exc:
+        from github_profiles.scheduling import CapacityBusy
+        from pure_multi_agent.capacity import AgentBusy, ResumeTurnLater
+        if raise_errors and isinstance(exc, (CapacityBusy, AgentBusy)):
+            # Capacity failures from the model node occur between completed tool
+            # nodes. Persist turn edits, then resume the graph checkpoint without
+            # appending/replaying the user's message or previous tools.
+            _persist_context(student_id, ctx)
+            state = {key: list(ctx[key]) if isinstance(ctx[key], set) else ctx[key] for key in resume_keys if key in ctx}
+            raise ResumeTurnLater(state, getattr(exc, 'delay', 10)) from exc
+        if raise_errors:
+            raise
         logger.exception("Agent turn failed for student %s", ctx["canonical_student_id"])
         console.print(f"[yellow]Agent turn failed: {exc}[/yellow]")
         # Ops-facing detail (which env var, which upstream, etc.) is for the
@@ -282,4 +326,17 @@ def run_turn(
     if VERBOSE:
         console.print(f"[bold magenta]=== turn complete ({tracer._step} model call(s)) ===[/bold magenta]\n")
 
-    return ctx["agent_name"], reply
+    # Schedule website research only after the student response has been
+    # generated; acquisition/crawl/model calls never block response delivery.
+    from university_research.models import PublicUniversity
+    from university_research.services import queue_research, add_reference
+    from accounts.models import Account
+    account = Account.objects.filter(student_profile__uuid=student_id).select_related('user').first()
+    for research_id in ctx.get('research_after_reply', set()):
+        try:
+            row = PublicUniversity.objects.get(pk=research_id)
+            queue_research(row, account.user if account else None)
+            add_reference(ctx, row.registered_university if row.registered_university_id else row)
+        except Exception:
+            logger.exception('Could not queue university research')
+    return TurnResult(ctx['agent_name'], reply, {'university_references': list(ctx.get('university_references', {}).values())})

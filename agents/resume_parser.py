@@ -100,7 +100,8 @@ def _get_anthropic_client() -> anthropic.Anthropic:
             "ANTHROPIC_API_KEY not found. Add it to your .env file before parsing resumes."
         )
 
-    return anthropic.Anthropic(timeout=ANTHROPIC_CLIENT_TIMEOUT_SECONDS, max_retries=1)
+    from pure_multi_agent.capacity import limited_client
+    return limited_client(anthropic.Anthropic(timeout=ANTHROPIC_CLIENT_TIMEOUT_SECONDS, max_retries=1))
 
 
 def read_pdf(file_path: str) -> Dict[str, Any]:

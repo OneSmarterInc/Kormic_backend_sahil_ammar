@@ -1,73 +1,98 @@
 # pure_multi_agent/student_graph.py
-# The student's personal agent, built with langgraph.prebuilt.create_react_agent
-# -- the standard LangGraph pattern for "the model decides which tool(s) to
-# call, in a loop, until it's ready to answer". This is what replaces the old
-# fixed classify-then-branch dispatch in agents.student_agent.StudentAgent.chat().
+# A shared LangGraph ReAct loop. Mutable profile/tools live in Runtime context
+# for each invocation; only messages are persisted in the checkpointer.
 
 from __future__ import annotations
 
 from typing import Any, Dict
-import os
 
-from langchain_anthropic import ChatAnthropic
-from langgraph.prebuilt import create_react_agent
+from langgraph.graph import StateGraph, MessagesState, START, END
+from langgraph.runtime import Runtime
+from langchain_core.messages import SystemMessage, ToolMessage
+from threading import Lock
+from weakref import WeakKeyDictionary
 
 from pure_multi_agent.tools import build_all_tools
 
-MODEL_NAME = "claude-haiku-4-5-20251001"
-
-_model = None
-
-
-def _model_env_status() -> str:
-    key = os.getenv("ANTHROPIC_API_KEY", "").strip()
-    if not key:
-        return "missing"
-    if key.startswith("your_") or key.startswith("sk-ant-api03-your"):
-        return "placeholder"
-    return "configured"
+_graphs = WeakKeyDictionary()
+_graph_lock = Lock()
 
 
-# Every turn can chain up to `recursion_limit` (see runtime.run_turn) model
-# calls in a tool loop. With no timeout, a single hung upstream call ties up
-# a Django worker indefinitely -- on the highest-traffic endpoint in the
-# system, that's the fastest path to exhausting the whole worker pool.
-# timeout bounds each individual call; max_retries=1 keeps the worst case
-# for one call predictable (timeout + one retry) instead of the SDK's
-# default 2 retries compounding it further.
-CHAT_MODEL_TIMEOUT_SECONDS = 120.0
+def _reason(state: MessagesState, runtime: Runtime[dict]):
+    import json
+    from pure_multi_agent.model_router import invoke
+    from pure_multi_agent.tools.github_tools import github_evidence
+    ctx = runtime.context["ctx"]
+    tools = build_all_tools(ctx)
+    messages = state["messages"]
+    human_indices = [i for i, message in enumerate(messages) if message.type == "human"]
+    if len(human_indices) > 12:
+        messages = messages[human_indices[-12]:]
+    prompt = runtime.context["prompt"]
+    if ctx.get("canonical_student_id"):
+        status = github_evidence(ctx["canonical_student_id"])
+        prompt += "\nLIVE GITHUB STATUS (authoritative, refreshed this step): " + json.dumps(status, default=str)[:12000]
+    if ctx.get('document_availability'):
+        prompt += '\nDOCUMENT AVAILABILITY: ' + json.dumps(ctx['document_availability']) + '. If a document is unavailable, explicitly say you have not seen it. Do not critique its contents or imply missing profile fields prove the student lacks experience. Offer conditional suggestions and ask for the document.'
+    if ctx.get('model_steps', 0) >= 11:
+        prompt += "\nTool budget exhausted. Summarize supported findings and remaining unknowns; do not request more tools."
+        tools = []
+    reply = invoke([SystemMessage(content=prompt), *messages], tools, force_claude=ctx.get('tool_errors', 0) >= 2)
+    ctx['model_steps'] = ctx.get('model_steps', 0) + 1
+    ctx['last_provider'] = reply.response_metadata.get('routing_provider', '')
+    return {"messages": [reply]}
 
 
-def _get_model() -> ChatAnthropic:
-    global _model
-    if _model is None:
-        status = _model_env_status()
-        if status != "configured":
-            raise RuntimeError(
-                "Student chat AI is not configured on the backend "
-                f"(ANTHROPIC_API_KEY: {status})."
-            )
-        _model = ChatAnthropic(
-            model=MODEL_NAME,
-            max_tokens=1200,
-            timeout=CHAT_MODEL_TIMEOUT_SECONDS,
-            max_retries=1,
-        )
-    return _model
+def _tools(state: MessagesState, runtime: Runtime[dict]):
+    tools = {tool.name: tool for tool in build_all_tools(runtime.context["ctx"])}
+    results = []
+    # Profile-changing tools run sequentially within a student's turn. Different
+    # students run in different jobs; no request context is stored on the graph.
+    import json
+    import logging
+    ctx = runtime.context['ctx']
+    for call in state["messages"][-1].tool_calls:
+        try:
+            result = tools[call['name']].invoke(call['args'])
+        except (ValueError, KeyError) as exc:
+            ctx['tool_errors'] = ctx.get('tool_errors', 0) + 1
+            result = {'error': str(exc)[:300], 'action': 'Correct the arguments or ask the student for missing details.'}
+        except Exception:
+            logging.getLogger(__name__).exception('Student tool failed: %s', call['name'])
+            ctx['tool_errors'] = ctx.get('tool_errors', 0) + 1
+            result = {'error': 'This tool is temporarily unavailable. Explain the limitation, use another available source, or ask for missing evidence. Do not invent results.'}
+        text = result if isinstance(result, str) else json.dumps(result, default=str, ensure_ascii=False)
+        results.append(ToolMessage(content=text[:45000], tool_call_id=call['id']))
+    return {"messages": results}
+
+
+def _graph(checkpointer):
+    with _graph_lock:
+        if checkpointer not in _graphs:
+            builder = StateGraph(MessagesState, context_schema=dict)
+            builder.add_node("agent", _reason)
+            builder.add_node("tools", _tools)
+            builder.add_edge(START, "agent")
+            builder.add_conditional_edges("agent", lambda state: "tools" if state["messages"][-1].tool_calls else END)
+            builder.add_edge("tools", "agent")
+            _graphs[checkpointer] = builder.compile(checkpointer=checkpointer)
+        return _graphs[checkpointer]
+
+
+class StudentSession:
+    def __init__(self, graph, ctx, prompt):
+        self.graph = graph
+        self.context = {"ctx": ctx, "prompt": prompt}
+
+    def invoke(self, inputs, config=None):
+        return self.graph.invoke(inputs, config=config, context=self.context)
+
+    async def ainvoke(self, inputs, config=None):
+        return await self.graph.ainvoke(inputs, config=config, context=self.context)
+
+    def update_state(self, config, values):
+        return self.graph.update_state(config, values)
 
 
 def build_student_agent(ctx: Dict[str, Any], system_prompt: str, checkpointer):
-    """Build a fresh react-agent graph for this turn. Tools are closures over
-    this turn's mutable context dict (see pure_multi_agent.tools), so the
-    agent is rebuilt per turn -- cheap, since compilation itself does no I/O.
-    The checkpointer is a shared, process-level instance passed in by
-    pure_multi_agent.runtime, so conversation history for a given
-    thread_id (student id) is retained across these per-turn rebuilds."""
-    tools = build_all_tools(ctx)
-
-    return create_react_agent(
-        model=_get_model(),
-        tools=tools,
-        prompt=system_prompt,
-        checkpointer=checkpointer,
-    )
+    return StudentSession(_graph(checkpointer), ctx, system_prompt)

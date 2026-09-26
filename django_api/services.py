@@ -1090,80 +1090,14 @@ def parse_resume(student_id: str, uploaded_file) -> Dict[str, Any]:
 
 
 def analyze_github(student_id: str) -> Dict[str, Any]:
-    """
-    Analyzes the student's own OAuth-connected GitHub account only -- there
-    is no github_url parameter anymore.
-    """
-    profile = load_profile_data(student_id)
-
-    from accounts.github_oauth import (
-        GitHubNotConnectedError,
-        GitHubOAuthError,
-        get_connection_for_student_id,
-        get_valid_access_token,
-    )
-    from agents.github_agent import GitHubSkillsAgent
-
-    connection = get_connection_for_student_id(student_id)
-    if connection is None:
-        raise GitHubNotConnectedError("Connect your GitHub account before running analysis.")
-
-    github_url = f"https://github.com/{connection.github_username}"
-
-    try:
-        student_token = get_valid_access_token(connection)
-    except GitHubOAuthError:
-        # Their verified identity is still known even if the stored token
-        # needs reconnecting -- fall back to the shared server token for
-        # the actual API calls rather than blocking analysis entirely.
-        student_token = None
-
-    github_agent = GitHubSkillsAgent(token=student_token)
-
-    if hasattr(github_agent, "analyse"):
-        github_result = github_agent.analyse(github_url)
-    else:
-        github_result = github_agent.analyze(github_url)
-
-    if isinstance(github_result, dict) and github_result.get("error"):
-        raise ValueError(github_result.get("error"))
-
-    profile["github"] = github_url
-    profile["github_assessment"] = github_result
-
-    existing_skills = list(profile.get("skills", []) or [])
-    skills_added = []
-
-    for item in github_result.get("languages", []) or []:
-        skill = item.get("name") if isinstance(item, dict) else str(item)
-        if skill and skill not in existing_skills:
-            existing_skills.append(skill)
-            skills_added.append(skill)
-
-    for tool in github_result.get("frameworks_and_tools", []) or []:
-        if tool and tool not in existing_skills:
-            existing_skills.append(tool)
-            skills_added.append(tool)
-
-    profile["skills"] = existing_skills[:80]
-    profile.setdefault("evidence", {})
-    profile["evidence"]["github"] = {"github_url": github_url, "result": github_result}
-    generate_summary(profile)
-    save_profile_data(student_id, profile)
-
-    GitHubAnalysis.objects.create(
-        student=StudentProfile.objects.get(uuid=student_id),
-        github_url=github_url,
-        result=github_result,
-    )
-
-    return {
-        "student_id": student_id,
-        "github_username": connection.github_username,
-        "github_result": github_result,
-        "skills_added": skills_added,
-        "profile": profile,
-    }
+    """Synchronous service compatibility; HTTP callers use the durable sync queue."""
+    from github_profiles.sync import queue_sync, execute_run
+    run = queue_sync(student_id)
+    execute_run(run.pk)
+    run.refresh_from_db()
+    if run.status != "completed":
+        raise ValueError(run.error or "GitHub extraction is still in progress.")
+    return {**run.result, "profile": load_profile_data(student_id)}
 
 
 CHAT_INTEREST_PATTERNS = (
@@ -1337,9 +1271,8 @@ def evaluate_university_eligibility(profile: Dict[str, Any], university: Any) ->
                     "field": field,
                     "required": required,
                     "actual": None,
-                    "passed": False,
+                    "passed": None,
                 })
-                failed += 1
                 continue
 
         # Unknown/non-numeric criteria are not guessed. They require manual or
@@ -1457,12 +1390,17 @@ def get_shortlisted_profiles(
         if match_score is None:
             if priority_tiers and "unranked" not in priority_tiers:
                 continue
+            eligibility = evaluate_university_eligibility(profile_row_to_dict(student_row), university)
             shortlisted.append({
                 "student_id": str(assessment_row.student.uuid),
                 "assessment": assessment,
                 "match_score": None,
                 "priority_tier": "unranked",
                 "interested": True,
+                "qualified": eligibility["qualified"],
+                "qualification_status": eligibility["status"],
+                "qualification_threshold": qualification_threshold,
+                "eligibility": eligibility,
             })
             continue
 

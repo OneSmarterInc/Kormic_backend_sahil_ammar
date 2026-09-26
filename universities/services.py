@@ -23,6 +23,16 @@ def build_persona_dict(university: University) -> Dict[str, Any]:
     """Adapt a University row into the exact shape
     personas.university_personas.UNIVERSITY_PERSONAS[id] used to have, so
     agents.university_agent.UniversityAgent needs no further changes."""
+    import json
+    from django.core.cache import caches
+    cache = caches["agent_config"]
+    key = f"university:{university.uuid}:{university.updated_at.isoformat()}"
+    try:
+        saved = cache.get(key)
+    except Exception:
+        saved = None
+    if saved:
+        return json.loads(saved)
     constitution = build_constitution(
         agent_name=university.agent_name or str(university.uuid),
         program_name=university.name,
@@ -36,7 +46,7 @@ def build_persona_dict(university: University) -> Dict[str, Any]:
         never_do_notes=university.never_do_notes,
     )
 
-    return {
+    persona = {
         "name": university.name,
         "agent_name": university.agent_name or str(university.uuid),
         "location": university.location,
@@ -47,6 +57,11 @@ def build_persona_dict(university: University) -> Dict[str, Any]:
         # (already DB-backed) -- never re-derived from the persona dict.
         "key_facts_seed": [],
     }
+    try:
+        cache.set(key, json.dumps(persona), timeout=3600)
+    except Exception:
+        pass  # Configuration caching is optional; tenant authorization is not.
+    return persona
 
 
 def register_university(institution_name: str, country: str) -> University:

@@ -39,7 +39,22 @@ def _answer_node(state: UniversityState) -> Dict[str, Any]:
         }
 
     try:
-        result = agent.answer(state["question"], state.get("student_context"))
+        from django_api.models import AgentConversationLog
+
+        context = state.get("student_context") or {}
+        student_id = context.get("student_id")
+        history = []
+        if student_id:
+            exchanges = list(AgentConversationLog.objects.filter(
+                asker__owner_id=str(student_id), asker__owner_type="student",
+                responder__owner_id=university_id, responder__owner_type="university",
+            ).order_by("-created_at", "-id")[:5])[::-1]
+            for exchange in exchanges:
+                history.extend([
+                    {"role": "user", "content": exchange.question},
+                    {"role": "assistant", "content": exchange.answer},
+                ])
+        result = agent.answer(state["question"], context, history=history)
     except Exception as exc:
         result = {
             "university": getattr(agent, "persona", {}).get("university", university_id),
@@ -88,6 +103,9 @@ def ask_all(
     runtime's .batch() -- the old hand-rolled for-loop this replaced
     (agents.commons.query_all) has since been deleted as dead code."""
     target_ids = university_ids if university_ids is not None else commons.list_university_ids()
+    from django.conf import settings
+    target_ids = list(dict.fromkeys(target_ids))[:settings.AGENT_MAX_UNIVERSITIES]
+    max_concurrency = min(max_concurrency, settings.AGENT_MAX_UNIVERSITIES)
 
     inputs = [
         {"university_id": university_id, "question": question, "student_context": student_context}

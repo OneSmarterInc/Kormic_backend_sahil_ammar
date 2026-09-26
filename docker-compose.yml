@@ -12,15 +12,21 @@ x-app: &app
     # of whatever the host checkout looks like.
     - static_data:/app/staticfiles
     - uploads_data:/app/uploads
+    - embedding_data:/home/app/.cache/kormic-embeddings
   env_file:
     - .env
   environment:
     DB_ENGINE: postgresql
+    UNIVERSITY_EMBEDDING_CACHE_DIR: /home/app/.cache/kormic-embeddings
     CELERY_BROKER_URL: redis://redis:6379/0
     CELERY_RESULT_BACKEND: redis://redis:6379/1
     # Separate Redis DB index from the Celery broker/result-backend above,
     # so the shared rate-limit/TOTP-replay cache keyspace stays independent.
     DJANGO_CACHE_URL: redis://redis:6379/2
+    AGENT_REDIS_URL: redis://redis:6379/3
+    AGENT_QUEUE_ENABLED: "true"
+    AGENT_DISTRIBUTED_LIMITS: "true"
+    AGENT_CONFIG_CACHE_URL: redis://redis_cache:6379/0
     # Database identity comes from the deployment environment. Compose keeps
     # the Docker-internal host/port fixed to the postgres service, but never
     # replaces operator-supplied credentials from .env with hard-coded ones.
@@ -39,8 +45,22 @@ x-app: &app
   restart: unless-stopped
 
 services:
+  university_worker:
+    <<: *app
+    command: python manage.py university_worker
+
+  github_worker:
+    <<: *app
+    command: python manage.py github_worker
+
+  redis_cache:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+
   redis:
     image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory-policy noeviction
     container_name: kormic_redis
     volumes:
       - redis_data:/data
@@ -52,7 +72,7 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: kormic_postgres
     environment:
       DB_ENGINE: postgresql
@@ -96,7 +116,6 @@ services:
 
   web:
     <<: *app
-    container_name: kormic_web
     # gunicorn, not manage.py runserver -- runserver is single-threaded-ish,
     # unstable under load, and explicitly documented by Django as unsafe for
     # production. GUNICORN_WORKERS/TIMEOUT are env-tunable (see
@@ -128,6 +147,16 @@ services:
       retries: 3
       start_period: 20s
 
+  agent_worker:
+    <<: *app
+    command: celery -A kormic_backend worker -l info -Q agent_chat --concurrency=4 --hostname=agent@%h
+    stop_grace_period: 620s
+
+  index_worker:
+    <<: *app
+    command: celery -A kormic_backend worker -l info -Q knowledge_index --concurrency=2 --hostname=index@%h
+    stop_grace_period: 620s
+
   celery_beat:
     <<: *app
     container_name: kormic_celery_beat
@@ -142,3 +171,4 @@ volumes:
   postgres_data:
   static_data:
   uploads_data:
+  embedding_data:
