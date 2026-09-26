@@ -1,8 +1,13 @@
 from django.urls import path
 
 from django_api import schema_views, views
+from django_api.job_views import job_status
+from github_profiles.views import GitHubOverviewView, GitHubRepositoriesView, GitHubSyncStatusView
+from university_research.views import UniversityResearchView, UniversityRefreshView
 
 urlpatterns = [
+    path('university-research/<uuid:university_id>/', UniversityResearchView.as_view()),
+    path('university-research/<uuid:university_id>/refresh/', UniversityRefreshView.as_view()),
     path("", views.api_home, name="api-home"),
 
     # APIs 1-5: Profile Management
@@ -11,6 +16,9 @@ urlpatterns = [
     path("profile/resume/", views.ResumeUploadAPIView.as_view(), name="profile-resume"),
     path("profile/resume/<int:resume_id>/", views.ResumeDetailAPIView.as_view(), name="profile-resume-detail"),
     path("profile/github/", views.GitHubAnalyzeAPIView.as_view(), name="profile-github"),
+    path("profile/github/overview/", GitHubOverviewView.as_view(), name="github-overview"),
+    path("profile/github/repos/", GitHubRepositoriesView.as_view(), name="github-repos"),
+    path("profile/github/jobs/<uuid:job_id>/", GitHubSyncStatusView.as_view(), name="github-sync-status"),
     path("profile/linkedin/", views.LinkedInAnalyzeAPIView.as_view(), name="profile-linkedin"),
     path(
         "profile/linkedin/<int:analysis_id>/images/<int:index>/",
@@ -31,6 +39,8 @@ urlpatterns = [
     # as background orchestrator calls from inside agent_chat (see agents/commons.py).
     path("chat/intake/", views.profile_intake_chat, name="profile-intake-chat"),
     path("chat/agent/", views.agent_chat, name="agent-chat"),
+    path("chat/jobs/active/", job_status, name="agent-job-active"),
+    path("chat/jobs/<uuid:job_id>/", job_status, name="agent-job-status"),
     path("chat/agent/history/", views.agent_chat_history, name="agent-chat-history"),
     # "New chat" and "clear chat" are the same action here -- there's no
     # multi-thread concept per student, so starting fresh always means

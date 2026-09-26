@@ -798,7 +798,7 @@ class DirectUniversityCrawler:
             tag.decompose()
         content = _clean_text(content_copy.get_text(" "), 7000)
         self._record_page(
-            url, final_url, response.status_code, content_type, depth,
+            url, final_url, status_code, content_type, depth,
             title, description, h1, content, anchor_text, parent_url, False,
         )
 

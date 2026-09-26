@@ -25,6 +25,25 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Load ANTHROPIC_API_KEY / GITHUB_TOKEN / etc. from .env before any agent code runs.
 load_dotenv(BASE_DIR / ".env")
 
+# GitHub source analysis uses local Qwen first, then the existing Claude key.
+GITHUB_OLLAMA_BASE_URL = os.getenv("GITHUB_OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+GITHUB_OLLAMA_MODEL = os.getenv("GITHUB_OLLAMA_MODEL", "qwen3:1.7b")
+GITHUB_OLLAMA_TIMEOUT = float(os.getenv("GITHUB_OLLAMA_TIMEOUT", "180"))
+GITHUB_OLLAMA_ALLOWED_HOSTS = [h.strip() for h in os.getenv("GITHUB_OLLAMA_ALLOWED_HOSTS", "localhost,127.0.0.1,::1").split(",") if h.strip()]
+GITHUB_WORKER_CONCURRENCY = int(os.getenv("GITHUB_WORKER_CONCURRENCY", "4"))
+GITHUB_JOB_LEASE_SECONDS = 600
+GITHUB_QWEN_CONCURRENCY = int(os.getenv("GITHUB_QWEN_CONCURRENCY", "1"))
+GITHUB_CLAUDE_CONCURRENCY = int(os.getenv("GITHUB_CLAUDE_CONCURRENCY", "4"))
+GITHUB_QWEN_RPM = int(os.getenv("GITHUB_QWEN_RPM", "60"))
+GITHUB_CLAUDE_RPM = int(os.getenv("GITHUB_CLAUDE_RPM", "40"))
+GITHUB_QWEN_TPM = int(os.getenv("GITHUB_QWEN_TPM", "300000"))
+GITHUB_CLAUDE_TPM = int(os.getenv("GITHUB_CLAUDE_TPM", "150000"))
+GITHUB_RUN_MAX_MODEL_CALLS = int(os.getenv("GITHUB_RUN_MAX_MODEL_CALLS", "400"))
+GITHUB_RUN_MAX_TOKENS = int(os.getenv("GITHUB_RUN_MAX_TOKENS", "2000000"))
+GITHUB_AGENT_MAX_STEPS = int(os.getenv("GITHUB_AGENT_MAX_STEPS", "12"))
+GITHUB_RUN_MAX_SECONDS = int(os.getenv("GITHUB_RUN_MAX_SECONDS", "86400"))
+GITHUB_DAILY_SYNC_LIMIT = int(os.getenv("GITHUB_DAILY_SYNC_LIMIT", "20"))
+
 # First key encrypts new TOTP seeds; all configured keys can decrypt. Supply
 # independently of DB credentials, DJANGO_SECRET_KEY and GitHub OAuth keys.
 TOTP_SECRET_KEYS = tuple(
@@ -107,6 +126,7 @@ INSTALLED_APPS = [
     'notifications',
     'project_superuser',
     'url_discovery',
+    'university_research',
 ]
 
 MIDDLEWARE = [
@@ -157,6 +177,25 @@ if not DEBUG:
         )
 
 DB_ENGINE = _raw_db_engine or "sqlite"
+
+# Local embeddings power pgvector retrieval; Claude still generates replies.
+UNIVERSITY_VECTOR_SEARCH = os.getenv("UNIVERSITY_VECTOR_SEARCH", "true").lower() == "true"
+AGENT_QUEUE_ENABLED = os.getenv("AGENT_QUEUE_ENABLED", "false" if DEBUG else "true").lower() == "true" and not TESTING
+AGENT_DISTRIBUTED_LIMITS = os.getenv("AGENT_DISTRIBUTED_LIMITS", "false" if DEBUG else "true").lower() == "true" and not TESTING
+AGENT_REDIS_URL = os.getenv("AGENT_REDIS_URL", "redis://localhost:6379/3")
+AGENT_MODEL_CONCURRENCY = max(1, int(os.getenv("AGENT_MODEL_CONCURRENCY", "16")))
+AGENT_MODEL_REQUESTS_PER_MINUTE = max(1, int(os.getenv("AGENT_MODEL_REQUESTS_PER_MINUTE", "120")))
+AGENT_STUDENT_REQUESTS_PER_MINUTE = max(1, int(os.getenv("AGENT_STUDENT_REQUESTS_PER_MINUTE", "10")))
+AGENT_UNIVERSITY_CONCURRENCY = max(1, int(os.getenv("AGENT_UNIVERSITY_CONCURRENCY", "4")))
+AGENT_MAX_UNIVERSITIES = max(1, min(10, int(os.getenv("AGENT_MAX_UNIVERSITIES", "5"))))
+AGENT_QUEUE_CAPACITY = max(1, int(os.getenv("AGENT_QUEUE_CAPACITY", "1000")))
+AGENT_JOB_TIMEOUT = 600
+AGENT_QUEUE_TIMEOUT = 900
+if not DEBUG and not TESTING and (not AGENT_QUEUE_ENABLED or not AGENT_DISTRIBUTED_LIMITS):
+    raise ImproperlyConfigured("Production requires queued chat and distributed agent limits.")
+from corsheaders.defaults import default_headers
+CORS_ALLOW_HEADERS = (*default_headers, "idempotency-key")
+UNIVERSITY_EMBEDDING_CACHE_DIR = Path(os.getenv("UNIVERSITY_EMBEDDING_CACHE_DIR", str(BASE_DIR / ".embedding_cache")))
 
 if DB_ENGINE in {"sqlite", "sqlite3"}:
     sqlite_name = os.environ.get("SQLITE_PATH", "").strip()
@@ -361,17 +400,18 @@ else:
     }
 
 
-# Celery -- background delivery for push notifications (see notifications/).
-# Chat/agent processing itself stays synchronous: a student's app is waiting
-# on the HTTP response for their reply, so there's no natural place to hand
-# the turn off to a background worker without also building a poll/push
-# mechanism on the client. pure_multi_agent.runtime's LangGraph checkpointer
-# is durable and shared (Postgres-backed, not in-process) precisely so this
-# synchronous-per-request model is safe to run behind more than one gunicorn
-# worker -- see pure_multi_agent/runtime.py's _build_checkpointer(). Celery
-# is used for the "send this push" side-effect, which is safely
-# fire-and-forget, plus other genuinely background jobs (see
-# institutes_list/tasks.py, universities/tasks.py).
+CACHES["agent_config"] = ({
+    "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+    "LOCATION": "university-config", "OPTIONS": {"MAX_ENTRIES": 128},
+} if DEBUG or TESTING else {
+    "BACKEND": "django_redis.cache.RedisCache",
+    "LOCATION": os.getenv("AGENT_CONFIG_CACHE_URL", "redis://localhost:6380/0"),
+    "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient", "SOCKET_TIMEOUT": 2, "SOCKET_CONNECT_TIMEOUT": 2},
+})
+
+# Production chat is queued; web workers only admit jobs and serve status.
+# Dedicated agent_chat/knowledge_index workers isolate model work and ingestion
+# from notifications and other background tasks. See SCALING.md.
 
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://localhost:6379/1")
@@ -388,6 +428,8 @@ CELERY_TASK_ALWAYS_EAGER = os.getenv(
     "CELERY_TASK_ALWAYS_EAGER",
     "true" if DEBUG else "false",
 ).strip().lower() == "true"
+if AGENT_QUEUE_ENABLED:
+    CELERY_TASK_ALWAYS_EAGER = False
 CELERY_TASK_EAGER_PROPAGATES = False if DEBUG else True
 
 CELERY_ACCEPT_CONTENT = ["json"]
@@ -426,6 +468,7 @@ PROACTIVE_CHECKIN_COOLDOWN_DAYS = int(os.environ.get("PROACTIVE_CHECKIN_COOLDOWN
 PROACTIVE_CHECKIN_BATCH_SIZE = int(os.environ.get("PROACTIVE_CHECKIN_BATCH_SIZE", "50"))
 
 CELERY_BEAT_SCHEDULE = {
+    "dispatch-agent-outbox": {"task": "pure_multi_agent.tasks.dispatch_agent_work", "schedule": 30.0},
     "purge-expired-institute-roster-files": {
         "task": "institutes_list.tasks.purge_expired_source_files",
         "schedule": crontab(hour=3, minute=0),
@@ -446,6 +489,14 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(hour=2, minute=0),  # Run nightly at 2:00 AM
     },
 }
+
+CELERY_TASK_ROUTES = {
+    "pure_multi_agent.tasks.execute_agent_job": {"queue": "agent_chat"},
+    "pure_multi_agent.tasks.index_university": {"queue": "knowledge_index"},
+}
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_BROKER_CONNECTION_TIMEOUT = 3
+CELERY_BROKER_TRANSPORT_OPTIONS = {"socket_connect_timeout": 3, "socket_timeout": 3, "visibility_timeout": 1800}
 
 # Expo push notifications (student mobile app).
 EXPO_PUSH_ACCESS_TOKEN = os.environ.get("EXPO_PUSH_ACCESS_TOKEN", "")

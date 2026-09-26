@@ -3,7 +3,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("institutes_list", "0006_institutestudentlist_source_file_content_type_and_more"),
+        ("institutes_list", "0003_rename_universitystudentlist_institutestudentlist"),
     ]
 
     operations = [

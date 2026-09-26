@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+from difflib import get_close_matches
+import re
 from typing import Any, Dict, List, Optional
 
 
@@ -90,6 +92,8 @@ class UniversityKnowledgeBase:
         "does", "do", "can", "have", "has", "at", "in", "on",
         "and", "or", "with", "about", "tell", "me", "please",
         "give", "show", "explain", "know", "need", "want",
+        "our", "your", "their", "my", "we", "us", "related", "regarding",
+        "policy", "policies", "information", "details",
         "wright", "state", "university", "franklin",
     }
 
@@ -157,11 +161,13 @@ class UniversityKnowledgeBase:
         "unknown": 0.5,
     }
 
-    def __init__(self, university_id: str):
+    def __init__(self, university_id: str, lazy: bool = False):
         self.university_id = university_id
+        self.lazy = lazy
         self.entries: List[KnowledgeEntry] = []
         self.total_questions_answered = 0
-        self._load_from_db()
+        if not lazy:
+            self._load_from_db()
 
     # ------------------------------------------------------------------
     # DB persistence
@@ -179,12 +185,15 @@ class UniversityKnowledgeBase:
         knowledge existed when it was first built.
         """
         self.entries = []
-        self._load_from_db()
+        if not self.lazy:
+            self._load_from_db()
 
-    def _load_from_db(self) -> None:
+    def _load_from_db(self, rows=None) -> None:
         from django_api.models import UniversityKnowledgeEntry
 
-        for row in UniversityKnowledgeEntry.objects.filter(university_id=self.university_id):
+        if rows is None:
+            rows = UniversityKnowledgeEntry.objects.filter(university_id=self.university_id).defer("embedding")
+        for row in rows:
             entry = KnowledgeEntry(
                 topic=row.topic,
                 content=row.content,
@@ -341,16 +350,11 @@ class UniversityKnowledgeBase:
     # ------------------------------------------------------------------
 
     def _tokenize(self, text: str) -> List[str]:
-        text = str(text or "").lower()
-
-        for ch in "?,.!:;()[]{}\"'/|":
-            text = text.replace(ch, " ")
-
-        return [
-            word.strip()
-            for word in text.split()
-            if word.strip() and word.strip() not in self.STOP_WORDS
-        ]
+        words = re.findall(r"[\w-]+", str(text or "").casefold())
+        # Normalize plurals consistently on both sides without substring matches
+        # ("our" must not match "hour", nor "aid" match "paid").
+        return [word[:-1] if len(word) > 4 and word.endswith("s") and not word.endswith("ss") else word
+                for word in words if word not in self.STOP_WORDS]
 
     def _phrase_score(self, query: str, topic: str, content: str) -> float:
         query_clean = " ".join(str(query or "").lower().split())
@@ -385,13 +389,35 @@ class UniversityKnowledgeBase:
         if not query_words:
             return []
 
+        from knowledge.vectors import search_ids
+        vector_ids = search_ids(self.university_id, query, limit=limit)
+        if self.lazy:
+            from django.db.models import Q
+            from django_api.models import UniversityKnowledgeEntry
+            candidates = Q(pk__in=vector_ids)
+            for word in query_words[:16]:
+                term = word[:max(4, len(word) - 3)] if len(word) >= 6 else word
+                candidates |= Q(topic__icontains=term) | Q(content__icontains=term)
+            base = UniversityKnowledgeEntry.objects.filter(university_id=self.university_id).defer("embedding")
+            ids = list(base.filter(candidates).order_by("-confidence", "pk").values_list("pk", flat=True)[:128])
+            self.entries = []
+            self._load_from_db(base.filter(pk__in=set(ids + vector_ids)))
+
+        tokenized = [(entry, set(self._tokenize(entry.topic)), set(self._tokenize(entry.content)))
+                     for entry in self.entries]
+        vocabulary = set().union(*(topic | content for _, topic, content in tokenized))
+        corrected = []
+        for word in query_words:
+            # Correct only unknown, reasonably long words against this university's
+            # vocabulary; avoid fuzzy matching short identifiers such as GPA/GRE.
+            candidates = get_close_matches(word, sorted(vocabulary), n=1, cutoff=0.78) if len(word) >= 6 and word not in vocabulary else []
+            corrected.append(candidates[0] if candidates else word)
+        query_words = list(dict.fromkeys(corrected))
+
         matches: List[KnowledgeEntry] = []
 
-        for entry in self.entries:
+        for entry, topic, content in tokenized:
             score = self._phrase_score(query, entry.topic, entry.content)
-
-            topic = entry.topic.lower()
-            content = entry.content.lower()
 
             for word in query_words:
                 if word in topic:
@@ -404,15 +430,21 @@ class UniversityKnowledgeBase:
 
             score *= entry.confidence
             score *= source_boost
-            score += entry.times_used * 0.1
-
             if score > 0:
                 entry.search_score = round(score, 4)
                 matches.append(entry)
 
         matches.sort(key=lambda entry: entry.search_score, reverse=True)
 
-        results = matches[:limit]
+        by_id = {entry.db_id: entry for entry in self.entries}
+        # Reciprocal rank fusion preserves exact matches alongside semantic
+        # matches (e.g. "cost to attend" can retrieve "Tuition and fees").
+        ranks = {}
+        for ranking in ([entry.db_id for entry in matches], vector_ids):
+            for rank, entry_id in enumerate(ranking, 1):
+                if entry_id in by_id:
+                    ranks[entry_id] = ranks.get(entry_id, 0) + 1 / (60 + rank)
+        results = [by_id[pk] for pk in sorted(ranks, key=ranks.get, reverse=True)[:limit]]
 
         for entry in results:
             entry.times_used += 1
@@ -488,6 +520,13 @@ class UniversityKnowledgeBase:
         return "\n".join(lines)
 
     def stats(self) -> Dict[str, Any]:
+        if self.lazy:
+            from django.db.models import Count
+            from django_api.models import UniversityKnowledgeEntry
+            counts = dict(UniversityKnowledgeEntry.objects.filter(university_id=self.university_id)
+                          .values_list("source_type").annotate(total=Count("pk")))
+            return {"university_id": self.university_id, "total_entries": sum(counts.values()),
+                    "by_source": counts, "questions_answered": self.total_questions_answered}
         source_counts: Dict[str, int] = {}
 
         for entry in self.entries:

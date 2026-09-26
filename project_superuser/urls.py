@@ -1,8 +1,11 @@
 from django.urls import path
 
 from project_superuser import views
+from university_research.views import InformationPolicyView, ResearchUniversityListView
 
 urlpatterns = [
+    path('update-information/', InformationPolicyView.as_view()),
+    path('update-information/universities/', ResearchUniversityListView.as_view()),
     path("students/", views.AdminStudentListCreateAPIView.as_view(), name="superuser-students"),
     path("students/<str:student_id>/", views.AdminStudentDetailAPIView.as_view(), name="superuser-student-detail"),
     path("universities/", views.AdminUniversityListCreateAPIView.as_view(), name="superuser-universities"),

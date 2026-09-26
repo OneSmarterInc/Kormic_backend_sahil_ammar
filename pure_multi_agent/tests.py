@@ -98,6 +98,9 @@ class AskUniversityToolConversationLoggingTests(TestCase):
     def setUp(self):
         _reset_inprocess_agent_caches()
         u = University.objects.create(name="Tool Log University", country="US", agent_name="Nova5")
+        from django.contrib.auth.models import User
+        from accounts.models import Account
+        Account.objects.create(user=User.objects.create_user(username='tool-officer'), role='university', university=u)
         self.university_id = str(u.uuid)
         self.ctx = {
             "canonical_student_id": "student_tool_log",
@@ -105,20 +108,20 @@ class AskUniversityToolConversationLoggingTests(TestCase):
         }
         self.tools = {t.name: t for t in build_tools(self.ctx)}
 
-    @mock.patch("agents.university_agent._get_anthropic_client")
+    @mock.patch("pure_multi_agent.registered_adviser.consult")
     def test_ask_university_logs_conversation(self, mock_client):
-        mock_client.return_value.messages.create.return_value = _fake_response({
+        mock_client.return_value = {
             "answer": "The deadline is March 1.",
             "confidence": 0.9,
             "unsupported_topics": [],
-        })
+        }
 
         result = self.tools["ask_university"].invoke({
             "university_id": self.university_id,
             "question": "What is the deadline?",
         })
 
-        self.assertIn("March 1", result)
+        self.assertIn("March 1", result["answer"])
         log = AgentConversationLog.objects.get()
         self.assertEqual(log.asker.owner_id, "student_tool_log")
         self.assertEqual(log.responder.owner_id, self.university_id)
@@ -133,5 +136,5 @@ class AskUniversityToolConversationLoggingTests(TestCase):
             "question": "What is the deadline?",
         })
 
-        self.assertIn("Unknown university_id", result)
+        self.assertIn("Unknown university_id", result["error"])
         self.assertEqual(AgentConversationLog.objects.count(), 0)

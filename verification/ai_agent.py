@@ -99,7 +99,8 @@ ANTHROPIC_CLIENT_TIMEOUT_SECONDS = 120.0
 def _get_anthropic_client() -> anthropic.Anthropic:
     if not os.getenv("ANTHROPIC_API_KEY"):
         raise RuntimeError("ANTHROPIC_API_KEY not found. Falling back to rule-based verification.")
-    return anthropic.Anthropic(timeout=ANTHROPIC_CLIENT_TIMEOUT_SECONDS, max_retries=1)
+    from pure_multi_agent.capacity import limited_client
+    return limited_client(anthropic.Anthropic(timeout=ANTHROPIC_CLIENT_TIMEOUT_SECONDS, max_retries=1))
 
 
 def _clean_model_json_array(raw: str) -> str:

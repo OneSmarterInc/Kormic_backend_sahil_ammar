@@ -1,0 +1,1 @@
+fakeredis[lua]>=2.26,<3

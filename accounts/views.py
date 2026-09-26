@@ -659,6 +659,15 @@ class GitHubOAuthCallbackView(APIView):
         except GitHubOAuthError as exc:
             return self._failure(str(exc))
 
+        # Connecting an account automatically begins the same durable extraction
+        # used by the profile Sync button and the student's LangGraph tools.
+        try:
+            from github_profiles.sync import queue_sync
+            if user.account.student_uuid:
+                queue_sync(user.account.student_uuid)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception('GitHub connected but initial sync could not be queued')
         return self._success(connection.github_username)
 
     def _success(self, github_username: str):

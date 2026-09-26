@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from . import (
+    advising_tools,
     github_tools,
     profile_tools,
     roadmap_tools,
@@ -21,6 +22,7 @@ from . import (
 
 def build_all_tools(ctx: Dict[str, Any]) -> List[Any]:
     return [
+        *advising_tools.build_tools(ctx),
         *time_tools.build_tools(ctx),
         *profile_tools.build_tools(ctx),
         *github_tools.build_tools(ctx),

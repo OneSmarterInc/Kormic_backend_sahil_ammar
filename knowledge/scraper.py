@@ -49,7 +49,8 @@ def _get_anthropic_client() -> anthropic.Anthropic:
             "ANTHROPIC_API_KEY not found. Claude fact extraction is unavailable."
         )
 
-    return anthropic.Anthropic(timeout=ANTHROPIC_CLIENT_TIMEOUT_SECONDS, max_retries=1)
+    from pure_multi_agent.capacity import limited_client
+    return limited_client(anthropic.Anthropic(timeout=ANTHROPIC_CLIENT_TIMEOUT_SECONDS, max_retries=1))
 
 
 def _clean_whitespace(text: str) -> str:

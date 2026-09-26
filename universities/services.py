@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from datetime import timedelta
 from typing import Any, Dict, List, Optional
+import threading
 
+from django.conf import settings
 from django.utils import timezone
 from celery import current_app
 
@@ -21,6 +23,16 @@ def build_persona_dict(university: University) -> Dict[str, Any]:
     """Adapt a University row into the exact shape
     personas.university_personas.UNIVERSITY_PERSONAS[id] used to have, so
     agents.university_agent.UniversityAgent needs no further changes."""
+    import json
+    from django.core.cache import caches
+    cache = caches["agent_config"]
+    key = f"university:{university.uuid}:{university.updated_at.isoformat()}"
+    try:
+        saved = cache.get(key)
+    except Exception:
+        saved = None
+    if saved:
+        return json.loads(saved)
     constitution = build_constitution(
         agent_name=university.agent_name or str(university.uuid),
         program_name=university.name,
@@ -34,7 +46,7 @@ def build_persona_dict(university: University) -> Dict[str, Any]:
         never_do_notes=university.never_do_notes,
     )
 
-    return {
+    persona = {
         "name": university.name,
         "agent_name": university.agent_name or str(university.uuid),
         "location": university.location,
@@ -45,6 +57,11 @@ def build_persona_dict(university: University) -> Dict[str, Any]:
         # (already DB-backed) -- never re-derived from the persona dict.
         "key_facts_seed": [],
     }
+    try:
+        cache.set(key, json.dumps(persona), timeout=3600)
+    except Exception:
+        pass  # Configuration caching is optional; tenant authorization is not.
+    return persona
 
 
 def register_university(institution_name: str, country: str) -> University:
@@ -202,6 +219,28 @@ def _reap_stale_scrape_job(job: "ScrapeJob") -> bool:
     return True
 
 
+def _run_scrape_job_in_local_thread(job_id: int) -> None:
+    """Execute one scrape job in a background thread for direct local Django runs.
+
+    Local development intentionally does not require Redis/Celery. The scraper
+    is still kept off the HTTP request because network + LLM extraction can
+    take minutes. Production continues to use the real Celery broker/worker.
+    """
+    from universities.tasks import run_scrape_now_job
+
+    def runner() -> None:
+        try:
+            run_scrape_now_job.apply(args=[job_id])
+        except Exception:
+            logger.exception("Local background scrape job %s crashed", job_id)
+
+    threading.Thread(
+        target=runner,
+        name=f"kormic-scrape-{job_id}",
+        daemon=True,
+    ).start()
+
+
 def start_scrape_job(university: University) -> "ScrapeJob":
     """Queue scrape_now() and recover stale jobs so one lost Celery message
     cannot permanently block the university's knowledge refresh button."""
@@ -211,11 +250,14 @@ def start_scrape_job(university: University) -> "ScrapeJob":
 
     job = ScrapeJob.objects.create(university=university)
 
-    # Scraping is a background operation. Use send_task so a global Celery
-    # task_always_eager setting can never turn this HTTP endpoint into a
-    # blocking scrape request.
+    # Scraping must never block the HTTP request. In direct local
+    # development, run the Celery task body in a daemon thread so Redis is
+    # optional; Docker/production keeps the real broker-backed task queue.
     try:
-        current_app.send_task("universities.tasks.run_scrape_now_job", args=[job.id], retry=False)
+        if settings.DEBUG and not getattr(settings, "TESTING", False):
+            _run_scrape_job_in_local_thread(job.id)
+        else:
+            current_app.send_task("universities.tasks.run_scrape_now_job", args=[job.id], retry=False)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Could not enqueue scrape job %s", job.id)
         job.status = ScrapeJob.Status.FAILED

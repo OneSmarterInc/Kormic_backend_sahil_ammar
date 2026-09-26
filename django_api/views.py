@@ -5,6 +5,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from pure_multi_agent.jobs import guarded_history
 from typing import Any, Dict, Optional
 
 from django.http import FileResponse
@@ -554,20 +555,15 @@ class GitHubAnalyzeAPIView(APIView):
         student_id = request.user.account.student_uuid
 
         try:
-            result = analyze_github(student_id=student_id)
-            return Response(
-                {
-                    "status": "success",
-                    "student_id": result["student_id"],
-                    "github_username": result["github_username"],
-                    "skills_added": result["skills_added"],
-                    "github_result": result["github_result"],
-                },
-                status=status.HTTP_200_OK,
-            )
+            from github_profiles.sync import queue_sync
+            from github_profiles.views import run_payload
+            return Response(run_payload(queue_sync(student_id)), status=status.HTTP_202_ACCEPTED)
         except GitHubNotConnectedError as exc:
             return api_error(str(exc), status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
+            from rest_framework.exceptions import Throttled
+            if isinstance(exc, Throttled):
+                raise
             return unexpected_server_error("Unexpected error while analyzing GitHub profile.", exc)
 
 
@@ -893,6 +889,10 @@ def _escalation_meta(pending_query: Optional["PendingQuery"]) -> Dict[str, Any]:
 @api_view(["POST"])
 @permission_classes(STUDENT_PERMISSIONS)
 def agent_chat(request):
+    from django.conf import settings
+    if settings.AGENT_QUEUE_ENABLED:
+        from pure_multi_agent.jobs import submit
+        return submit(request)
     from pure_multi_agent.runtime import run_turn
 
     student_id = request.user.account.student_uuid
@@ -937,7 +937,9 @@ def agent_chat(request):
 
     try:
         _existing_pq_ids = _existing_pending_query_ids(student_id)
-        agent_name, reply = run_turn(student_id, effective_message, image_blocks=image_blocks or None)
+        turn_result = run_turn(student_id, effective_message, image_blocks=image_blocks or None)
+        agent_name, reply = turn_result
+        turn_meta = getattr(turn_result, "metadata", {})
 
         _pq = _new_pending_query(student_id, _existing_pq_ids)
         ChatMessage.objects.create(
@@ -945,7 +947,7 @@ def agent_chat(request):
             student_id=student_id,
             sender=ChatMessage.Sender.ASSISTANT,
             content=reply or "",
-            meta=_escalation_meta(_pq),
+            meta={**_escalation_meta(_pq), **turn_meta},
         )
         _notify_agent_reply(student_id, agent_name, reply or "")
 
@@ -953,6 +955,7 @@ def agent_chat(request):
             "agent": agent_name,
             "student_id": student_id,
             "reply": reply,
+            "meta": turn_meta,
             "message_id": user_msg.id,
             "pending": bool(_pq),
             "query_id": _pq.id if _pq else None,
@@ -965,6 +968,10 @@ def agent_chat(request):
 @api_view(["PATCH"])
 @permission_classes(STUDENT_PERMISSIONS)
 def agent_chat_edit(request, message_id):
+    from django.conf import settings
+    if settings.AGENT_QUEUE_ENABLED:
+        from pure_multi_agent.jobs import submit
+        return submit(request, message_id=message_id)
     """
     PATCH /api/chat/agent/<message_id>/edit/
     Edits a previously-sent user message and regenerates the AI reply from
@@ -1016,14 +1023,16 @@ def agent_chat_edit(request, message_id):
 
     try:
         _existing_pq_ids = _existing_pending_query_ids(student_id)
-        agent_name, reply = run_turn(student_id, new_message, image_blocks=image_blocks or None)
+        turn_result = run_turn(student_id, new_message, image_blocks=image_blocks or None)
+        agent_name, reply = turn_result
+        turn_meta = getattr(turn_result, "metadata", {})
         _pq = _new_pending_query(student_id, _existing_pq_ids)
         ChatMessage.objects.create(
             channel=ChatMessage.Channel.AGENT,
             student_id=student_id,
             sender=ChatMessage.Sender.ASSISTANT,
             content=reply or "",
-            meta=_escalation_meta(_pq),
+            meta={**_escalation_meta(_pq), **turn_meta},
         )
         _notify_agent_reply(student_id, agent_name, reply or "")
 
@@ -1031,6 +1040,7 @@ def agent_chat_edit(request, message_id):
             "agent": agent_name,
             "student_id": student_id,
             "reply": reply,
+            "meta": turn_meta,
             "message_id": target.id,
             "edited_at": target.edited_at,
             "pending": bool(_pq),
@@ -1126,6 +1136,7 @@ def agent_chat_history(request):
 
 @api_view(["POST"])
 @permission_classes(STUDENT_PERMISSIONS)
+@guarded_history
 def agent_chat_new(request):
     """
     POST /api/chat/agent/new/
@@ -1931,6 +1942,10 @@ def university_profile_presenter_chat_history(request, university_id: str, stude
 @api_view(["POST"])
 @permission_classes(UNIVERSITY_OWNER_PERMISSIONS)
 def university_agent_chat(request, university_id: str):
+    from django.conf import settings
+    if settings.AGENT_QUEUE_ENABLED:
+        from pure_multi_agent.jobs import submit
+        return submit(request, university_id=university_id)
     """
     POST /api/university/<university_id>/chat/
     University-officer-facing chat with their OWN program agent
@@ -1941,8 +1956,11 @@ def university_agent_chat(request, university_id: str):
     """
     message = request.data.get("message") or request.data.get("question")
 
-    if not message:
-        return api_error("message is required.")
+    if not isinstance(message, str) or not message.strip():
+        return api_error("message must be a non-empty string.")
+    message = message.strip()
+    if len(message) > 12000:
+        return api_error("message must be at most 12000 characters.")
 
     try:
         from agents import commons
@@ -1951,7 +1969,12 @@ def university_agent_chat(request, university_id: str):
         return api_error(str(exc), status.HTTP_404_NOT_FOUND)
 
     try:
-        result = agent.answer(message, caller_role="officer")
+        previous = list(ChatMessage.objects.filter(
+            channel=ChatMessage.Channel.UNIVERSITY,
+            university_id=university_id, student_id="",
+        ).order_by("-created_at", "-id")[:10])[::-1]
+        history = [{"role": row.sender, "content": row.content} for row in previous]
+        result = agent.answer(message, caller_role="officer", history=history)
         reply = result.get("answer", "")
         log_chat_turn(
             channel=ChatMessage.Channel.UNIVERSITY,
@@ -1966,6 +1989,7 @@ def university_agent_chat(request, university_id: str):
                 "pending_query": result.get("pending_query"),
                 "knowledge_gap": result.get("knowledge_gap", False),
                 "source": result.get("source"),
+                "sources": result.get("sources", []),
             },
         )
         return Response({
@@ -1978,6 +2002,7 @@ def university_agent_chat(request, university_id: str):
             "unsupported_topics": result.get("unsupported_topics"),
             "confidence": result.get("confidence"),
             "trust": result.get("trust"),
+            "sources": result.get("sources", []),
         })
     except Exception as exc:
         return unexpected_server_error("Unexpected error during university agent chat.", exc)
@@ -1985,6 +2010,7 @@ def university_agent_chat(request, university_id: str):
 
 @api_view(["GET", "DELETE"])
 @permission_classes(UNIVERSITY_OWNER_PERMISSIONS)
+@guarded_history
 def university_agent_chat_history(request, university_id: str):
     """
     GET /api/university/<university_id>/chat/history/

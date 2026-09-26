@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import timedelta
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 
+from django.conf import settings
 from django.utils import timezone
 
 from url_discovery.domain_policy import validate_public_base_url
@@ -73,6 +75,28 @@ def _reap_if_stale(job: DiscoveryJob) -> bool:
     return True
 
 
+def _run_discovery_job_in_local_thread(job_id: int) -> None:
+    """Execute discovery in-process for direct local Django development.
+
+    The crawl remains off the HTTP request, but local developers do not need
+    to run Redis/Celery just to test the university scraper. Production and
+    Docker continue to use the normal Celery worker.
+    """
+    from url_discovery.tasks import run_discovery_job
+
+    def runner() -> None:
+        try:
+            run_discovery_job.apply(args=[job_id])
+        except Exception:
+            logger.exception("Local background discovery job %s crashed", job_id)
+
+    threading.Thread(
+        target=runner,
+        name=f"kormic-discovery-{job_id}",
+        daemon=True,
+    ).start()
+
+
 def start_discovery(
     university,
     max_pages: Optional[int] = None,
@@ -135,7 +159,10 @@ def start_discovery(
 
     from url_discovery.tasks import run_discovery_job
 
-    run_discovery_job.delay(job.id)
+    if settings.DEBUG and not getattr(settings, "TESTING", False):
+        _run_discovery_job_in_local_thread(job.id)
+    else:
+        run_discovery_job.delay(job.id)
     return job
 
 

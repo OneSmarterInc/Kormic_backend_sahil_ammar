@@ -194,10 +194,11 @@ class UniversityInterestTests(TestCase):
         )
         from universities.models import University
         university = University.objects.get(uuid=self.university_id)
+        university.name = "Wright State"
         university.eligibility_criteria = [
             {"criterion": "Min GPA", "detail": "3.5 to 4.0 scale"}
         ]
-        university.save(update_fields=["eligibility_criteria"])
+        university.save(update_fields=["name", "eligibility_criteria"])
 
     def test_explicit_chat_interest_creates_university_interest_event(self):
         from django_api.models import UniversityInterestEvent

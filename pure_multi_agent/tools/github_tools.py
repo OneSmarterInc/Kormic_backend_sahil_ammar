@@ -1,88 +1,48 @@
-# pure_multi_agent/tools/github_tools.py
-# Wraps profile_intelligence.profile_intelligence.ProfileIntelligenceService
-# unchanged -- the same GitHub course-recommendation analyzer used by the old
-# StudentAgent._handle_github_profile_analysis. The old code made a second,
-# dedicated Claude call here just to phrase the result in Aria's voice; that
-# phrasing now happens in the same agent turn that called this tool (rules
-# folded into pure_multi_agent.prompts.TOOL_USE_RULES), so this tool just
-# returns the structured findings.
-
-from __future__ import annotations
-
-from typing import Any, Dict, List
-
+"""Chat GitHub access uses the student's OAuth-owned LangGraph extraction."""
 from langchain_core.tools import tool
-from rich.console import Console
-
-try:
-    from profile_intelligence.profile_intelligence import ProfileIntelligenceService
-except Exception:
-    ProfileIntelligenceService = None
-
-console = Console()
-
-_service = ProfileIntelligenceService() if ProfileIntelligenceService is not None else None
 
 
-def build_tools(ctx: Dict[str, Any]) -> List[Any]:
+def github_evidence(student_id):
+    from accounts.github_oauth import get_connection_for_student_id
+    from django_api.models import GitHubProfileSnapshot
+    connection = get_connection_for_student_id(student_id)
+    if not connection:
+        return {'status': 'not_connected', 'action': 'Connect GitHub in your profile'}
+    row = GitHubProfileSnapshot.objects.filter(student__uuid=student_id, connection=connection, github_user_id=connection.github_user_id).first()
+    if not row:
+        return {'status': 'not_synced', 'username': connection.github_username}
+    run = row.runs.first()
+    processing = bool(run and run.status in ('queued', 'running'))
+    result = {'status': 'processing' if processing else (run.status if run else 'not_synced'),
+        'username': connection.github_username, 'progress': run.progress if run else '',
+        'job_id': str(run.pk) if run else None, 'synced_at': row.synced_at.isoformat() if row.synced_at else None}
+    if processing:
+        result['instruction'] = 'Analysis is under process. Tell the student; do not infer new GitHub findings until completion.'
+    elif row.synced_at:
+        result.update(summary=row.summary, technologies=row.technologies, languages=row.languages,
+            domains=row.domains, academic_guidance=row.academic_guidance, coverage=row.coverage, warnings=row.warnings)
+    if run and run.status == 'failed':
+        result['error'] = run.error
+    return result
+
+
+def build_tools(ctx):
     @tool
-    def analyze_github_profile(github_input: str) -> str:
-        """Analyze a student's public GitHub profile (URL or username) to infer
-        their technical interests and recommend course directions. Call this
-        whenever the student shares a GitHub link/username or asks you to look
-        at their GitHub."""
-        if _service is None:
-            return (
-                "The profile_intelligence module is not available in this "
-                "environment (missing github_analyzer.py/course_mapper.py/"
-                "profile_intelligence.py)."
-            )
+    def get_github_processing_status() -> dict:
+        """Read the connected student's live GitHub sync state and completed findings. Check before GitHub advice."""
+        return github_evidence(ctx['canonical_student_id'])
 
-        student_profile = ctx["student_profile"]
-        memory = ctx["memory"]
+    @tool
+    def analyze_github_profile(github_input: str = '') -> dict:
+        """Request/resume background LangGraph analysis of the student's connected GitHub account."""
+        from accounts.github_oauth import get_connection_for_student_id
+        from github_profiles.sync import queue_sync
+        connection = get_connection_for_student_id(ctx['canonical_student_id'])
+        if not connection:
+            return {'status': 'not_connected', 'action': 'Connect GitHub on the profile screen first.'}
+        if github_input and github_input.rstrip('/').split('/')[-1].casefold() != connection.github_username.casefold():
+            return {'error': 'This tool only analyzes your connected GitHub account.'}
+        queue_sync(ctx['canonical_student_id'])
+        return github_evidence(ctx['canonical_student_id'])
 
-        try:
-            analysis = _service.analyze_github(
-                github_input,
-                student_name=ctx.get("student_name", "student"),
-            )
-        except Exception as exc:
-            console.print(f"[yellow]GitHub analysis failed: {exc}[/yellow]")
-            return (
-                "I tried checking that GitHub profile, but couldn't analyze it "
-                "properly. Confirm the username/link is correct, public, and "
-                "reachable, or ask the student to paste a short project summary "
-                "instead."
-            )
-
-        course_recommendation = analysis.get("course_recommendation", {})
-        github_analysis = analysis.get("github_analysis", {})
-
-        student_profile["github_profile"] = github_input
-        student_profile["github_profile_intelligence"] = {
-            "generated_at": analysis.get("generated_at"),
-            "human_summary": analysis.get("human_summary"),
-            "primary_direction": course_recommendation.get("primary_direction"),
-            "recommendations": course_recommendation.get("recommendations", []),
-        }
-
-        if github_input not in memory["github_profiles_analyzed"]:
-            memory["github_profiles_analyzed"].append(github_input)
-
-        top_languages = github_analysis.get("top_languages", [])[:5]
-        top_keywords = github_analysis.get("top_keywords", [])[:15]
-        inferred_interests = (
-            github_analysis.get("inferred_interests", {}).get("ranked_interests", [])[:5]
-        )
-
-        return (
-            f"GITHUB HUMAN SUMMARY:\n{analysis.get('human_summary')}\n\n"
-            f"TOP VISIBLE LANGUAGES:\n{top_languages}\n\n"
-            f"TOP TECHNICAL KEYWORDS:\n{top_keywords}\n\n"
-            f"INFERRED INTEREST AREAS:\n{inferred_interests}\n\n"
-            f"COURSE RECOMMENDATION:\n"
-            f"Primary direction: {course_recommendation.get('primary_direction')}\n"
-            f"Recommended course areas: {course_recommendation.get('recommendations')}"
-        )
-
-    return [analyze_github_profile]
+    return [get_github_processing_status, analyze_github_profile]

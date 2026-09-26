@@ -34,4 +34,9 @@ Patches_to_apply
 Patches_Fixed
 Issues_to_fix_before_deployment.md
 staticfiles/
+.embedding_cache/
+.vector-validation/
+university-agent-tests.log
+embedding-setup.log
 .env.prod
+backups/

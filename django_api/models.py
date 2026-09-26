@@ -1,6 +1,8 @@
 import uuid
 
 from django.db import models
+from django.utils import timezone
+from pgvector.django import VectorField
 
 
 class StudentProfile(models.Model):
@@ -221,6 +223,142 @@ class GitHubAnalysis(models.Model):
         return f"GitHubAnalysis({self.student.uuid}, {self.github_url})"
 
 
+class GitHubProfileSnapshot(models.Model):
+    student = models.OneToOneField(StudentProfile, on_delete=models.CASCADE, related_name="github_snapshot")
+    connection = models.OneToOneField("accounts.GitHubOAuthConnection", on_delete=models.CASCADE, related_name="snapshot")
+    github_user_id = models.BigIntegerField()
+    identity = models.JSONField(default=dict)
+    statistics = models.JSONField(default=dict)
+    languages = models.JSONField(default=list)
+    topics = models.JSONField(default=list)
+    technologies = models.JSONField(default=list)
+    domains = models.JSONField(default=list)
+    organizations = models.JSONField(default=list)
+    recent_activity = models.JSONField(default=list)
+    academic_guidance = models.JSONField(default=dict)
+    summary = models.TextField(blank=True)
+    summary_kind = models.CharField(max_length=32, default="factual")
+    coverage = models.JSONField(default=dict)
+    warnings = models.JSONField(default=list)
+    synced_at = models.DateTimeField(null=True, blank=True)
+
+
+class GitHubSyncRun(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    profile = models.ForeignKey(GitHubProfileSnapshot, on_delete=models.CASCADE, related_name="runs")
+    status = models.CharField(max_length=16, default="queued", db_index=True)
+    progress = models.CharField(max_length=300, default="Waiting to collect GitHub profile")
+    result = models.JSONField(default=dict)
+    error = models.TextField(blank=True)
+    stage = models.CharField(max_length=20, default="collect")
+    work = models.JSONField(default=dict)
+    available_at = models.DateTimeField(default=timezone.now, db_index=True)
+    lease_token = models.UUIDField(null=True, blank=True)
+    lease_expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    failures = models.PositiveIntegerField(default=0)
+    model_calls = models.PositiveIntegerField(default=0)
+    reserved_tokens = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [models.UniqueConstraint(fields=["profile"], condition=models.Q(status__in=["queued", "running"]), name="one_active_github_sync")]
+
+
+class GitHubRepository(models.Model):
+    profile = models.ForeignKey(GitHubProfileSnapshot, on_delete=models.CASCADE, related_name="repositories")
+    github_id = models.BigIntegerField()
+    name = models.CharField(max_length=255)
+    full_name = models.CharField(max_length=500)
+    owner_login = models.CharField(max_length=255)
+    private = models.BooleanField(default=False)
+    fork = models.BooleanField(default=False)
+    metadata = models.JSONField(default=dict)
+    languages = models.JSONField(default=dict)
+    readme = models.TextField(blank=True)
+    readme_url = models.URLField(max_length=1200, blank=True)
+    readme_truncated = models.BooleanField(default=False)
+    details_complete = models.BooleanField(default=False)
+    active = models.BooleanField(default=True)
+    fetched_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["full_name", "id"]
+        constraints = [models.UniqueConstraint(fields=["profile", "github_id"], name="github_repo_per_profile")]
+        indexes = [models.Index(fields=["profile", "active", "full_name"], name="github_repo_page")]
+
+
+class GitHubSourceEvidence(models.Model):
+    repository = models.ForeignKey(GitHubRepository, on_delete=models.CASCADE, related_name="source_evidence")
+    sha = models.CharField(max_length=64)
+    path = models.CharField(max_length=1000)
+    url = models.URLField(max_length=1600)
+    excerpt = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["repository", "sha", "path"], name="github_source_at_commit")]
+
+
+class GitHubRepositoryReport(models.Model):
+    repository = models.ForeignKey(GitHubRepository, on_delete=models.CASCADE, related_name="reports")
+    sha = models.CharField(max_length=64)
+    analysis_version = models.PositiveIntegerField(default=2)
+    provider = models.CharField(max_length=32)
+    model = models.CharField(max_length=100)
+    data = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["repository", "sha", "analysis_version"], name="github_report_at_commit")]
+
+
+class GitHubAgentCheckpoint(models.Model):
+    """LangGraph checkpoints are scoped to a run and repository/commit thread."""
+    run = models.ForeignKey(GitHubSyncRun, on_delete=models.CASCADE, related_name="checkpoints")
+    thread = models.CharField(max_length=180)
+    namespace = models.CharField(max_length=180, default="")
+    checkpoint_id = models.CharField(max_length=64)
+    parent_id = models.CharField(max_length=64, blank=True)
+    payload_type = models.CharField(max_length=32)
+    payload = models.BinaryField()
+    metadata = models.JSONField(default=dict)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["run", "thread", "namespace", "checkpoint_id"], name="github_agent_checkpoint_unique")]
+
+
+class GitHubAgentWrite(models.Model):
+    checkpoint = models.ForeignKey(GitHubAgentCheckpoint, on_delete=models.CASCADE, related_name="writes")
+    task_id = models.CharField(max_length=64)
+    index = models.IntegerField()
+    channel = models.CharField(max_length=100)
+    payload_type = models.CharField(max_length=32)
+    payload = models.BinaryField()
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["checkpoint", "task_id", "index"], name="github_agent_write_unique")]
+
+
+class GitHubModelPool(models.Model):
+    provider = models.CharField(max_length=20, primary_key=True)
+    blocked_until = models.DateTimeField(null=True)
+    window_started_at = models.DateTimeField(default=timezone.now)
+    requests = models.PositiveIntegerField(default=0)
+    reserved_tokens = models.PositiveIntegerField(default=0)
+
+
+class GitHubModelSlot(models.Model):
+    provider = models.CharField(max_length=20)
+    number = models.PositiveIntegerField()
+    token = models.UUIDField(null=True)
+    expires_at = models.DateTimeField(null=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["provider", "number"], name="github_model_slot_unique")]
+
+
 class LinkedInAnalysis(models.Model):
     student = models.ForeignKey(StudentProfile, on_delete=models.CASCADE, related_name="linkedin_analyses")
     image_paths = models.JSONField(default=list, blank=True)
@@ -310,6 +448,69 @@ class AriaMemory(models.Model):
         return f"AriaMemory({self.student_id})"
 
 
+class KnowledgeIndexWork(models.Model):
+    university_id = models.CharField(max_length=255, unique=True)
+    revision = models.PositiveBigIntegerField(default=0)
+    indexed_revision = models.PositiveBigIntegerField(default=0)
+    error = models.CharField(max_length=255, blank=True, default="")
+
+
+class AgentJob(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner_key = models.CharField(max_length=300)
+    idempotency_key = models.CharField(max_length=100)
+    kind = models.CharField(max_length=30)
+    student_id = models.CharField(max_length=255, blank=True)
+    university_id = models.CharField(max_length=255, blank=True)
+    status = models.CharField(max_length=20, default="queued", db_index=True)
+    payload = models.JSONField(default=dict)
+    result = models.JSONField(default=dict)
+    error = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True)
+    completed_at = models.DateTimeField(null=True)
+    dispatched_at = models.DateTimeField(null=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["owner_key", "idempotency_key"], name="agent_job_idempotency"),
+            models.UniqueConstraint(fields=["owner_key"], condition=models.Q(status__in=["queued", "processing"]), name="agent_one_active_turn"),
+        ]
+        indexes = [models.Index(fields=["status", "created_at"], name="agent_job_dispatch")]
+
+
+class AgentQueueGate(models.Model):
+    """One short transaction lock for queue admission; never held for model I/O."""
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1)
+
+
+class KnowledgeQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        relevant = bool(set(kwargs) & {"topic", "content", "confidence", "source_type", "source_url", "group_id"})
+        if not relevant:
+            return super().update(**kwargs)
+        from django.db import transaction
+        with transaction.atomic():
+            ids = list(self.order_by().values_list("university_id", flat=True).distinct())
+            if set(kwargs) & {"topic", "content"}:
+                kwargs.update(embedding=None, embedding_hash="", embedding_model="")
+            result = super().update(**kwargs)
+            for uid in ids:
+                work, _ = KnowledgeIndexWork.objects.get_or_create(university_id=uid)
+                KnowledgeIndexWork.objects.filter(pk=work.pk).update(revision=models.F("revision") + 1)
+            return result
+
+    def bulk_create(self, objs, **kwargs):
+        from django.db import transaction
+        objs = list(objs)
+        with transaction.atomic():
+            result = super().bulk_create(objs, **kwargs)
+            for uid in set(row.university_id for row in objs):
+                work, _ = KnowledgeIndexWork.objects.get_or_create(university_id=uid)
+                KnowledgeIndexWork.objects.filter(pk=work.pk).update(revision=models.F("revision") + 1)
+            return result
+
+
 class UniversityKnowledgeEntry(models.Model):
     """
     Persistent knowledge-base fact for a university agent, replacing the
@@ -318,6 +519,7 @@ class UniversityKnowledgeEntry(models.Model):
     """
 
     university_id = models.CharField(max_length=255, db_index=True)
+    objects = KnowledgeQuerySet.as_manager()
   
     group = models.ForeignKey(
         "universities.KnowledgeGroup",
@@ -332,6 +534,10 @@ class UniversityKnowledgeEntry(models.Model):
     source_url = models.CharField(max_length=1000, blank=True, null=True)
     confidence = models.FloatField(default=1.0)
     times_used = models.IntegerField(default=0)
+    # pgvector on PostgreSQL; nullable so SQLite and pre-indexed imports work.
+    embedding = VectorField(dimensions=384, null=True, blank=True)
+    embedding_hash = models.CharField(max_length=64, blank=True, default="")
+    embedding_model = models.CharField(max_length=100, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
