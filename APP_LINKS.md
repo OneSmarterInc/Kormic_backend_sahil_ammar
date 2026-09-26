@@ -114,8 +114,9 @@ after environment changes. Authentication alone does not confirm inbox delivery.
   For spam/bounce issues verify the mailbox's SPF/DKIM/DMARC and provider reports.
 
 `http://127.0.0.1:5173/claim` is suitable only for testing on this computer.
-Live (`EMAIL_MODE=prod`) email delivery rejects localhost claim URLs with a
-configuration error before queueing messages. Set the actual
+`EMAIL_MODE=prod` chooses real SMTP credentials and also supports localhost
+links for deliberate local email tests. These links work only on the computer
+running the frontend. For invitations to other students, set the actual
 public HTTPS frontend `/claim` URL before use. `CLAIM_PAGE_URL` may instead use
 `https://app.kormic.ai/claim` when that host is deployed with the app associations
 and a configured browser redirect. Native automatic opening additionally requires

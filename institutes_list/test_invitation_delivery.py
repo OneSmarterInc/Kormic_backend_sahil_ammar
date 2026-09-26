@@ -16,9 +16,9 @@ from institutes_list.management.commands.invitation_worker import work_once
 
 class InvitationLinksTests(SimpleTestCase):
     @override_settings(EMAIL_MODE="prod", CLAIM_PAGE_URL="http://localhost:5173/claim")
-    def test_live_email_requires_a_public_claim_url(self):
-        with self.assertRaisesMessage(ImproperlyConfigured, "points to localhost"):
-            validate_delivery_url()
+    def test_live_smtp_can_use_the_configured_local_claim_url(self):
+        validate_delivery_url()
+        self.assertEqual(claim_link("test-code"), "http://localhost:5173/claim?token=test-code")
 
     def test_existing_query_is_preserved_and_old_token_replaced(self):
         link = claim_link("new+token", "https://student.example/claim?source=institute&token=old")
