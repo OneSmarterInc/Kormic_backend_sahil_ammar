@@ -27,6 +27,8 @@ from institutes.models import Institute
 from .models import ListedStudent, InstituteStudentList
 from .source_files import resolve_source_file_path
 from .tasks import discard_claim_otp_code, send_invite_email_task
+from .invitation_email import validate_delivery_url
+from django.core.exceptions import ImproperlyConfigured
 from .throttling import (
     ClaimVerifyEmailThrottle,
     ClaimVerifyIPThrottle,
@@ -47,12 +49,12 @@ _claim_signer = signing.TimestampSigner(salt="institutes-list.claim")
 
 
 def _mask_email(email: str) -> str:
-    """r•••••@gmail.com -- first character, then dots, then the domain."""
+    """rÃ¢â‚¬Â¢Ã¢â‚¬Â¢Ã¢â‚¬Â¢Ã¢â‚¬Â¢Ã¢â‚¬Â¢@gmail.com -- first character, then dots, then the domain."""
     local, _, domain = email.partition("@")
     if not domain:
-        return "•••••"
+        return "Ã¢â‚¬Â¢Ã¢â‚¬Â¢Ã¢â‚¬Â¢Ã¢â‚¬Â¢Ã¢â‚¬Â¢"
     keep = local[0] if local else ""
-    return f"{keep}•••••@{domain}"
+    return f"{keep}Ã¢â‚¬Â¢Ã¢â‚¬Â¢Ã¢â‚¬Â¢Ã¢â‚¬Â¢Ã¢â‚¬Â¢@{domain}"
 
 
 def _hash_otp(row_id: int, code: str) -> str:
@@ -501,16 +503,17 @@ def send_invites(request, list_id):
     if error:
         return error
 
-    if not settings.CLAIM_PAGE_URL:
-        return Response(
-            {"error": "CLAIM_PAGE_URL is not configured on the server -- set it before sending invites."},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
+    try:
+        validate_delivery_url()
+    except ImproperlyConfigured as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    if lst.status != "active":
+        return Response({"error": "Cannot invite students from a withdrawn list."}, status=400)
 
     resend = bool(request.data.get("resend"))
-    rows = lst.students.filter(status=ListedStudent.Status.UNCLAIMED)
+    rows = lst.students.filter(status=ListedStudent.Status.UNCLAIMED).exclude(invite_delivery_status="queued")
     if not resend:
-        rows = rows.filter(invited_at__isnull=True)
+        rows = rows.filter(Q(invited_at__isnull=True) | Q(invite_delivery_status="failed"))
 
     row_ids = list(rows.values_list("id", flat=True))
     now = timezone.now()
@@ -519,13 +522,15 @@ def send_invites(request, list_id):
         invite_delivery_status="queued",
         invite_delivery_error="",
         invite_delivered_at=None,
+        invite_delivery_started_at=None,
     )
 
     queued = 0
     failed_to_queue = 0
     for row_id in row_ids:
         try:
-            send_invite_email_task.delay(row_id)
+            if settings.INVITE_DELIVERY_MODE == "celery":
+                send_invite_email_task.delay(row_id)
             queued += 1
         except Exception as exc:
             failed_to_queue += 1
@@ -534,8 +539,12 @@ def send_invites(request, list_id):
                 invite_delivery_error=str(exc)[:500],
             )
 
+    delivery = ListedStudent.objects.filter(id__in=row_ids)
     return Response({
         "list_id": lst.id,
+        "invites_sent": delivery.filter(invite_delivery_status="sent").count(),
+        "invites_pending": delivery.filter(invite_delivery_status="queued").count(),
+        "invites_failed": delivery.filter(invite_delivery_status="failed").count(),
         "invites_queued": queued,
         "invites_failed_to_queue": failed_to_queue,
     })
@@ -564,11 +573,12 @@ def send_invite(request, list_id, student_id):
     if error:
         return error
 
-    if not settings.CLAIM_PAGE_URL:
-        return Response(
-            {"error": "CLAIM_PAGE_URL is not configured on the server -- set it before sending invites."},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
+    try:
+        validate_delivery_url()
+    except ImproperlyConfigured as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    if lst.status != "active":
+        return Response({"error": "Cannot invite students from a withdrawn list."}, status=400)
 
     row = lst.students.filter(id=student_id).first()
     if row is None:
@@ -580,21 +590,26 @@ def send_invite(request, list_id, student_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    if row.invite_delivery_status == "queued":
+        return Response({"list_id": lst.id, "student_id": row.id, "invite_delivery_status": "queued"})
     now = timezone.now()
     row.invited_at = now
     row.invite_delivery_status = "queued"
     row.invite_delivery_error = ""
     row.invite_delivered_at = None
+    row.invite_delivery_started_at = None
     row.save(
         update_fields=[
             "invited_at",
             "invite_delivery_status",
             "invite_delivery_error",
             "invite_delivered_at",
+            "invite_delivery_started_at",
         ]
     )
     try:
-        send_invite_email_task.delay(row.id)
+        if settings.INVITE_DELIVERY_MODE == "celery":
+            send_invite_email_task.delay(row.id)
     except Exception as exc:
         row.invite_delivery_status = "failed"
         row.invite_delivery_error = str(exc)[:500]
@@ -613,9 +628,13 @@ def send_invite(request, list_id, student_id):
             "invite_delivery_status",
             "invite_delivery_error",
             "invite_delivered_at",
+            "invite_delivery_started_at",
         ]
     )
 
+    if row.invite_delivery_status == "failed":
+        return Response({"error": "Invitation email delivery failed. Check the delivery status and retry.",
+                         "invite_delivery_status": "failed"}, status=503)
     return Response({
         "list_id": lst.id,
         "student_id": row.id,

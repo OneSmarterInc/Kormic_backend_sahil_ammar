@@ -115,7 +115,8 @@ def discard_claim_otp_code(listed_student_id: int, otp_hash: str) -> None:
 @shared_task(bind=True, max_retries=3, default_retry_delay=30)
 def send_invite_email_task(self, listed_student_id: int) -> None:
     from django.conf import settings
-    from urllib.parse import urlencode
+    from django.template.loader import render_to_string
+    from institutes_list.invitation_email import claim_link, sender, validate_delivery_url
 
     from institutes_list.models import ListedStudent
 
@@ -128,23 +129,39 @@ def send_invite_email_task(self, listed_student_id: int) -> None:
         logger.warning("send_invite_email_task: ListedStudent %s no longer exists.", listed_student_id)
         return
 
-    claim_link = f"{settings.CLAIM_PAGE_URL}?{urlencode({'token': row.claim_token})}"
+    if row.status != ListedStudent.Status.UNCLAIMED or row.source_list.status != "active":
+        ListedStudent.objects.filter(id=row.id).update(
+            invite_delivery_status="failed", invite_delivery_error="Invitation is no longer active.")
+        return
+    if row.invite_delivery_status == "sent":
+        return
 
     try:
-        send_mail(
+        validate_delivery_url()
+        link = claim_link(row.claim_token)
+        delivered = send_mail(
             subject="You're invited to claim your Kormic profile",
             message=(
                 f"Hi {row.full_name},\n\n"
                 f"{row.source_list.institute.name} has listed you for a Kormic profile. "
-                f"Claim it here: {claim_link}\n\n"
-                f"Already have the app open? Enter this token directly instead: {row.claim_token}\n\n"
+                f"Claim it here: {link}\n\n"
+                f"Invitation code: {row.claim_token}\n\n"
+                f"Sent by {row.source_list.institute.name} through Kormic.\n\n"
                 "This link/token identifies you but reveals nothing on its own -- "
                 "you'll still need to verify your email with a one-time code."
             ),
-            from_email=settings.DEFAULT_FROM_EMAIL,
+            html_message=render_to_string("institutes_list/invitation_email.html", {
+                "student_name": row.full_name,
+                "institute_name": row.source_list.institute.name,
+                "claim_url": link,
+                "invitation_code": row.claim_token,
+            }),
+            from_email=sender(),
             recipient_list=[row.email],
             fail_silently=False,
         )
+        if delivered != 1:
+            raise RuntimeError("The email backend did not accept the invitation.")
     except Exception as exc:
         error_text = str(exc)[:500]
         logger.exception("Invite email failed for ListedStudent %s", listed_student_id)
@@ -156,7 +173,7 @@ def send_invite_email_task(self, listed_student_id: int) -> None:
         # Retrying here would keep the HTTP request blocked while repeatedly
         # attempting the same broken SMTP connection. Production workers keep
         # the normal Celery retry behavior.
-        if settings.CELERY_TASK_ALWAYS_EAGER:
+        if settings.CELERY_TASK_ALWAYS_EAGER or self.request.is_eager:
             return
         raise self.retry(exc=exc)
 

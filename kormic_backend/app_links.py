@@ -3,7 +3,9 @@ import re
 from urllib.parse import urlencode, urlsplit
 
 from django.conf import settings
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponseRedirect
+from django.core.exceptions import ImproperlyConfigured
+from institutes_list.invitation_email import claim_link
 from django.shortcuts import render
 from django.views.decorators.http import require_safe
 
@@ -66,6 +68,24 @@ def claim_landing(request):
     token = tokens[0].strip() if len(tokens) == 1 else ''
     if len(token) > 2048 or any(ord(char) < 32 for char in token):
         token = ''
+    # The OS handles verified app links before HTTP. Browser requests continue
+    # to the web claim form, retaining the code; no email is sent on navigation.
+    destination = ""
+    if settings.STUDENT_WEB_CLAIM_URL:
+        try:
+            destination = claim_link(token, settings.STUDENT_WEB_CLAIM_URL)
+        except ImproperlyConfigured:
+            pass
+    current = urlsplit(request.build_absolute_uri())
+    target = urlsplit(destination)
+    if destination and (target.scheme, target.netloc, target.path.rstrip("/")) != (
+        current.scheme, current.netloc, current.path.rstrip("/")
+    ):
+        response = HttpResponseRedirect(destination)
+        response['Cache-Control'] = 'no-store'
+        response['Referrer-Policy'] = 'no-referrer'
+        response['X-Robots-Tag'] = 'noindex, nofollow'
+        return response
     response = render(request, 'institutes_list/claim_landing.html', {
         'token': token,
         'app_url': 'kormicstudent://claim?' + urlencode({'token': token}) if token else '',

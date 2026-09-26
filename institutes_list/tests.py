@@ -61,8 +61,34 @@ def _code_from_outbox() -> str:
     return code
 
 
-@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend", INVITE_DELIVERY_MODE="celery")
 class ClaimFlowTests(TestCase):
+    @override_settings(CLAIM_PAGE_URL="https://app.kormic.ai/claim", INVITE_DELIVERY_MODE="database")
+    @mock.patch("institutes_list.views.send_invite_email_task.delay")
+    def test_database_outbox_queues_without_smtp_and_retries_failed_rows(self, delay):
+        self.client.force_authenticate(user=get_user_model().objects.get(username="officer@wsfi.edu"))
+        rows = ListedStudent.objects.filter(source_list_id=self.upload["list_id"])
+        rows.update(invited_at=timezone.now(), invite_delivery_status="failed")
+        response = self.client.post(f"/api/institute-lists/lists/{self.upload['list_id']}/send-invites/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["invites_pending"], 2)
+        self.assertEqual(response.json()["invites_sent"], 0)
+        self.assertEqual(response.json()["invites_failed"], 0)
+        delay.assert_not_called()
+        response = self.client.post(f"/api/institute-lists/lists/{self.upload['list_id']}/send-invites/", {"resend": True})
+        self.assertEqual(response.json()["invites_queued"], 0)
+
+    @override_settings(CLAIM_PAGE_URL="https://app.kormic.ai/claim", CELERY_TASK_ALWAYS_EAGER=True)
+    @mock.patch("institutes_list.tasks.send_mail", return_value=0)
+    def test_single_and_bulk_do_not_report_smtp_failure_as_success(self, send):
+        self.client.force_authenticate(user=get_user_model().objects.get(username="officer@wsfi.edu"))
+        row = ListedStudent.objects.filter(source_list_id=self.upload["list_id"]).first()
+        response = self.client.post(f"/api/institute-lists/lists/{self.upload['list_id']}/students/{row.id}/send-invite/")
+        self.assertEqual(response.status_code, 503)
+        response = self.client.post(f"/api/institute-lists/lists/{self.upload['list_id']}/send-invites/")
+        self.assertEqual(response.json()["invites_failed"], 2)
+        self.assertEqual(response.json()["invites_sent"], 0)
+
     def setUp(self):
         # B3's rate limits are keyed in the process-wide cache, which
         # (unlike the DB) isn't rolled back between test methods -- clear it
@@ -462,7 +488,7 @@ class ClaimFlowTests(TestCase):
         user = get_user_model().objects.get(username="officer@wsfi.edu")
         self.client.force_authenticate(user=user)
         resp = self.client.post(f"/api/institute-lists/lists/{self.upload['list_id']}/send-invites/")
-        self.assertEqual(resp.status_code, 500)
+        self.assertEqual(resp.status_code, 400)
 
     @override_settings(CLAIM_PAGE_URL="https://app.kormic.example/claim")
     @mock.patch("institutes_list.views.send_invite_email_task.delay")
@@ -473,7 +499,7 @@ class ClaimFlowTests(TestCase):
         user = get_user_model().objects.get(username="officer@wsfi.edu")
         self.client.force_authenticate(user=user)
         row = ListedStudent.objects.filter(source_list_id=self.upload["list_id"]).first()
-        row.invited_at = timezone.now()
+        row.invited_at = timezone.now() - timedelta(minutes=1)
         row.save(update_fields=["invited_at"])
         first_invited_at = row.invited_at
 

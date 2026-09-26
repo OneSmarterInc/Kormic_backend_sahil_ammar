@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Your Kormic invitation</title></head>
+<body style="margin:0;padding:0;background:#faf9f6;color:#242c29;font-family:Arial,Helvetica,sans-serif;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">{{ institute_name }} has invited you to claim your student profile on Kormic.</div>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#faf9f6;"><tr><td align="center" style="padding:32px 16px;">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;">
+<tr><td style="padding:0 8px 24px;color:#385a46;font-size:28px;font-weight:bold;letter-spacing:-1px;">Kormic<span style="display:block;margin-top:6px;font-size:11px;font-weight:normal;letter-spacing:2px;color:#697267;">YOUR STUDENT JOURNEY</span></td></tr>
+<tr><td style="background:#ffffff;border:1px solid #dce2d3;border-radius:24px;padding:32px 28px;">
+<p style="margin:0 0 14px;font-size:12px;letter-spacing:1.5px;color:#697267;">YOU'RE INVITED</p>
+<h1 style="margin:0 0 24px;font-size:30px;line-height:1.2;font-weight:600;">Claim your student profile</h1>
+<p style="margin:0 0 16px;font-size:16px;line-height:1.6;">Hi {{ student_name }},</p>
+<p style="margin:0 0 24px;font-size:16px;line-height:1.6;color:#536149;"><strong>{{ institute_name }}</strong> has invited you to Kormic. Your student profile is ready to claim. Verify your email and review your details to get started.</p>
+<table role="presentation" cellspacing="0" cellpadding="0" width="100%"><tr><td align="center" bgcolor="#385a46" style="border-radius:32px;"><a href="{{ claim_url }}" style="display:block;padding:18px 20px;color:#ffffff;font-size:16px;font-weight:bold;text-decoration:none;">Claim your student profile &rarr;</a></td></tr></table>
+<p style="margin:16px 0 24px;font-size:13px;line-height:1.6;color:#697267;">The link includes your invitation code. It opens the claim page in your browser or the Kormic app when supported on your device.</p>
+<table role="presentation" cellspacing="0" cellpadding="0" width="100%"><tr><td style="padding:20px;background:#eef2e9;border:1px solid #dce2d3;border-radius:14px;">
+<p style="margin:0 0 10px;font-size:11px;letter-spacing:1.5px;color:#536149;">YOUR INVITATION CODE</p>
+<p style="margin:0;font-family:Consolas,Monaco,monospace;font-size:17px;line-height:1.6;word-break:break-all;overflow-wrap:anywhere;">{{ invitation_code }}</p></td></tr></table>
+<p style="margin:18px 0 0;font-size:13px;line-height:1.6;color:#697267;">You can also paste this code into the claim page. We'll send a separate one-time verification code to this email address when you continue. Keep your invitation private.</p>
+<p style="margin:24px 0 0;padding-top:20px;border-top:1px solid #e7e9e2;font-size:13px;line-height:1.6;color:#697267;">Button not working? <a href="{{ claim_url }}" style="color:#385a46;text-decoration:underline;">Open your invitation here</a>.</p>
+</td></tr>
+<tr><td style="padding:24px 8px;font-size:12px;line-height:1.8;color:#697267;">Sent by <strong style="color:#385a46;">{{ institute_name }}</strong> through Kormic.<br>If you weren't expecting this invitation, contact your institute before continuing.<br>&copy; {% now "Y" %} Kormic</td></tr>
+</table></td></tr></table></body></html>

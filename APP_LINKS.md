@@ -7,8 +7,11 @@ It belongs in the backend environment, not in portal frontend environment files.
 Invitation sending intentionally fails when it is unset. Set it to the public
 claim page without a query string or fragment; the backend appends the token.
 
-Django serves the fallback and both association documents; no separate frontend
-deployment is required for this domain. The Student Expo repository owns native
+Django serves both association documents and a browser redirect. The unified
+frontend must be deployed to serve the student claim form. Set
+`STUDENT_WEB_CLAIM_URL=https://<your-student-web-host>/claim` when the app-link
+host routes `/claim` to Django. This URL must point to the frontend, not back to
+the same Django route. The Student Expo repository owns native
 link registration and the in-app claim flow. An email scanner opening the fallback
 does not send OTPs or claim an account.
 
@@ -18,7 +21,8 @@ does not send OTPs or claim an account.
    certificate (for example with Certbot's Nginx plugin). Install
    `deploy/app-links.nginx.conf` once the certificate exists; run `nginx -t` and
    reload Nginx. Add `app.kormic.ai` to `DJANGO_ALLOWED_HOSTS`, preserving existing
-   API hosts. Do not redirect this domain to the API or Expo website. Configure
+   API hosts. Keep the association document routes on Django; redirect only the
+   claim page to the web frontend using `STUDENT_WEB_CLAIM_URL`. Configure
    any CDN/WAF to allow unauthenticated association requests without challenges.
 2. Set `APP_LINK_ANDROID_SHA256_FINGERPRINTS` to the colon-separated SHA-256
    **app signing key certificate** from Google Play Console > App integrity /
@@ -58,7 +62,9 @@ does not send OTPs or claim an account.
 ## Fallback and existing links
 
 If the app is installed and OS association succeeds, HTTPS opens its claim screen.
-Otherwise the browser displays installation help and an explicit
+Otherwise Django redirects to `STUDENT_WEB_CLAIM_URL`, preserving the invitation
+code so the browser displays the same claim form as the app. Without this setting,
+the legacy installation-help page remains available with an explicit
 `kormicstudent://claim?token=...` button. After installing, students must reopen
 the email link; this is not deferred deep linking. Manual token entry remains
 available. The app still performs email OTP verification; links do not authenticate
@@ -80,3 +86,38 @@ the supplied proxy disables access logging on this dedicated host.
 - [Android website associations](https://developer.android.com/training/app-links/configure-assetlinks)
 - [Android verification](https://developer.android.com/training/app-links/verify-applinks)
 - [Expo iOS Universal Links](https://docs.expo.dev/linking/ios-universal-links/)
+
+## Email delivery and local development
+
+Invitations are multipart HTML/plain text, sent as Kormic using the configured
+`DEFAULT_FROM_EMAIL` mailbox. The institute name appears in the body and footer;
+the same invitation code is in the button URL and a separate code box. The later
+six-digit email verification code is separate. Opening a link never sends an OTP.
+
+Use IONOS SMTP with `EMAIL_MODE=prod`, `EMAIL_HOST=smtp.ionos.com`, `EMAIL_PORT=587`,
+`EMAIL_USE_TLS=true`, and `EMAIL_USE_SSL=false`. Set the mailbox credentials and
+an authorized `DEFAULT_FROM_EMAIL` address. Restart the API and delivery workers
+after environment changes. Authentication alone does not confirm inbox delivery.
+
+- **Production:** `INVITE_DELIVERY_MODE=celery`, `CELERY_TASK_ALWAYS_EAGER=false`,
+  a running broker and a Celery worker consuming the default queue. Existing
+  Celery retry behavior applies to transient SMTP failures.
+- **Local:** `INVITE_DELIVERY_MODE=database` and `python manage.py invitation_worker`.
+  The root `Run-Kormic.bat` starts this worker automatically. It polls the persisted
+  invitation outbox, claims each queued row atomically and recovers abandoned
+  leases after five minutes. SMTP errors remain failed for manual retry; they
+  are never reported as successful sends. Like SMTP generally, delivery across
+  a crash between SMTP acceptance and saving status is at-least-once.
+- Apply migrations before starting workers. The roster polls pending deliveries;
+  Send invites also retries failed rows. Resend does not duplicate pending jobs.
+- A status of sent means SMTP accepted the message, not that it reached the inbox.
+  For spam/bounce issues verify the mailbox's SPF/DKIM/DMARC and provider reports.
+
+`http://127.0.0.1:5173/claim` is suitable only for testing on this computer.
+Live (`EMAIL_MODE=prod`) email delivery rejects localhost claim URLs with a
+configuration error before queueing messages. Set the actual
+public HTTPS frontend `/claim` URL before use. `CLAIM_PAGE_URL` may instead use
+`https://app.kormic.ai/claim` when that host is deployed with the app associations
+and a configured browser redirect. Native automatic opening additionally requires
+the actual Android signing fingerprint / Apple app prefix and a signed release;
+a browser-only test cannot verify OS association.

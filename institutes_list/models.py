@@ -111,6 +111,7 @@ class ListedStudent(models.Model):
     )
     invite_delivery_error = models.CharField(max_length=500, blank=True, default="")
     invite_delivered_at = models.DateTimeField(null=True, blank=True)
+    invite_delivery_started_at = models.DateTimeField(null=True, blank=True)
 
     # OTP state: only ever a hash at rest; short-lived; attempt-limited.
     otp_hash = models.CharField(max_length=128, blank=True, default="")

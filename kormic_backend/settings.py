@@ -582,7 +582,12 @@ AGENT_ALERT_EMAILS = [
 # Celery worker, not the portal frontends. Leave unset until that page is ready:
 # institutes_list.views.send_invites intentionally fails rather than emailing
 # an unconfigured destination.
-CLAIM_PAGE_URL = os.getenv("CLAIM_PAGE_URL", "")
+CLAIM_PAGE_URL = os.getenv("CLAIM_PAGE_URL", "").strip()
+# "database" uses manage.py invitation_worker; "celery" uses the existing broker.
+INVITE_DELIVERY_MODE = os.getenv("INVITE_DELIVERY_MODE", "celery").strip().lower()
+if INVITE_DELIVERY_MODE not in ("celery", "database"):
+    raise ImproperlyConfigured("INVITE_DELIVERY_MODE must be celery or database")
+STUDENT_WEB_CLAIM_URL = os.getenv("STUDENT_WEB_CLAIM_URL", "").strip()
 
 # Served on app.kormic.ai by the dedicated proxy in deploy/app-links.nginx.conf.
 # Use the Play app-signing certificate (not merely the upload certificate).
