@@ -37,7 +37,7 @@ def dispatch(job_id):
         logger.exception("Agent job %s is persisted; dispatcher will retry publication", job_id)
 
 
-def submit(request, university_id=None, message_id=None):
+def submit(request, university_id=None, message_id=None, subject_student_id=None):
     key = owner_key(request, university_id)
     idem = request.headers.get("Idempotency-Key", "") or str(uuid.uuid4())
     if len(idem) > 100:
@@ -68,20 +68,21 @@ def submit(request, university_id=None, message_id=None):
                 return Response({"message": "A response is already in progress. Wait for it before sending or editing."}, status=409)
             if AgentJob.objects.filter(status__in=ACTIVE).count() >= settings.AGENT_QUEUE_CAPACITY:
                 return Response({"message": "Chat is at capacity. Please retry shortly."}, status=429, headers={"Retry-After": "5"})
-            student_id = "" if university_id else str(request.user.account.student_uuid)
+            student_id = str(subject_student_id or '') if university_id else str(request.user.account.student_uuid)
             if message_id:
                 target = ChatMessage.objects.filter(pk=message_id, student_id=student_id, channel="agent", sender="user").first()
                 if target is None:
                     return Response({"message": "Message not found."}, status=404)
             else:
-                target = ChatMessage.objects.create(channel="university" if university_id else "agent", student_id=student_id,
+                target = ChatMessage.objects.create(channel="presenter" if subject_student_id else "university" if university_id else "agent", student_id=student_id,
                     university_id=str(university_id or ""), sender="user", content=message.strip())
                 for uploaded in files:
                     save_chat_attachment(student_id, target, uploaded)
             job = AgentJob.objects.create(owner_key=key, idempotency_key=idem,
                 kind="university" if university_id else "student_edit" if message_id else "student",
                 student_id=student_id, university_id=str(university_id or ""),
-                payload={"message_id": target.pk, "message": message.strip()})
+                payload={"message_id": target.pk, "message": message.strip(), "actor_id": request.user.pk,
+                    **({'subject_student_id': str(subject_student_id)} if subject_student_id else {})})
             transaction.on_commit(lambda: dispatch(job.pk))
         return Response(serialize(job), status=202)
     except (AgentBusy, IntegrityError):
@@ -113,13 +114,17 @@ def run(job):
     target = ChatMessage.objects.get(pk=job.payload["message_id"])
     message = job.payload["message"] or "Please review the attached files."
     if job.kind == "university":
-        from agents.commons import get_university_agent
-        previous = list(ChatMessage.objects.filter(channel="university", university_id=job.university_id, student_id="", pk__lt=target.pk)
+        from pure_multi_agent.officer_graph import run_turn as officer_turn
+        subject = job.payload.get('subject_student_id')
+        scope = {'channel': 'presenter' if subject else 'university', 'university_id': job.university_id, 'student_id': subject or ''}
+        previous = list(ChatMessage.objects.filter(**scope, pk__lt=target.pk)
                         .order_by("-created_at", "-pk")[:10])[::-1]
         history = [{"role": "user" if row.sender == "user" else "assistant", "content": row.content} for row in previous]
-        result = get_university_agent(job.university_id).answer(message, caller_role="officer", history=history)
+        result = officer_turn(job.university_id, job.payload.get('actor_id'), message,
+            turn_id=str(target.pk), history=history, resume_state=job.payload.get('resume_state'),
+            **({'subject_student_id': subject} if subject else {}))
         result["reply"] = result.get("answer", "")
-        return result, {"channel": "university", "university_id": job.university_id, "student_id": ""}, result
+        return result, scope, result
     from pure_multi_agent.runtime import run_turn, seed_conversation
     if job.kind == "student_edit" and "resume_state" not in job.payload:
         previous = list(ChatMessage.objects.filter(channel="agent", student_id=job.student_id, pk__lt=target.pk).order_by("created_at", "pk").values_list("sender", "content"))
@@ -130,7 +135,7 @@ def run(job):
         seed_conversation(job.student_id, previous)
     record_chat_university_interests(job.student_id, message)
     prior_queries = _existing_pending_query_ids(job.student_id)
-    turn_options = {'raise_errors': True}
+    turn_options = {'raise_errors': True, 'message_id': target.pk}
     if 'resume_state' in job.payload:
         turn_options['resume_state'] = job.payload['resume_state']
     turn_result = run_turn(job.student_id, message, image_blocks=build_image_content_blocks(target.attachments.all()) or None, **turn_options)

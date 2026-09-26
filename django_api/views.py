@@ -937,7 +937,7 @@ def agent_chat(request):
 
     try:
         _existing_pq_ids = _existing_pending_query_ids(student_id)
-        turn_result = run_turn(student_id, effective_message, image_blocks=image_blocks or None)
+        turn_result = run_turn(student_id, effective_message, image_blocks=image_blocks or None, message_id=user_msg.pk)
         agent_name, reply = turn_result
         turn_meta = getattr(turn_result, "metadata", {})
 
@@ -1023,7 +1023,7 @@ def agent_chat_edit(request, message_id):
 
     try:
         _existing_pq_ids = _existing_pending_query_ids(student_id)
-        turn_result = run_turn(student_id, new_message, image_blocks=image_blocks or None)
+        turn_result = run_turn(student_id, new_message, image_blocks=image_blocks or None, message_id=target.pk)
         agent_name, reply = turn_result
         turn_meta = getattr(turn_result, "metadata", {})
         _pq = _new_pending_query(student_id, _existing_pq_ids)
@@ -1098,6 +1098,8 @@ def agent_chat_history(request):
     # answered will therefore read status "resolved" -- the app can flip the
     # old "checking..." bubble without waiting for a new message.
     _msgs = list(messages)[::-1]
+    from pure_multi_agent.change_proposals import refresh_message_metadata
+    refresh_message_metadata(_msgs, student_id=student_id)
     _qids = {
         m.meta.get("query_id")
         for m in _msgs
@@ -1861,58 +1863,12 @@ class UniversityProfileDetailAPIView(APIView):
 @api_view(["POST"])
 @permission_classes(UNIVERSITY_OWNER_PERMISSIONS)
 def university_profile_presenter_chat(request, university_id: str, student_id: str):
-    """
-    POST /api/university/<university_id>/profile/<student_id>/chat/
-    University-officer-facing chat about one student (ProfilePresenterAgent) —
-    distinct from /api/chat/agent/, which is the student-facing agent.
-    university_id is scoped via ScopedToOwnUniversityId; student_id is
-    additionally gated to students who have shown interest in this university
-    (see _student_in_university_scope_or_404), so an officer can't ask about
-    -- or trigger a fit assessment for -- an arbitrary student.
-    """
-    question = request.data.get("question")
-    history = request.data.get("history", []) or []
-
-    if not question:
-        return api_error("question is required.")
-
+    """The shared officer graph, with this interested student as its subject."""
     scope_error = _student_in_university_scope_or_404(university_id, student_id)
     if scope_error:
         return scope_error
+    return _officer_chat_response(request, university_id, subject_student_id=student_id)
 
-    try:
-        profile = get_profile(student_id)
-    except FileNotFoundError:
-        return Response({"answer": "Profile not found."})
-
-    try:
-        from agents import commons
-
-        if not (profile.get("assessments") or {}).get(university_id):
-            try:
-                commons.generate_fit_assessment(student_id, university_id)
-                profile = get_profile(student_id)
-            except Exception:
-                pass
-
-        presenter = commons.get_profile_presenter(university_id)
-        answer = presenter.answer(question=question, profile=profile, conversation_history=history)
-        log_chat_turn(
-            channel=ChatMessage.Channel.PRESENTER,
-            student_id=student_id,
-            university_id=university_id,
-            user_message=question,
-            assistant_message=answer or "",
-        )
-        return Response({"answer": answer})
-    except Exception as exc:
-        return Response({
-            "answer": "Profile Presenter failed.",
-            "error": (
-                "AI profile explanation failed. Check API key, model name, "
-                f"credits, network, or profile data. Details: {exc}"
-            ),
-        })
 
 
 @api_view(["GET"])
@@ -1927,7 +1883,9 @@ def university_profile_presenter_chat_history(request, university_id: str, stude
         channel=ChatMessage.Channel.PRESENTER, student_id=student_id, university_id=university_id
     )
     total = base_qs.count()
-    messages = list(base_qs.order_by("-created_at")[:limit])[::-1]
+    messages = list(base_qs.order_by("-created_at", "-pk")[:limit])[::-1]
+    from pure_multi_agent.change_proposals import refresh_message_metadata
+    refresh_message_metadata(messages, university_id=university_id, actor_id=request.user.pk)
     return Response({
         "count": len(messages),
         "total": total,
@@ -1942,70 +1900,39 @@ def university_profile_presenter_chat_history(request, university_id: str, stude
 @api_view(["POST"])
 @permission_classes(UNIVERSITY_OWNER_PERMISSIONS)
 def university_agent_chat(request, university_id: str):
+    """Native LangGraph officer chat with persisted tools, history and consent."""
+    return _officer_chat_response(request, university_id)
+
+
+def _officer_chat_response(request, university_id, subject_student_id=None):
     from django.conf import settings
     if settings.AGENT_QUEUE_ENABLED:
         from pure_multi_agent.jobs import submit
-        return submit(request, university_id=university_id)
-    """
-    POST /api/university/<university_id>/chat/
-    University-officer-facing chat with their OWN program agent
-    (agents.university_agent.UniversityAgent -- the exact same agent a
-    student's ask_university tool consults), so an officer can preview/test
-    how it answers. Distinct from university_profile_presenter_chat, which
-    answers about one student's profile instead of about the program.
-    """
+        return submit(request, university_id=university_id, subject_student_id=subject_student_id)
     message = request.data.get("message") or request.data.get("question")
-
-    if not isinstance(message, str) or not message.strip():
-        return api_error("message must be a non-empty string.")
+    if not isinstance(message, str) or not message.strip() or len(message) > 12000:
+        return api_error("message must be a non-empty string of at most 12000 characters.")
     message = message.strip()
-    if len(message) > 12000:
-        return api_error("message must be at most 12000 characters.")
-
+    from pure_multi_agent.officer_graph import run_turn as officer_turn
+    from pure_multi_agent.capacity import lease, AgentBusy, ResumeTurnLater
+    scope = {"channel": "presenter" if subject_student_id else "university",
+        "university_id": university_id, "student_id": subject_student_id or ""}
     try:
-        from agents import commons
-        agent = commons.get_university_agent(university_id)
-    except ValueError as exc:
-        return api_error(str(exc), status.HTTP_404_NOT_FOUND)
-
-    try:
-        previous = list(ChatMessage.objects.filter(
-            channel=ChatMessage.Channel.UNIVERSITY,
-            university_id=university_id, student_id="",
-        ).order_by("-created_at", "-id")[:10])[::-1]
-        history = [{"role": row.sender, "content": row.content} for row in previous]
-        result = agent.answer(message, caller_role="officer", history=history)
-        reply = result.get("answer", "")
-        log_chat_turn(
-            channel=ChatMessage.Channel.UNIVERSITY,
-            student_id="",
-            university_id=university_id,
-            user_message=message,
-            assistant_message=reply,
-            meta={
-                "confidence": result.get("confidence"),
-                "trust": result.get("trust"),
-                "pending": result.get("pending", False),
-                "pending_query": result.get("pending_query"),
-                "knowledge_gap": result.get("knowledge_gap", False),
-                "source": result.get("source"),
-                "sources": result.get("sources", []),
-            },
-        )
-        return Response({
-            "university_id": university_id,
-            "agent_name": result.get("agent_name"),
-            "reply": reply,
-            "pending": result.get("pending", False),
-            "pending_query": result.get("pending_query"),
-            "knowledge_gap": result.get("knowledge_gap", False),
-            "unsupported_topics": result.get("unsupported_topics"),
-            "confidence": result.get("confidence"),
-            "trust": result.get("trust"),
-            "sources": result.get("sources", []),
-        })
+        with lease("thread:university:" + str(university_id), ttl=900):
+            previous = list(ChatMessage.objects.filter(**scope).order_by("-created_at", "-pk")[:24])[::-1]
+            history = [{"role": row.sender, "content": row.content} for row in previous]
+            user_message = ChatMessage.objects.create(**scope,
+                sender="user", content=message, meta={"actor_id": request.user.pk})
+            result = officer_turn(university_id, request.user.pk, message,
+                turn_id=str(user_message.pk), history=history,
+                **({"subject_student_id": subject_student_id} if subject_student_id else {}))
+            ChatMessage.objects.create(**scope, sender="assistant", content=result["reply"], meta=result)
+            return Response(result)
+    except (AgentBusy, ResumeTurnLater):
+        return api_error("The agent is busy. Please retry shortly.", status.HTTP_503_SERVICE_UNAVAILABLE)
     except Exception as exc:
         return unexpected_server_error("Unexpected error during university agent chat.", exc)
+
 
 
 @api_view(["GET", "DELETE"])
@@ -2017,6 +1944,8 @@ def university_agent_chat_history(request, university_id: str):
     DELETE /api/university/<university_id>/chat/history/
     """
     if request.method == "DELETE":
+        from pure_multi_agent.officer_graph import reset_conversation
+        reset_conversation(university_id)
         deleted_count, _ = ChatMessage.objects.filter(
             channel=ChatMessage.Channel.UNIVERSITY, university_id=university_id
         ).delete()
@@ -2025,7 +1954,9 @@ def university_agent_chat_history(request, university_id: str):
     limit = chat_history_limit(request)
     base_qs = ChatMessage.objects.filter(channel=ChatMessage.Channel.UNIVERSITY, university_id=university_id)
     total = base_qs.count()
-    messages = list(base_qs.order_by("-created_at")[:limit])[::-1]
+    messages = list(base_qs.order_by("-created_at", "-pk")[:limit])[::-1]
+    from pure_multi_agent.change_proposals import refresh_message_metadata
+    refresh_message_metadata(messages, university_id=university_id, actor_id=request.user.pk)
     return Response({
         "count": len(messages),
         "total": total,

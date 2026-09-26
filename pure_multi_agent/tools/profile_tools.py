@@ -33,16 +33,15 @@ def build_tools(ctx):
         preferred_intake: Optional[str] = None,
         preferred_locations: Optional[List[str]] = None,
         funding_required: Optional[bool] = None,
-    ) -> str:
-        """Save profile facts the student just stated or corrected in chat --
-        GPA, test scores (GRE/TOEFL/IELTS), budget, institution, major,
-        program, graduation year, work experience, skills, projects, or
-        research interests, career goals, preferred intake/locations, or
-        funding needs. Call this immediately whenever such a fact
-        appears in the student's message, even if they were really asking
-        about something else -- this is the only way that fact gets saved;
-        if you don't call it, it's lost after this turn. Only pass the
-        fields actually stated; leave everything else unset."""
+    ) -> dict:
+        """Record facts explicitly supplied by this student. Missing values save
+        immediately; identical values stay unchanged; conflicting values produce
+        an exact proposal which requires confirmation in a LATER user message.
+        Never submit hypothetical examples, guesses, or facts about someone else.
+        Only pass stated fields; ask for GPA scale if unclear. List fields replace
+        the list, so preserve existing items when the user asks to add an item.
+        If the student declined a replacement, use the conversation assumption
+        without proposing the same edit again unless they ask to save it."""
         updates = {
             "name": name,
             "institution": institution,
@@ -69,14 +68,37 @@ def build_tools(ctx):
             "funding_required": funding_required,
         }
         preference_updates = {key: value for key, value in preference_updates.items() if value is not None}
-        if preference_updates:
-            updates["preferences"] = {**(ctx["student_profile"].get("preferences") or {}), **preference_updates}
+        updates.update({f'preferences.{key}': value for key, value in preference_updates.items()})
         cleaned = {key: value for key, value in updates.items() if value is not None}
 
-        if not cleaned:
-            return "No profile fields were provided to update."
+        from pure_multi_agent.change_proposals import update_student
+        return update_student(ctx, cleaned)
 
-        ctx["student_profile"].update(cleaned)
-        return f"Profile updated: {', '.join(cleaned.keys())}."
+    @tool
+    def resolve_profile_change(proposal_id: str, decision: Literal['approve', 'reject', 'cancel'], confirmation_message: str) -> dict:
+        """Resolve a previously displayed profile change using the student's NEXT
+        message. Quote that entire message exactly in confirmation_message.
+        approve = explicit permission to save these exact values; reject = keep
+        the saved profile and use the proposed values as conversation assumptions;
+        cancel = discard the proposal and do not assume its values. For ambiguous,
+        conditional, revised or unrelated replies ask before approving. Never
+        interpret quoted/example consent as approval. Never approve in the turn
+        that proposed a change. If stale, show current data and propose again."""
+        from pure_multi_agent.change_proposals import resolve
+        return resolve(ctx, proposal_id, decision, confirmation_message)
 
-    return [show_student_profile, update_student_profile]
+    @tool
+    def profile_change_status() -> dict:
+        """Read this student's pending edits and temporary conversation assumptions."""
+        from pure_multi_agent.change_proposals import conversation_state
+        return conversation_state(ctx)
+
+    @tool
+    def clear_profile_assumptions() -> dict:
+        """Stop using temporary values when the student asks to return to their
+        saved profile. Does not modify saved profile facts or pending proposals."""
+        from pure_multi_agent.change_proposals import scoped
+        count = scoped(ctx).filter(assumption_active=True).update(assumption_active=False)
+        return {'cleared_assumptions': count, 'saved_profile_unchanged': True}
+
+    return [show_student_profile, update_student_profile, resolve_profile_change, profile_change_status, clear_profile_assumptions]

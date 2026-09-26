@@ -92,6 +92,20 @@ class RouterTests(SimpleTestCase):
         with self.assertRaises(ValueError):
             read_record.invoke(response.tool_calls[0]['args'])
 
+    @patch('pure_multi_agent.model_router.claude')
+    @patch('pure_multi_agent.model_router.qwen')
+    def test_required_workflow_action_falls_back_when_qwen_only_replies(self, qwen, claude):
+        from pure_multi_agent.model_router import invoke
+        @tool
+        def prepare_change() -> dict:
+            """Prepare a change for confirmation."""
+            return {}
+        qwen.return_value.bind_tools.return_value.invoke.return_value = AIMessage(content='Please confirm')
+        claude.return_value.bind_tools.return_value.invoke.return_value = AIMessage(content='', tool_calls=[{'id': 'draft', 'name': 'prepare_change', 'args': {}}])
+        result = invoke([HumanMessage(content='Prepare changes')], [prepare_change], require_tools=True)
+        self.assertEqual(result.tool_calls[0]['name'], 'prepare_change')
+        claude.return_value.bind_tools.assert_called_once_with([prepare_change], tool_choice='any')
+
 
 @override_settings(UNIVERSITY_VECTOR_SEARCH=False, AGENT_DISTRIBUTED_LIMITS=False)
 class ResearchTests(TestCase):

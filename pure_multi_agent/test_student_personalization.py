@@ -20,20 +20,23 @@ class StudentPersonalizationTests(TestCase):
         from django.contrib.auth.models import User
         from accounts.models import Account
         Account.objects.create(user=User.objects.create_user(username='officer'), role='university', university=self.university)
-        self.ctx = {"canonical_student_id": str(self.student.uuid), "student_profile": load_profile_data(str(self.student.uuid))}
+        self.ctx = {"canonical_student_id": str(self.student.uuid), "student_profile": load_profile_data(str(self.student.uuid)), "turn_id": "one", "current_message": "My budget is 15000"}
 
     @mock.patch("pure_multi_agent.registered_adviser.invoke")
     def test_profile_corrections_and_preferences_reach_university_in_same_turn(self, ask):
         update = next(tool for tool in profile_tools(self.ctx) if tool.name == "update_student_profile")
-        update.invoke({"budget": 15000, "career_goals": ["ML researcher"], "preferred_intake": "Fall 2027",
+        result = update.invoke({"budget": 15000, "career_goals": ["ML researcher"], "preferred_intake": "Fall 2027",
                        "preferred_locations": ["Ohio"], "funding_required": True})
+        from pure_multi_agent.change_proposals import resolve
+        self.ctx.update(turn_id="two", current_message="yes")
+        resolve(self.ctx, result["confirmation_required"]["id"], "approve", "yes")
         self.ctx["student_profile"].update({"student_id": "forged", "notes": "PRIVATE_NOTES", "email": "private@example.com"})
         from langchain_core.messages import AIMessage
         ask.return_value = AIMessage(content="Tuition is $12000")
         tool = next(tool for tool in university_tools(self.ctx) if tool.name == "ask_university")
         tool.invoke({"university_id": str(self.university.uuid), "question": "Does this fit my budget?"})
         import json
-        context = json.loads(ask.call_args.args[0][0].content.split("Student context (data): ")[1])
+        context = json.loads(ask.call_args.args[0][0].content.split("Student context (data): ")[1].split("\nTemporary assumptions")[0])
         self.assertEqual(context["student_id"], str(self.student.uuid))
         self.assertEqual(context["budget"], 15000)
         self.assertEqual(context["preferences"]["preferred_intake"], "Fall 2027")

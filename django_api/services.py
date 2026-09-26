@@ -1247,6 +1247,20 @@ def evaluate_university_eligibility(profile: Dict[str, Any], university: Any) ->
             field = "gre_total"
 
         if field:
+            if item.get('category') in ('gpa', 'test_score') and item.get('minimum') is not None:
+                required = _eligibility_number(item['minimum'])
+                maximum = _eligibility_number(item.get('maximum'))
+                scale = _eligibility_number(item.get('scale_maximum'))
+                actual = _eligibility_number(facts.get(field))
+                scale_matches = field != 'gpa' or _eligibility_number(facts.get('gpa_scale')) == scale
+                passed = required <= actual <= maximum if actual is not None and maximum is not None and scale_matches else None
+                if passed is not None:
+                    recognized += 1
+                    failed += not passed
+                details.append({'criterion': criterion, 'detail': detail, 'field': field,
+                    'required': required, 'maximum': maximum, 'scale': scale, 'actual': actual,
+                    'passed': passed, 'note': '' if scale_matches else 'Grading scales differ or are missing; an official equivalency is required.'})
+                continue
             numbers = [float(n) for n in re.findall(r"(?<![a-z])\d+(?:\.\d+)?", text)]
             if numbers:
                 required = numbers[0]

@@ -33,7 +33,7 @@ def claude():
         max_tokens=6000, timeout=90, max_retries=0)
 
 
-def _validate(reply, tools, *, validate_arguments=True):
+def _validate(reply, tools, *, validate_arguments=True, require_tools=False):
     if reply.invalid_tool_calls:
         raise ValueError('Malformed model tool call')
     mapping = {t.name: t for t in tools}
@@ -46,18 +46,27 @@ def _validate(reply, tools, *, validate_arguments=True):
             mapping[call['name']].args_schema.model_validate(call['args'])
     if not reply.tool_calls and not reply.content:
         raise ValueError('Empty model response')
+    if require_tools and not reply.tool_calls:
+        raise ValueError('This workflow step requires a tool call before a final response')
     return reply
 
 
-def invoke(messages, tools=(), *, force_claude=False):
+def invoke(messages, tools=(), *, force_claude=False, require_tools=False):
     # Text-only Qwen cannot interpret an uploaded image. Claude can.
-    vision = any(isinstance(m.content, list) and any(isinstance(b, dict) and b.get('type') in ('image', 'image_url') for b in m.content) for m in messages)
-    estimate = max(1500, sum(len(str(m.content)) for m in messages) // 3 + sum(len(str(t.args)) for t in tools) // 3 + 6000)
+    vision = any(isinstance(m.content, list) and any(isinstance(b, dict) and b.get('type') in ('image', 'image_url', 'document') for b in m.content) for m in messages)
+    def token_estimate(content):
+        if isinstance(content, list):
+            # Base64 bytes are transport, not text tokens. Reserve a conservative
+            # vision/document allowance without creating an impossible queue job.
+            return sum(16000 if isinstance(b, dict) and b.get('type') == 'document' else
+                6000 if isinstance(b, dict) and b.get('type') in ('image', 'image_url') else len(str(b)) // 3 for b in content)
+        return len(str(content)) // 3
+    estimate = max(1500, sum(token_estimate(m.content) for m in messages) + sum(len(str(t.args)) for t in tools) // 3 + 6000)
     if not (force_claude or vision or provider_blocked('qwen')):
         try:
             with model_slot('qwen', None, estimate):
                 model = qwen().bind_tools(tools) if tools else qwen()
-                reply = _validate(model.invoke(messages), tools)
+                reply = _validate(model.invoke(messages), tools, require_tools=require_tools)
                 reply.response_metadata['routing_provider'] = 'qwen'
                 return reply
         except CapacityBusy:
@@ -71,10 +80,10 @@ def invoke(messages, tools=(), *, force_claude=False):
         try:
             from pure_multi_agent.capacity import model_slot as distributed_claude_slot
             with distributed_claude_slot():
-                model = claude().bind_tools(tools) if tools else claude()
+                model = claude().bind_tools(tools, **({'tool_choice': 'any'} if require_tools else {})) if tools else claude()
                 # LangChain tools validate arguments before execution. Return
                 # errors to Claude through the graph so it can repair a call.
-                reply = _validate(model.invoke(messages), tools, validate_arguments=False)
+                reply = _validate(model.invoke(messages), tools, validate_arguments=False, require_tools=require_tools)
                 reply.response_metadata['routing_provider'] = 'claude'
                 return reply
         except Exception as exc:

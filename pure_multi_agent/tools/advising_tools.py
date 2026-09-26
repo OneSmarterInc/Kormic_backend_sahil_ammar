@@ -7,11 +7,13 @@ from langchain_core.tools import tool
 def profile_evidence(ctx, focus='overall'):
     from django_api.models import ResumeUpload
     from .github_tools import github_evidence
-    profile = ctx['student_profile']
+    from pure_multi_agent.change_proposals import effective_profile
+    profile, assumptions = effective_profile(ctx)
     facts = {k: v for k, v in profile.items() if v not in (None, '', [], {}, 0) and k not in ('profile_image_path', 'email', 'student_id', 'github_assessment', 'github_profile_intelligence', 'technical_intelligence', 'academic_intelligence', 'overall_profile', 'overall_profile_score')}
     resume = ResumeUpload.objects.filter(student__uuid=ctx['canonical_student_id']).first()
     ctx['document_availability'] = {'resume_uploaded': bool(resume), 'linkedin_evidence_saved': bool(profile.get('linkedin_profile'))}
-    return {'focus': focus, 'document_availability': ctx['document_availability'], 'profile': facts, 'github': github_evidence(ctx['canonical_student_id']),
+    from pure_multi_agent.document_evidence import confirmed_evidence
+    return {'focus': focus, 'confirmed_documents': confirmed_evidence(ctx['canonical_student_id']), 'conversation_assumptions': assumptions, 'assumptions_are_saved_profile_facts': False, 'document_availability': ctx['document_availability'], 'profile': facts, 'github': github_evidence(ctx['canonical_student_id']),
         'resume': {'data': resume.extracted_data, 'uploaded_at': resume.created_at.isoformat()} if resume else None,
         'linkedin': profile.get('linkedin_profile') or None,
         'guidance': 'If resume_uploaded=false you have NOT SEEN THE RESUME. If linkedin_evidence_saved=false you have NOT SEEN LINKEDIN. Do not claim either document has gaps or is generic. Explain what you can infer from the saved profile and offer general improvement suggestions, clearly conditional on reviewing the actual documents. Missing evidence is unknown, never a negative finding. No invented achievements, metrics, scores or admission probabilities.'}

@@ -86,18 +86,34 @@ class QueueTests(TestCase):
         self.assertEqual(result["result"]["reply"], "Personal reply")
         self.assertEqual(run.call_args.args[0], self.sid)
 
-    @mock.patch("agents.commons.get_university_agent")
+    @mock.patch("pure_multi_agent.officer_graph.run_turn")
     def test_officer_job_uses_private_role_and_scoped_history(self, agent):
         officer, uid = make_university_client(email="queue-officer@example.edu", university_id="Queue University")
-        agent.return_value.answer.return_value = {"answer": "University answer", "sources": [{"topic": "Scholarships"}]}
+        agent.return_value = {"answer": "University answer", "sources": [{"topic": "Scholarships"}]}
         response = officer.post(f"/api/university/{uid}/chat/", {"message": "Scholarships?"}, format="json")
         pk = response.data["job_id"]
         self.assertEqual(self.client.get(f"/api/chat/jobs/{pk}/").status_code, 404)
         execute_agent_job.run(pk)
-        agent.return_value.answer.assert_called_once_with("Scholarships?", caller_role="officer", history=[])
+        self.assertEqual(agent.call_args.args[0], uid)
+        self.assertEqual(agent.call_args.args[2], "Scholarships?")
+        self.assertEqual(agent.call_args.kwargs["history"], [])
+        self.assertIsNotNone(agent.call_args.args[1])
         result = officer.get(f"/api/chat/jobs/{pk}/").data["result"]
         self.assertEqual(result["reply"], "University answer")
         self.assertEqual(result["sources"][0]["topic"], "Scholarships")
+
+    @mock.patch('pure_multi_agent.officer_graph.run_turn')
+    def test_profile_chat_queues_with_subject_and_separate_transcript(self, graph):
+        from django_api.models import UniversityInterestEvent
+        officer, uid = make_university_client(email='presenter-queue@example.edu', university_id='Presenter Queue University')
+        student = StudentProfile.objects.get(uuid=self.sid)
+        UniversityInterestEvent.objects.create(student=student, university_id=uid, source='searched')
+        graph.return_value = {'answer': 'Profile answer', 'reply': 'Profile answer'}
+        response = officer.post(f'/api/university/{uid}/profile/{self.sid}/chat/', {'question': 'Their profile?'}, format='json')
+        self.assertEqual(response.status_code, 202)
+        execute_agent_job.run(response.data['job_id'])
+        self.assertEqual(graph.call_args.kwargs['subject_student_id'], self.sid)
+        self.assertTrue(ChatMessage.objects.filter(channel='presenter', university_id=uid, student_id=self.sid, sender='assistant', content='Profile answer').exists())
 
 
 @override_settings(AGENT_DISTRIBUTED_LIMITS=False, UNIVERSITY_VECTOR_SEARCH=False)

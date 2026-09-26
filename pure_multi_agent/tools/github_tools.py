@@ -34,7 +34,10 @@ def build_tools(ctx):
 
     @tool
     def analyze_github_profile(github_input: str = '') -> dict:
-        """Request/resume background LangGraph analysis of the student's connected GitHub account."""
+        """Sync, refresh, update or analyze the student's LINKED GitHub account
+        when asked in chat. Reuses an active job. Returns processing status;
+        never claim completed extraction before the worker finishes. Other
+        people's usernames and uploads must not replace this OAuth-owned source."""
         from accounts.github_oauth import get_connection_for_student_id
         from github_profiles.sync import queue_sync
         connection = get_connection_for_student_id(ctx['canonical_student_id'])

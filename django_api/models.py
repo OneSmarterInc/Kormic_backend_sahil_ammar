@@ -196,6 +196,25 @@ class ChatAttachment(models.Model):
         return f"ChatAttachment({self.message_id}, {self.original_filename})"
 
 
+class StudentDocumentEvidence(models.Model):
+    """Source-isolated chat extraction; only confirmed records become evidence."""
+    student = models.ForeignKey(StudentProfile, on_delete=models.CASCADE, related_name='chat_documents')
+    attachment = models.OneToOneField(ChatAttachment, null=True, blank=True, on_delete=models.SET_NULL)
+    file_path = models.CharField(max_length=1000)
+    filename = models.CharField(max_length=500)
+    content_type = models.CharField(max_length=150)
+    source_type = models.CharField(max_length=20, blank=True)
+    raw_text = models.TextField(blank=True)
+    extracted = models.JSONField(default=dict)
+    status = models.CharField(max_length=20, default='read')
+    created_at = models.DateTimeField(auto_now_add=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-pk']
+        indexes = [models.Index(fields=['student', 'source_type', 'status'], name='student_document_source')]
+
+
 class ResumeUpload(models.Model):
     student = models.ForeignKey(StudentProfile, on_delete=models.CASCADE, related_name="resume_uploads")
     file_path = models.CharField(max_length=1000)
@@ -531,6 +550,7 @@ class UniversityKnowledgeEntry(models.Model):
     topic = models.CharField(max_length=500)
     content = models.TextField()
     source_type = models.CharField(max_length=50, default="unknown")
+    details = models.JSONField(default=dict, blank=True)
     source_url = models.CharField(max_length=1000, blank=True, null=True)
     confidence = models.FloatField(default=1.0)
     times_used = models.IntegerField(default=0)
@@ -545,6 +565,41 @@ class UniversityKnowledgeEntry(models.Model):
 
     def __str__(self) -> str:
         return f"UniversityKnowledgeEntry({self.university_id}, {self.topic[:40]})"
+
+
+class AgentChangeProposal(models.Model):
+    """An exact, scoped chat edit and the subsequent human decision about it."""
+
+    import uuid as _uuid
+    id = models.UUIDField(primary_key=True, default=_uuid.uuid4, editable=False)
+    student = models.ForeignKey(StudentProfile, null=True, blank=True, on_delete=models.CASCADE)
+    university = models.ForeignKey("universities.University", null=True, blank=True, on_delete=models.CASCADE)
+    actor = models.ForeignKey("auth.User", null=True, blank=True, on_delete=models.SET_NULL)
+    kind = models.CharField(max_length=40)
+    operation = models.CharField(max_length=20)
+    target_id = models.CharField(max_length=100, blank=True)
+    turn_id = models.CharField(max_length=100)
+    fingerprint = models.CharField(max_length=64, unique=True)
+    before = models.JSONField(default=dict)
+    after = models.JSONField(default=dict)
+    status = models.CharField(max_length=20, default="pending")
+    assumption_active = models.BooleanField(default=False)
+    source_message = models.TextField()
+    resolution_message = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        indexes = [
+            models.Index(fields=["student", "status"], name="proposal_student_status"),
+            models.Index(fields=["university", "actor", "status"], name="proposal_officer_status"),
+        ]
+        constraints = [models.CheckConstraint(
+            condition=(models.Q(student__isnull=False, university__isnull=True, kind__in=["student_profile", "student_document"]) |
+                       models.Q(student__isnull=True, university__isnull=False, kind__in=["university_profile", "university_knowledge", "university_group"])),
+            name="proposal_has_one_scope",
+        )]
 
 
 class PendingQuery(models.Model):

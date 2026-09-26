@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from copy import deepcopy
 import os
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -202,6 +203,8 @@ def reset_conversation(student_id: str) -> None:
     """
     key = student_id
     _checkpointer.delete_thread(key)
+    from pure_multi_agent.change_proposals import clear_conversation
+    clear_conversation(student_id=student_id)
 
 
 def seed_conversation(student_id: str, turns: List[Tuple[str, str]]) -> None:
@@ -248,11 +251,16 @@ class TurnResult(tuple):
 
 
 def run_turn(
-    student_id: str, message: str, image_blocks: Optional[List[Dict[str, Any]]] = None, *, raise_errors=False, resume_state=None
+    student_id: str, message: str, image_blocks: Optional[List[Dict[str, Any]]] = None, *, raise_errors=False, resume_state=None, message_id=None
 ) -> tuple[str, str]:
     ctx = _load_context(student_id)
     ctx['current_message'] = message
-    resume_keys = ('university_references', 'university_candidates', 'known_web_urls', 'read_web_pages',
+    from pure_multi_agent.document_evidence import unfinished_documents
+    ctx['documents_read'] = unfinished_documents(student_id)
+    ctx['turn_id'] = str(uuid.uuid4())
+    from pure_multi_agent.document_evidence import manifest
+    ctx['chat_attachments'] = manifest(student_id, message_id) if message_id else []
+    resume_keys = ('turn_id', 'documents_read', 'chat_attachments', 'change_proposals', 'university_references', 'university_candidates', 'known_web_urls', 'read_web_pages',
         'research_after_reply', 'model_steps', 'tool_errors', 'web_search_count', 'pages_read', 'university_reads', 'document_availability')
     if resume_state is not None:
         ctx.update({key: value for key, value in resume_state.items() if key in resume_keys})
@@ -339,4 +347,6 @@ def run_turn(
             add_reference(ctx, row.registered_university if row.registered_university_id else row)
         except Exception:
             logger.exception('Could not queue university research')
-    return TurnResult(ctx['agent_name'], reply, {'university_references': list(ctx.get('university_references', {}).values())})
+    from pure_multi_agent.change_proposals import conversation_state
+    return TurnResult(ctx['agent_name'], reply, {'university_references': list(ctx.get('university_references', {}).values()),
+        'change_proposals': list(ctx.get('change_proposals', {}).values()), **conversation_state(ctx)})
