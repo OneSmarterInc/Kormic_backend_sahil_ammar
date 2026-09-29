@@ -342,13 +342,12 @@ def run_verification(student_id: str, user: Any = None) -> Dict[str, Any]:
     # --- MeshKor Integration: Agent Birth ---
     if not check.ain:
         try:
-            from meshkor.integrations.kormic import KormicMeshKorIntegration
-            meshkor = KormicMeshKorIntegration()
-            check.ain = meshkor.enroll_agent(
-                agent_class="AIVerificationAgent",
+            from agents.meshkor_client import meshkor_client, MANIFEST_VERIFICATION, CONSTITUTION_HASH
+            check.ain = meshkor_client.enroll_agent(
+                agent_class="BLD.Verification_agent",
                 instance_ref=f"verif_{check.id}",
-                manifest={"permissions": ["read_profile", "read_resume", "read_github", "read_linkedin"], "owner": student_id},
-                constitution_hash="pilot_hash_1"
+                manifest=MANIFEST_VERIFICATION,
+                constitution_hash=CONSTITUTION_HASH
             )
             check.save(update_fields=["ain"])
         except Exception as e:

@@ -29,13 +29,14 @@ def get_or_create_identity(owner_type: str, owner_id: str, agent_name: str = "")
     # --- MeshKor Integration: Agent Birth (Global Registry) ---
     if not identity.ain:
         try:
-            from meshkor.integrations.kormic import KormicMeshKorIntegration
-            meshkor = KormicMeshKorIntegration()
-            identity.ain = meshkor.enroll_agent(
-                agent_class=f"{owner_type}_agent".capitalize(),
+            from agents.meshkor_client import meshkor_client, MANIFEST_STUDENT, MANIFEST_UNIVERSITY, CONSTITUTION_HASH
+            manifest = MANIFEST_STUDENT if owner_type == "student" else MANIFEST_UNIVERSITY
+            # Finding 2b / Finding 2a / Finding 2c applied
+            identity.ain = meshkor_client.enroll_agent(
+                agent_class=f"BLD.{owner_type}_agent".capitalize(),
                 instance_ref=f"agent_{identity.agent_id}",
-                manifest={"permissions": ["read_database", "interact_with_agents"], "owner": owner_id},
-                constitution_hash="pilot_hash_1"
+                manifest=manifest,
+                constitution_hash=CONSTITUTION_HASH
             )
             identity.save(update_fields=["ain"])
         except Exception:
@@ -87,19 +88,21 @@ def log_conversation(
 
     # --- MeshKor Integration: Agent Action Tracking (Inter-Agent Comms) ---
     try:
-        from meshkor.integrations.kormic import KormicMeshKorIntegration
-        meshkor = KormicMeshKorIntegration()
+        import hashlib
+        from agents.meshkor_client import meshkor_client
         if asker.ain:
-            meshkor.record_event(
+            # Finding 2c: Local hash of question instead of raw text
+            q_hash = hashlib.sha256(question.encode("utf-8")).hexdigest() if question else ""
+            meshkor_client.record_event(
                 ain=asker.ain,
-                event_type="agent_sent_message",
-                details={"target_agent": str(responder.agent_id), "question": question}
+                event_description="agent_sent_message",
+                event_data={"target_agent": str(responder.agent_id), "question_hash": q_hash}
             )
         if responder.ain:
-            meshkor.record_event(
+            meshkor_client.record_event(
                 ain=responder.ain,
-                event_type="agent_responded",
-                details={"source_agent": str(asker.agent_id), "source": knowledge_source}
+                event_description="agent_responded",
+                event_data={"source_agent": str(asker.agent_id), "source": knowledge_source}
             )
     except Exception:
         pass # Fail-open

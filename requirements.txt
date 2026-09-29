@@ -129,4 +129,4 @@ pgvector==0.4.2
 fastembed==0.8.1
 
 # MeshKor SDK (From TestPyPI for Pilot)
-https://test-files.pythonhosted.org/packages/f9/31/5b44f8ca7dac34019ee1fa1091ead9b73c1a5571d724e66c8fcbb33a6707/meshkor-1.0.2-py3-none-any.whl
+https://test-files.pythonhosted.org/packages/b1/47/8546fa92e869446586fa95de17df6284ca24cfb7240325956a9291dd26cf/meshkor-1.0.3-py3-none-any.whl
