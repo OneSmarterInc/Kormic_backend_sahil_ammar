@@ -450,7 +450,8 @@ class ResumeUploadAPIView(APIView):
     permission_classes = STUDENT_PERMISSIONS
 
     def post(self, request):
-        data = request.data.copy()
+        # Uploaded temporary files cannot be deep-copied on Windows.
+        data = dict(request.data.items())
         data["student_id"] = request.user.account.student_uuid
         serializer = ResumeUploadSerializer(data=data)
 
@@ -461,6 +462,10 @@ class ResumeUploadAPIView(APIView):
             )
 
         try:
+            from django.conf import settings
+            if settings.AGENT_QUEUE_ENABLED and 'respond-async' in request.headers.get('Prefer', ''):
+                from pure_multi_agent.document_jobs import submit_document
+                return submit_document(request, 'resume', [serializer.validated_data['file']])
             result = parse_resume(
                 student_id=serializer.validated_data["student_id"],
                 uploaded_file=serializer.validated_data["file"],
@@ -607,6 +612,10 @@ class LinkedInAnalyzeAPIView(APIView):
             return api_error("At least one image is required using key 'images'.")
 
         try:
+            from django.conf import settings
+            if settings.AGENT_QUEUE_ENABLED and 'respond-async' in request.headers.get('Prefer', ''):
+                from pure_multi_agent.document_jobs import submit_document
+                return submit_document(request, 'linkedin', images)
             result = analyze_linkedin(student_id=student_id, uploaded_images=images)
             return Response(
                 {
@@ -1905,6 +1914,7 @@ def university_agent_chat(request, university_id: str):
 
 
 def _officer_chat_response(request, university_id, subject_student_id=None):
+    from pure_multi_agent.model_router import AIServiceUnavailable
     from django.conf import settings
     if settings.AGENT_QUEUE_ENABLED:
         from pure_multi_agent.jobs import submit
@@ -1928,6 +1938,8 @@ def _officer_chat_response(request, university_id, subject_student_id=None):
                 **({"subject_student_id": subject_student_id} if subject_student_id else {}))
             ChatMessage.objects.create(**scope, sender="assistant", content=result["reply"], meta=result)
             return Response(result)
+    except AIServiceUnavailable as exc:
+        return api_error(str(exc), status.HTTP_503_SERVICE_UNAVAILABLE)
     except (AgentBusy, ResumeTurnLater):
         return api_error("The agent is busy. Please retry shortly.", status.HTTP_503_SERVICE_UNAVAILABLE)
     except Exception as exc:

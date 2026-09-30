@@ -1,3 +1,4 @@
+import uuid
 from django.contrib.auth.models import User
 from django.db import models
 
@@ -97,6 +98,14 @@ class TOTPBackupCode(models.Model):
 
     def __str__(self) -> str:
         return f"TOTPBackupCode(user={self.user_id}, used={bool(self.used_at)})"
+
+
+class GitHubOAuthState(models.Model):
+    telemetry_id = models.UUIDField(default=uuid.uuid4, null=True, editable=False)
+    digest = models.CharField(max_length=64, primary_key=True)
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    expires_at = models.DateTimeField(db_index=True)
+    consumed_at = models.DateTimeField(null=True, blank=True)
 
 
 class GitHubOAuthConnection(models.Model):

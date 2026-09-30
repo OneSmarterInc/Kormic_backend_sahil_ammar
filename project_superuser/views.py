@@ -22,6 +22,7 @@ from project_superuser.serializers import (
     ADMIN_PATCHABLE_UNIVERSITY_FIELDS,
     KB_SYNCED_UNIVERSITY_FIELDS,
     AdminCreateStudentSerializer,
+    AdminUpdateUserSerializer,
     AdminCreateSuperuserSerializer,
     AdminEnrollInstituteSerializer,
     AdminEnrollUniversitySerializer,
@@ -627,7 +628,7 @@ class AdminCreateSuperuserAPIView(APIView):
 class AdminUserDetailAPIView(APIView):
     """
     GET /api/superuser/users/<user_id>/
-    PATCH /api/superuser/users/<user_id>/  Body: {"is_active": true|false}
+    PATCH /api/superuser/users/<user_id>/  Body: {"name", "email", "is_active"} (partial)
     DELETE /api/superuser/users/<user_id>/
         Removes only this login (User, cascading Account/TOTP/GitHub OAuth).
         Does not touch the underlying StudentProfile/University row -- use
@@ -653,14 +654,34 @@ class AdminUserDetailAPIView(APIView):
         if account is None:
             return _error("User not found.", status.HTTP_404_NOT_FOUND)
 
-        if "is_active" not in (request.data or {}):
-            return _error("is_active is required.")
-
-        if account.user_id == request.user.id:
+        serializer = AdminUpdateUserSerializer(data=request.data, context={"account": account})
+        serializer.is_valid(raise_exception=True)
+        changes = serializer.validated_data
+        if "is_active" in changes and account.user_id == request.user.id:
             return _error("You cannot change your own active status.")
 
-        account.user.is_active = bool(request.data["is_active"])
-        account.user.save(update_fields=["is_active"])
+        def _do_update():
+            with transaction.atomic():
+                fields = []
+                profile_fields = {}
+                if "name" in changes:
+                    account.user.first_name = changes["name"]
+                    fields.append("first_name")
+                    profile_fields["name"] = changes["name"]
+                if "email" in changes:
+                    account.user.email = changes["email"]
+                    account.user.username = changes["email"]
+                    fields.extend(["email", "username"])
+                    profile_fields["email"] = changes["email"]
+                if "is_active" in changes:
+                    account.user.is_active = changes["is_active"]
+                    fields.append("is_active")
+                account.user.save(update_fields=fields)
+                if account.student_profile_id and profile_fields:
+                    StudentProfile.objects.filter(pk=account.student_profile_id).update(**profile_fields)
+                if "email" in changes or changes.get("is_active") is False:
+                    services.revoke_all_sessions(account.user)
+        run_with_retry(_do_update)
         return Response(_serialize_account(account))
 
     def delete(self, request, user_id: int):
@@ -700,6 +721,7 @@ class AdminUserRemoveTOTPAPIView(APIView):
             with transaction.atomic():
                 TOTPDevice.objects.filter(user_id=user_id).delete()
                 TOTPBackupCode.objects.filter(user_id=user_id).delete()
+                services.revoke_all_sessions(account.user)
                 services.log_activity(ActivityLog.Action.TOTP_REMOVED, actor=request.user, target_user=account.user)
 
         run_with_retry(_do_remove)
@@ -860,33 +882,71 @@ class AgentAuditLogListAPIView(APIView):
         entries = AgentAuditLog.objects.all()
         
         since_id = request.query_params.get("since_id", "").strip()
+        before_id = request.query_params.get("before_id", "").strip()
+        if (since_id and not since_id.isdigit()) or (before_id and not before_id.isdigit()):
+            return Response({'message': 'Event cursors must be positive integers.'}, status=400)
+        if since_id and before_id:
+            return Response({'message': 'Use only one event cursor.'}, status=400)
         if since_id.isdigit():
             entries = entries.filter(id__gt=int(since_id))
+        if before_id:
+            entries = entries.filter(id__lt=int(before_id))
             
         student_id = request.query_params.get("student_id", "").strip()
         if student_id:
             entries = entries.filter(student_id=student_id)
             
         try:
-            limit = min(int(request.query_params.get("limit", 50)), 200)
+            limit = max(1, min(int(request.query_params.get("limit", 50)), 200))
         except ValueError:
             limit = 50
             
         # Ensure we return the oldest-to-newest for live polling appending if since_id is provided,
         # otherwise return newest-first.
-        if since_id:
-            entries = entries.order_by("timestamp")[:limit]
-            ordered_entries = list(entries)
-        else:
-            entries = entries.order_by("-timestamp")[:limit]
-            ordered_entries = list(entries)[::-1] # Reverse to display oldest to newest in the chunk
+        run_id = request.query_params.get('run_id', '').strip()
+        if run_id:
+            entries = entries.filter(run_id=run_id)
+        # Cursor and ordering must use the same key, including concurrent inserts.
+        ordered_entries = list(entries.order_by('id' if since_id else '-id')[:limit + 1])
+        has_more = len(ordered_entries) > limit
+        ordered_entries = ordered_entries[:limit]
+        run_ids = {log.run_id for log in ordered_entries}
+        from django.db.models import Q
+        links = list(AgentAuditLog.objects.filter(
+            Q(action_type='BACKGROUND_JOB_LINKED', outputs__job_id__in=list(run_ids)) |
+            Q(action_type='AGENT_COMMUNICATION_REPLY', outputs__mode='queue_request', outputs__result__job_id__in=list(run_ids))
+        ).order_by('id'))
+        origins = {row.run_id: {**row.inputs, 'task_id': row.run_id} for row in AgentAuditLog.objects.filter(
+            run_id__in=run_ids | {link.run_id for link in links}, action_type='RUN_START').order_by('id')}
+        child_origins = {}
+        for link in links:
+            origin = origins.get(link.run_id, {})
+            identity = (link.student_id, origin.get('message_id') or link.run_id)
+            child_id = link.outputs.get('job_id') or link.outputs.get('result', {}).get('job_id')
+            child_origins.setdefault(child_id, {})[identity] = {**origin, 'student_id': link.student_id}
+        for job_id, parents in child_origins.items():
+            # Shared cached jobs cannot be assigned to one arbitrary chat task.
+            if len(parents) == 1:
+                origins.setdefault(job_id, next(iter(parents.values())))
+        from django_api.models import StudentProfile
+        from django_api.services import as_uuid
+        student_ids = {log.student_id or origins.get(log.run_id, {}).get('student_id', '') for log in ordered_entries}
+        students = {str(student.uuid): student.name for student in StudentProfile.objects.filter(uuid__in=[value for value in student_ids if as_uuid(value)])}
             
         return Response({
+            'has_more': has_more,
+            'next_since_id': max((log.id for log in ordered_entries), default=None),
+            'next_before_id': min((log.id for log in ordered_entries), default=None),
             "logs": [
                 {
                     "id": log.id,
                     "run_id": log.run_id,
-                    "student_id": log.student_id,
+                    "student_id": log.student_id or origins.get(log.run_id, {}).get("student_id", ""),
+                    "student_name": students.get(log.student_id or origins.get(log.run_id, {}).get("student_id", ""), ""),
+                    "task_id": origins.get(log.run_id, {}).get("task_id", log.run_id),
+                    "activity_type": origins.get(log.run_id, {}).get("activity_type", ""),
+                    "message_id": log.inputs.get("message_id") or origins.get(log.run_id, {}).get("message_id"),
+                    "user_message": origins.get(log.run_id, {}).get("message", ""),
                     "actor_agent": log.actor_agent,
                     "action_type": log.action_type,
                     "target": log.target,

@@ -256,7 +256,7 @@ def send_claim_otp_email_task(
         return
 
     try:
-        send_mail(
+        delivered = send_mail(
             subject="Your Kormic claim code",
             message=(
                 f"Your one-time code is {code}. It expires in 10 minutes.\n\n"
@@ -267,9 +267,15 @@ def send_claim_otp_email_task(
             recipient_list=[row.email],
             fail_silently=False,
         )
+        if delivered != 1:
+            raise RuntimeError("The email backend did not accept the claim code.")
     except Exception as exc:
         # Keep the cache entry for the retry. A newer resend changes the row
         # hash, so a retry of this task will safely self-cancel as stale.
+        if self.request.is_eager and settings.INVITE_DELIVERY_MODE == "database":
+            # The durable outbox owns retries; do not retry SMTP repeatedly
+            # in the same worker pass or publish to an unavailable broker.
+            raise
         raise self.retry(exc=exc)
 
     # Do not retry a successfully delivered email only because cache cleanup

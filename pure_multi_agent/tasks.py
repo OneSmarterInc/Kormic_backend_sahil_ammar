@@ -14,29 +14,42 @@ logger = logging.getLogger(__name__)
 
 @shared_task(bind=True, acks_late=True, reject_on_worker_lost=True, soft_time_limit=570, time_limit=600, max_retries=3)
 def execute_agent_job(self, job_id):
+    import uuid
+    from pure_multi_agent.job_recovery import track, recover
     from django.db import transaction
     from django.utils import timezone
     from django_api.models import AgentJob, ChatMessage
     from pure_multi_agent.capacity import lease, AgentBusy, ResumeTurnLater
     from pure_multi_agent.jobs import run
+    recover()
     job = AgentJob.objects.filter(pk=job_id).first()
     if not job or job.status != "queued":
         return
     try:
-        with lease("thread:" + job.owner_key, ttl=900):
-            if not AgentJob.objects.filter(pk=job_id, status="queued").update(status="processing", started_at=timezone.now()):
+        from pure_multi_agent.inference_admission import tenant_key
+        with lease('workflow:' + tenant_key(job.owner_key), limit=2, ttl=900), lease("thread:" + job.owner_key, ttl=900):
+            token = uuid.uuid4()
+            if not AgentJob.objects.filter(pk=job_id, status="queued").update(status="processing", started_at=timezone.now(), heartbeat_at=timezone.now(), execution_token=token):
                 return
             try:
-                result, scope, metadata = run(job)
+                from pure_multi_agent.inference_admission import workload_scope
+                with track(job_id, token), workload_scope(job.owner_key, 10 if job.kind in ('resume','linkedin') else 0):
+                    result, scope, metadata = run(job)
                 with transaction.atomic():
                     current = AgentJob.objects.select_for_update().get(pk=job_id)
-                    if current.status != "processing":
+                    if current.status != "processing" or current.execution_token != token:
                         return
-                    ChatMessage.objects.create(**scope, sender="assistant", content=result.get("reply", ""), meta=metadata)
+                    if scope is not None:
+                        ChatMessage.objects.create(**scope, sender="assistant", content=result.get("reply", ""), meta=metadata)
                     current.status = "completed"
                     current.result = result
                     current.completed_at = timezone.now()
                     current.save(update_fields=["status", "result", "completed_at"])
+                    if job.kind in ('resume', 'linkedin'):
+                        from notifications.services import notify_profile_processed
+                        notify_profile_processed(job.student_id, job.kind, job.pk)
+                        from pure_multi_agent.document_jobs import cleanup_staging
+                        transaction.on_commit(lambda: cleanup_staging(job), robust=True)
                     if job.student_id and result.get("agent"):
                         from django_api.views import _notify_agent_reply
                         transaction.on_commit(lambda: _notify_agent_reply(job.student_id, result["agent"], result.get("reply", "")))
@@ -44,17 +57,24 @@ def execute_agent_job(self, job_id):
                             (current.started_at - current.created_at).total_seconds(),
                             (current.completed_at - current.started_at).total_seconds())
             except ResumeTurnLater as exc:
+                from datetime import timedelta
+                from django.conf import settings
                 payload = {**job.payload, 'resume_state': exc.state}
-                AgentJob.objects.filter(pk=job_id, status='processing').update(status='queued', payload=payload, dispatched_at=timezone.now())
-                execute_agent_job.apply_async(args=[str(job_id)], countdown=exc.delay, queue='agent_chat', retry=False)
+                available = timezone.now() + timedelta(seconds=exc.delay if settings.AGENT_QUEUE_BACKEND == 'database' else 0)
+                AgentJob.objects.filter(pk=job_id, status='processing', execution_token=token).update(status='queued', payload=payload, dispatched_at=available, execution_token=None)
+                if settings.AGENT_QUEUE_BACKEND != 'database':
+                    queue = 'agent_documents' if job.kind in ('resume', 'linkedin') else 'agent_chat'
+                    execute_agent_job.apply_async(args=[str(job_id)], countdown=exc.delay, queue=queue, retry=False)
             except Exception:
                 logger.exception("Agent job %s failed", job_id)
-                AgentJob.objects.filter(pk=job_id, status="processing").update(status="failed", completed_at=timezone.now(),
+                AgentJob.objects.filter(pk=job_id, status="processing", execution_token=token).update(status="failed", completed_at=timezone.now(),
                     error="The response could not be completed. Please retry your question.")
     except AgentBusy as exc:
         # No execution started; redelivery is safe here. Mid-turn failures are
         # never auto-replayed because tools may already have written profile data.
-        raise self.retry(exc=exc, countdown=5)
+        from django.conf import settings
+        if settings.AGENT_QUEUE_BACKEND != 'database':
+            raise self.retry(exc=exc, countdown=5)
 
 
 @shared_task
@@ -65,11 +85,15 @@ def dispatch_agent_work():
     from django.utils import timezone
     from django_api.models import AgentJob, KnowledgeIndexWork
     from pure_multi_agent.jobs import dispatch
+    from notifications.outbox import work_once
+    for _ in range(10):
+        if not work_once():
+            break
     now = timezone.now()
     AgentJob.objects.filter(status="queued", created_at__lt=now - timedelta(seconds=settings.AGENT_QUEUE_TIMEOUT)).update(
         status="failed", completed_at=now, error="Chat queue wait expired. Please retry.")
-    AgentJob.objects.filter(status="processing", started_at__lt=now - timedelta(seconds=settings.AGENT_JOB_TIMEOUT + 60)).update(
-        status="failed", completed_at=now, error="Chat execution expired. Please check your conversation before retrying.")
+    from pure_multi_agent.job_recovery import recover
+    recover()
     pending = AgentJob.objects.filter(status="queued").filter(Q(dispatched_at__isnull=True) | Q(dispatched_at__lt=now - timedelta(seconds=120)))
     for pk in pending.order_by("created_at").values_list("pk", flat=True)[:100]:
         dispatch(pk)
@@ -134,3 +158,9 @@ def check_agent_recovery_task() -> None:
         return
 
     notify_agent_recovered()
+
+
+@shared_task
+def queue_healthcheck(marker):
+    """Side-effect-free probe for queue delivery and result retrieval."""
+    return {'marker': str(marker), 'status':'ok'}

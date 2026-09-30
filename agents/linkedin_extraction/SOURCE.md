@@ -1,0 +1,1 @@
+Adapted from OneSmarterInc/Linkedin_agent, commit 01e64eaf39198e64b42b9809347ee4fcae3255eb. Retains model-selected OCR/extraction actions, section isolation, evidence validation and duplicate merging. Kormic provides model routing and owner-scoped persistence.

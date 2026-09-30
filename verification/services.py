@@ -304,12 +304,16 @@ def serialize_check(check: VerificationCheck, include_items: bool = True) -> Dic
     return payload
 
 
-def run_verification(student_id: str, user: Any = None) -> Dict[str, Any]:
+from pure_multi_agent.telemetry import traced_operation
+
+
+@traced_operation('Verification Agent')
+def run_verification(student_id: str, user: Any = None, *, force: bool = False, allow_analysis: bool = True) -> Dict[str, Any]:
     """
     Single source of truth for (re)computing a student's verification
-    state. Always reads the latest resume/GitHub/LinkedIn rows from the DB
-    -- there is no caching layer -- so calling this again after any
-    reupload or profile edit IS the "reanalyze" action.
+    state. Read current sources every time; reuse successful AI analysis
+    only while every verification input matches. Edits and reuploads
+    invalidate it automatically. force=True explicitly reruns the judge.
     """
     profile = StudentProfile.objects.filter(uuid=student_id).first()
 
@@ -348,6 +352,27 @@ def run_verification(student_id: str, user: Any = None) -> Dict[str, Any]:
         github_data = latest_github.result if latest_github else {}
         linkedin_data = latest_linkedin.extracted if latest_linkedin else {}
 
+        github_email = _resolve_github_verified_email(student_id)
+        sources_present = {"resume": latest_resume is not None, "github": latest_github is not None,
+                           "linkedin": latest_linkedin is not None}
+        signature = hashlib.sha256(json.dumps({
+            "version": 1, "profile": profile_facts, "resume": resume_data, "github": github_data,
+            "linkedin": linkedin_data, "github_email": github_email, "present": sources_present,
+        }, sort_keys=True, default=str).encode()).hexdigest()
+        if (not force and check.input_signature == signature and check.last_analyzed_at
+                and not check.last_error and check.engine == VerificationCheck.Engine.AI
+                and check.status != VerificationCheck.Status.ERROR):
+            return serialize_check(check)
+
+        if not allow_analysis:
+            # Authentication and polling must never wait for inference. Keep
+            # historical items, but do not present stale evidence as verified.
+            payload = serialize_check(check)
+            payload.update(status=VerificationCheck.Status.INCOMPLETE, verified=False,
+                           analysis_pending=True, message='Profile evidence needs verification. Ask your agent to review it.')
+            payload['missing_sources'] = [name for name, present in sources_present.items() if not present]
+            return payload
+
         result = _run_engine(
             check=check,
             expected_name=expected_name,
@@ -355,7 +380,7 @@ def run_verification(student_id: str, user: Any = None) -> Dict[str, Any]:
             resume_data=resume_data,
             github_data=github_data,
             linkedin_data=linkedin_data,
-            github_verified_email=_resolve_github_verified_email(student_id),
+            github_verified_email=github_email,
             sources_present={
                 "resume": latest_resume is not None,
                 "github": latest_github is not None,
@@ -369,6 +394,7 @@ def run_verification(student_id: str, user: Any = None) -> Dict[str, Any]:
         check.missing_sources = result["missing_sources"]
         check.last_error = ""
         check.last_analyzed_at = timezone.now()
+        check.input_signature = signature
         check.status = _recompute_status(check)
         check.save()
 

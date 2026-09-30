@@ -8,6 +8,7 @@ from django.utils import timezone
 from django_api.models import ChatAttachment, StudentDocumentEvidence, StudentProfile, ResumeUpload, LinkedInAnalysis
 from django_api.services import resolve_upload_path, profile_row_to_dict, _apply_dict_to_profile
 from pure_multi_agent import change_proposals as changes
+from pure_multi_agent.telemetry import traced_operation, saved_source
 
 
 def manifest(student_id, message_id=None):
@@ -17,6 +18,7 @@ def manifest(student_id, message_id=None):
     return list(rows.order_by('-created_at').values('id', 'original_filename', 'content_type', 'message_id')[:20])
 
 
+@traced_operation('Document Agent')
 def read_attachment(ctx, attachment_id, purpose='update'):
     attachment = ChatAttachment.objects.filter(pk=attachment_id, message__student_id=ctx['canonical_student_id'], message__channel='agent').first()
     if attachment is None:
@@ -25,6 +27,8 @@ def read_attachment(ctx, attachment_id, purpose='update'):
     if not path.is_file() or path.stat().st_size > 15 * 1024 * 1024:
         raise ValueError('Document is missing or exceeds the 15 MB limit.')
     content_type = attachment.content_type
+    from pure_multi_agent.telemetry import emit
+    emit('AGENT_PROGRESS', 'Read uploaded document', outputs={'summary': f'Received {attachment.original_filename}. Extracting document content.', 'attachment_id': attachment.pk, 'content_type': content_type})
     text, visual = '', False
     if content_type == 'application/pdf':
         from pypdf import PdfReader
@@ -50,9 +54,10 @@ def read_attachment(ctx, attachment_id, purpose='update'):
         visual = True
     else:
         raise ValueError('Please convert this document to PDF, DOCX, plain text or an image.')
-    row, _ = StudentDocumentEvidence.objects.get_or_create(attachment=attachment,
+    row, created = StudentDocumentEvidence.objects.get_or_create(attachment=attachment,
         defaults={'student': StudentProfile.objects.get(uuid=ctx['canonical_student_id']), 'file_path': attachment.file_path,
             'filename': attachment.original_filename, 'content_type': content_type, 'raw_text': text})
+    emit('OBJECT_CREATED' if created else 'AGENT_PROGRESS', 'Document evidence', outputs={'summary': 'Document content extracted; evidence record is ready for analysis.', 'document_id': row.pk, 'text_characters': len(text), 'requires_visual_analysis': visual})
     if purpose == 'update' and row.status != 'confirmed':
         row.status = 'awaiting_proposal'
         row.save(update_fields=['status'])
@@ -138,6 +143,10 @@ def apply_document(ctx, proposal):
         student.linkedin_profile = {**facts, 'source_document_id': row.pk, 'summary': data['summary']}
     student.evidence = {**(student.evidence or {}), kind: {'document_id': row.pk, 'facts': facts, 'confirmed_at': row.confirmed_at.isoformat()}}
     student.save()
+    from pure_multi_agent.telemetry import emit
+    emit('OBJECT_UPDATED', 'Confirmed student document and profile',
+        outputs={'document_id': row.pk, 'source_type': kind, 'facts': facts,
+                 'profile_updates': data.get('profile_updates', {}), 'status': 'confirmed'})
     changes._refresh_student(ctx, student)
     return 'applied'
 
@@ -145,9 +154,12 @@ def apply_document(ctx, proposal):
 def confirmed_evidence(student_id):
     result = {}
     for kind in ('resume', 'linkedin'):
-        row = StudentDocumentEvidence.objects.filter(student__uuid=student_id, source_type=kind, status='confirmed').order_by('-confirmed_at').first()
-        if row:
-            result[kind] = {'document_id': row.pk, 'filename': row.filename, **row.extracted, 'confirmed_at': row.confirmed_at.isoformat()}
+        def read():
+            row = StudentDocumentEvidence.objects.filter(student__uuid=student_id, source_type=kind, status='confirmed').order_by('-confirmed_at').first()
+            return {'document_id': row.pk, 'filename': row.filename, **row.extracted, 'confirmed_at': row.confirmed_at.isoformat()} if row else None
+        evidence = saved_source('CV Agent' if kind == 'resume' else 'LinkedIn Agent', student_id, 'Read confirmed document', read)
+        if evidence:
+            result[kind] = evidence
     return result
 
 

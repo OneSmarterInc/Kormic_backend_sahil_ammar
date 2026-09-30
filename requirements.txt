@@ -128,3 +128,6 @@ xxhash==4.0.1
 zstandard==0.25.0
 pgvector==0.4.2
 fastembed==0.8.1
+
+pytesseract==0.3.13
+rapidocr-onnxruntime==1.4.4

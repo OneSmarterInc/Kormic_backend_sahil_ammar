@@ -195,6 +195,9 @@ class DocumentTests(TestCase):
         self.ctx['documents_read'] = documents.unfinished_documents(str(self.student.uuid))
         steps = []
         def model(messages, tools, **kwargs):
+            if {t.name for t in tools} == {'completion_decision'}:
+                return AIMessage(content='', tool_calls=[{'id': 'audit', 'name': 'completion_decision',
+                    'args': {'complete': True}}])
             steps.append(kwargs.get('require_tools', False))
             if len(steps) == 1:
                 self.assertEqual({t.name for t in tools}, {'read_student_document', 'propose_document_update', 'finish_document_review', 'request_document_clarification', 'discard_document_draft'})

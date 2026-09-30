@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import hashlib
 from datetime import timedelta
 from typing import Any, Dict, Optional
 
@@ -11,7 +12,7 @@ from django.core.cache import cache
 from django.utils import timezone
 
 from accounts.crypto import decrypt_secret, encrypt_secret
-from accounts.models import Account, GitHubOAuthConnection
+from accounts.models import Account, GitHubOAuthConnection, GitHubOAuthState
 
 AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 TOKEN_URL = "https://github.com/login/oauth/access_token"
@@ -68,17 +69,34 @@ def _state_key(state: str) -> str:
 
 def create_oauth_state(user_id: int) -> str:
     state = secrets.token_urlsafe(32)
-    cache.set(_state_key(state), user_id, timeout=_STATE_TTL)
+    GitHubOAuthState.objects.create(digest=hashlib.sha256(state.encode()).hexdigest(),
+        user_id=user_id, expires_at=timezone.now() + timedelta(seconds=_STATE_TTL))
     return state
+
+
+def connection_activity(state, user, action, summary, **details):
+    """Use an independent correlation ID; never log OAuth state or credentials."""
+    try:
+        row = GitHubOAuthState.objects.filter(digest=hashlib.sha256(state.encode()).hexdigest(), user=user).first()
+        if row is None or row.telemetry_id is None:
+            return
+        from pure_multi_agent.telemetry import emit
+        emit(action, 'GitHub connection', actor='GitHub Agent', student_id=str(user.account.student_uuid or ''),
+            run_id=str(row.telemetry_id), inputs={'activity_type':'github_connection'}, outputs={'summary':summary, **details})
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception('Could not record GitHub connection activity')
 
 
 def consume_oauth_state(state: str) -> Optional[int]:
     """One-time read: returns the user_id that started the flow, or None if
     the state is missing/expired/already used, and invalidates it either way."""
-    key = _state_key(state)
-    user_id = cache.get(key)
-    cache.delete(key)
-    return user_id
+    if not isinstance(state, str) or len(state) > 256:
+        return None
+    digest = hashlib.sha256(state.encode()).hexdigest()
+    rows = GitHubOAuthState.objects.filter(digest=digest, consumed_at__isnull=True, expires_at__gt=timezone.now())
+    user_id = rows.values_list('user_id', flat=True).first()
+    return user_id if user_id and rows.update(consumed_at=timezone.now()) == 1 else None
 
 
 def build_authorize_url(state: str) -> str:

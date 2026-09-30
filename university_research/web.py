@@ -41,7 +41,7 @@ def search_web(query, limit=10):
     if saved is not None:
         return saved
     # Explicit search-engine backends: auto also queries encyclopedia services.
-    rows = DDGS(timeout=12).text(query, max_results=min(limit, 10), backend='duckduckgo,bing,yahoo')
+    rows = DDGS(timeout=12).text(query, max_results=min(limit, 10), backend='duckduckgo,yahoo')
     results, seen = [], set()
     for row in rows:
         url = row.get('href') or row.get('url') or ''
@@ -62,8 +62,23 @@ def search_official_site(website, query):
     from url_discovery.domain_policy import root_domain
     host = urlsplit(canonical_url(website)).hostname
     root = root_domain(host)
-    results = search_web(f'site:{host} {query[:300]}')
+    results = search_web(f'site:{root} {query[:300]}')
     return [r for r in results if root_domain(urlsplit(r['url']).hostname or '') == root]
+
+
+def read_page_once(url, base_url=None):
+    """One scrape attempt, enforcing robots and public URL policy."""
+    from pure_multi_agent.telemetry import emit
+    for attempt in (1,):
+        emit('TOOL_CALL_START', 'scrape_official_page', inputs={'url': url, 'attempt': attempt, 'max_attempts': 1})
+        try:
+            page = read_page(url, base_url) if base_url else read_page(url)
+        except Exception as exc:
+            emit('TOOL_ERROR', 'scrape_official_page', outputs={'url': url, 'attempt': attempt, 'error': str(exc)})
+            raise
+        else:
+            emit('TOOL_RESULT', 'scrape_official_page', outputs={'url': page['url'], 'attempt': attempt})
+            return page
 
 
 def read_page(url, base_url=None):
@@ -81,7 +96,7 @@ def read_page(url, base_url=None):
         if robots is None:
             status, _, body, _ = request_with_policy(client, robots_url, policy, max_bytes=150000)
             if status in (401, 403, 429) or status >= 500:
-                raise ValueError('Website currently disallows automated access')
+                raise ValueError(f'Official website access unavailable: robots.txt returned HTTP {status}. ' + ('Rate limited; retry later.' if status == 429 else 'Access could not be verified; do not bypass it.'))
             robots = body.decode('utf-8', errors='replace') if status == 200 else ''
             cache.set(robots_key, robots, 3600)
         parser = RobotFileParser(robots_url)
@@ -90,7 +105,7 @@ def read_page(url, base_url=None):
             raise ValueError('Website robots policy disallows this page')
         status, headers, body, final = request_with_policy(client, url, policy, max_bytes=2_000_000, max_redirects=5)
         if status != 200 or 'html' not in headers.get('content-type', '').lower():
-            raise ValueError('This page is unavailable or is not HTML')
+            raise ValueError(f'Official page unavailable: HTTP {status}; content type {headers.get("content-type", "unknown")}. No verified page text was retrieved.')
     soup = BeautifulSoup(body, 'html.parser')
     title = soup.title.get_text(' ', strip=True)[:500] if soup.title else ''
     links, seen = [], set()
@@ -103,7 +118,19 @@ def read_page(url, base_url=None):
         if (parts.hostname == urlsplit(final).hostname or parts.hostname.endswith('.' + policy.root)) and not re.search(r'\.(jpg|png|zip|mp4|pdf)$', parts.path, re.I):
             seen.add(target)
             links.append({'url': target[:1000], 'label': anchor.get_text(' ', strip=True)[:140]})
-    for el in soup(['script', 'style', 'noscript', 'svg', 'footer', 'form']):
+    for el in soup(['script', 'style', 'noscript', 'svg', 'footer', 'form', 'nav', 'header']):
         el.decompose()
-    content = re.sub(r'\s+', ' ', soup.get_text(' ', strip=True)).strip()[:20000]
-    return {'url': final, 'title': title, 'content': content, 'links': links[:100], 'truncated': len(content) >= 20000}
+    for el in soup.select('[role="navigation"], [role="banner"]'):
+        el.decompose()
+    main = soup.find('main') or soup.find(attrs={'role': 'main'}) or soup
+    tables = []
+    for table in main.find_all('table'):
+        heading = table.find_previous(['h2', 'h3', 'h4'])
+        rows = [row.get_text(' | ', strip=True) for row in table.find_all('tr')]
+        tables.append({'heading': heading.get_text(' ', strip=True) if heading else title, 'rows': rows})
+    # Keep table rows together (their headings qualify amounts) and paragraph
+    # boundaries so the answer can quote facts instead of a flattened menu.
+    for row in main.find_all('tr'):
+        row.replace_with(row.get_text(' | ', strip=True) + '\n')
+    content = '\n'.join(re.sub(r'\s+', ' ', line).strip() for line in main.get_text('\n', strip=True).splitlines() if line.strip())[:20000]
+    return {'url': final, 'title': title, 'content': content, 'tables': tables, 'links': links[:100], 'truncated': len(content) >= 20000}

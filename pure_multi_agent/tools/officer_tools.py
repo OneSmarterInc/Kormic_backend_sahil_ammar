@@ -131,6 +131,12 @@ def build_tools(ctx):
         return {'students': [interested_student_detail.invoke({'student_id': student_id}) for student_id in dict.fromkeys(student_ids)]}
 
     @tool
+    def ask_student_agent(student_id: str, question: str) -> dict:
+        """Consult an interested student's agent about admissions information. It reads their shareable profile, answers from evidence, and asks the student via Queries and notification when facts are missing. Never ask the officer to fill another person's missing facts."""
+        from agent_queries.student_adviser import consult
+        return consult(ctx, student_id, question)
+
+    @tool
     def university_queries(status: Literal['all', 'pending', 'resolved', 'ignored'] = 'all', page: int = 1) -> dict:
         """Read this university's student questions and pending knowledge gaps. Draft replies in chat; this tool does not send messages."""
         return data().university_queries(status, page)
@@ -231,7 +237,8 @@ def build_tools(ctx):
         """Read the current officer's pending change proposals for this university."""
         return changes.conversation_state(ctx)
 
-    return [read_university_record, university_dashboard, interested_students, interested_student_detail, compare_interested_students,
+    from pure_multi_agent.workspace_tools import build_workspace_tools
+    return [*build_workspace_tools(ctx), ask_student_agent, read_university_record, university_dashboard, interested_students, interested_student_detail, compare_interested_students,
         university_queries, university_exchanges, search_university_knowledge, list_university_knowledge,
         propose_knowledge_change, propose_university_information, propose_admission_requirement, propose_department_contact,
         resolve_university_change, university_change_status]

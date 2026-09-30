@@ -489,6 +489,10 @@ class AgentJob(models.Model):
     started_at = models.DateTimeField(null=True)
     completed_at = models.DateTimeField(null=True)
     dispatched_at = models.DateTimeField(null=True)
+    execution_token = models.UUIDField(null=True)
+    heartbeat_at = models.DateTimeField(null=True)
+    recovery_phase = models.CharField(max_length=20, default='new')
+    recovery_attempts = models.PositiveSmallIntegerField(default=0)
 
     class Meta:
         constraints = [
@@ -501,6 +505,29 @@ class AgentJob(models.Model):
 class AgentQueueGate(models.Model):
     """One short transaction lock for queue admission; never held for model I/O."""
     id = models.PositiveSmallIntegerField(primary_key=True, default=1)
+
+
+class InferenceWaiter(models.Model):
+    """Short-lived admission tickets; never contain prompts or student data."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    provider = models.CharField(max_length=30)
+    owner = models.CharField(max_length=300)
+    rank_at = models.DateTimeField()
+    expires_at = models.DateTimeField()
+    tenant = models.CharField(max_length=300, default='legacy')
+    priority = models.PositiveSmallIntegerField(default=10)
+
+    class Meta:
+        indexes = [models.Index(fields=['provider', 'rank_at'], name='inference_wait_order')]
+
+
+class InferenceTenant(models.Model):
+    provider = models.CharField(max_length=30)
+    tenant = models.CharField(max_length=300)
+    last_served_at = models.DateTimeField(null=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['provider', 'tenant'], name='inference_tenant_unique')]
 
 
 class KnowledgeQuerySet(models.QuerySet):

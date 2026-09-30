@@ -141,6 +141,10 @@ class LinkedInAgent:
         return content
 
     def extract(self, paths: List[str]) -> Dict[str, Any]:
+        from .linkedin_extraction.pipeline import extract
+        return extract(paths)
+
+    def extract_legacy(self, paths: List[str]) -> Dict[str, Any]:
         """Run one Claude call for the whole LinkedIn screenshot/text batch."""
         if not paths:
             raise ValueError("No LinkedIn screenshots or text files were provided.")

@@ -22,7 +22,8 @@ def build_tools(ctx: Dict[str, Any]) -> List[Any]:
         """Run a fresh check for mismatches between the student's profile,
         resume, GitHub, and LinkedIn data, and surface the first open item
         (if any) for the student to confirm/ignore/clarify. Call this when
-        the student asks you to review/check/verify their profile."""
+        the student explicitly asks to verify cross-source inconsistencies.
+        Not a substitute for GitHub, CV or LinkedIn review/advice."""
         try:
             result = commons.run_verification(ctx["canonical_student_id"])
         except Exception as exc:
@@ -47,8 +48,9 @@ def build_tools(ctx: Dict[str, Any]) -> List[Any]:
             f"Found something worth a second look: {item.get('message')}\n"
             f"Expected: {item.get('expected_value') or 'not specified'}\n"
             f"Found: {item.get('found_value') or 'not specified'}\n\n"
-            "Ask the student if this is correct, should be ignored, or if they'd "
-            "like to clarify what's going on."
+            "This is a verification discrepancy, not an answer to a source review. "
+            "If relevant, show these specific values and ask the user directly which is correct. "
+            "Continue answering their original request from available evidence."
         )
 
     @tool

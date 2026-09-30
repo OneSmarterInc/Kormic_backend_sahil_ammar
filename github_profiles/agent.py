@@ -89,9 +89,12 @@ class RepositoryAgent:
             if not text.strip():
                 continue
             with fenced(self.run):
-                ev, _ = GitHubSourceEvidence.objects.update_or_create(repository=self.repo, sha=self.sha, path=path,
+                ev, created = GitHubSourceEvidence.objects.update_or_create(repository=self.repo, sha=self.sha, path=path,
                     defaults={'excerpt': text, 'url': f'https://github.com/{self.repo.full_name}/blob/{self.sha}/{quote(path, safe="/")}#L1-L{text.count(chr(10))+1}'})
             evidence = {'id': ev.pk, 'path': path, 'excerpt': text, 'url': ev.url}
+            from pure_multi_agent.telemetry import emit
+            emit('OBJECT_CREATED' if created else 'OBJECT_UPDATED', 'GitHub source evidence',
+                outputs={'object_id': ev.pk, 'path': path, 'repository': self.repo.full_name})
             sources.append(evidence)
             result.append(evidence)
         return {'sources': result}
@@ -121,6 +124,8 @@ class RepositoryAgent:
         return {'accepted': True}
 
     def decide(self, state):
+        from pure_multi_agent.telemetry import emit
+        emit('MODEL_START', self.repo.full_name, inputs={'step': state.get('steps', 0) + 1})
         if state.get('steps', 0) >= settings.GITHUB_AGENT_MAX_STEPS:
             return {'done': True, 'error': 'Agent reached its step limit before producing validated findings.'}
         model = Inference(self.run)
@@ -141,6 +146,8 @@ class RepositoryAgent:
                 'language': self.repo.metadata.get('language'), 'fork': self.repo.fork},
             'tools': definitions, 'observations': state.get('history', [])[-8:],
             'sources': state.get('sources', []), 'steps_remaining': settings.GITHUB_AGENT_MAX_STEPS-state.get('steps', 0)}, ensure_ascii=False)}], schema)
+        emit('MODEL_END', self.repo.full_name, outputs={'provider': answer['provider'], 'model': answer['model']})
+        emit('TOOL_CALL_INTENT', json.loads(answer['content']).get('name', self.repo.full_name), outputs={'action': json.loads(answer['content'])})
         return {'action': json.loads(answer['content']), 'steps': state.get('steps', 0)+1,
             'provider': answer['provider'], 'model': answer['model']}
 
@@ -172,7 +179,8 @@ class RepositoryAgent:
         graph.add_conditional_edges('decide', lambda s: 'end' if s.get('done') else 'tools', {'end': END, 'tools': 'tools'})
         graph.add_conditional_edges('tools', lambda s: 'end' if s.get('done') else 'decide', {'end': END, 'decide': 'decide'})
         compiled = graph.compile(checkpointer=saver, interrupt_after=['decide', 'tools'])
-        config = {'configurable': {'thread_id': self.thread}, 'recursion_limit': settings.GITHUB_AGENT_MAX_STEPS*3+10}
+        from pure_multi_agent.telemetry import trace_config
+        config = {'configurable': {'thread_id': self.thread}, 'recursion_limit': settings.GITHUB_AGENT_MAX_STEPS*3+10, **trace_config()}
         previous = saver.get_tuple(config)
         state = compiled.invoke(None if previous else {'steps': 0, 'history': [], 'sources': [], 'invalid_calls': 0, 'done': False},
             config, durability='sync')

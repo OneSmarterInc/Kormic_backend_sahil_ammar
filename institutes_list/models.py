@@ -9,8 +9,10 @@ destination university with an AI-agent and knowledge base. Never conflate
 them.
 """
 import secrets
+import uuid
 
 from django.db import models
+from django.utils import timezone
 
 
 class InstituteStudentList(models.Model):
@@ -136,3 +138,13 @@ class ListedStudent(models.Model):
 
     def __str__(self):
         return f"ListedStudent({self.email}, {self.status})"
+
+
+class ClaimCodeDelivery(models.Model):
+    """Durable local outbox. A secret-keyed nonce avoids storing plaintext OTPs."""
+
+    student = models.ForeignKey(ListedStudent, on_delete=models.CASCADE)
+    nonce = models.UUIDField(default=uuid.uuid4)
+    otp_hash = models.CharField(max_length=128)
+    expires_at = models.DateTimeField()
+    available_at = models.DateTimeField(default=timezone.now)

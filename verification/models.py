@@ -36,6 +36,7 @@ class VerificationCheck(models.Model):
     # full AI analysis rather than silently passing as equivalent.
     engine = models.CharField(max_length=20, choices=Engine.choices, blank=True, default="")
     last_analyzed_at = models.DateTimeField(null=True, blank=True)
+    input_signature = models.CharField(max_length=64, blank=True, default="")
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

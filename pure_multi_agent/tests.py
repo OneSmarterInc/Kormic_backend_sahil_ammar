@@ -104,9 +104,11 @@ class AskUniversityToolConversationLoggingTests(TestCase):
         self.university_id = str(u.uuid)
         self.ctx = {
             "canonical_student_id": "student_tool_log",
+            "turn_id": "tool-log-turn",
             "student_profile": {"student_id": "student_tool_log", "name": "Tester"},
         }
         self.tools = {t.name: t for t in build_tools(self.ctx)}
+        self.tools["list_universities"].invoke({"query": "Tool Log University"})
 
     @mock.patch("pure_multi_agent.registered_adviser.consult")
     def test_ask_university_logs_conversation(self, mock_client):
@@ -136,5 +138,5 @@ class AskUniversityToolConversationLoggingTests(TestCase):
             "question": "What is the deadline?",
         })
 
-        self.assertIn("Unknown university_id", result["error"])
+        self.assertIn("Resolve the university", result["error"])
         self.assertEqual(AgentConversationLog.objects.count(), 0)

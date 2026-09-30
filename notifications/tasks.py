@@ -26,7 +26,7 @@ def send_push_notification_task(self, log_id: int) -> None:
     from notifications.models import NotificationLog, PushToken
 
     try:
-        log = NotificationLog.objects.get(id=log_id)
+        log = NotificationLog.objects.get(id=log_id, dismissed_at__isnull=True)
     except NotificationLog.DoesNotExist:
         logger.warning("send_push_notification_task: NotificationLog %s no longer exists", log_id)
         return
@@ -61,6 +61,8 @@ def send_push_notification_task(self, log_id: int) -> None:
         log.status = NotificationLog.Status.FAILED
         log.error = str(exc)
         log.save(update_fields=["status", "error", "updated_at"])
+        if self.request.is_eager and settings.AGENT_QUEUE_BACKEND == 'database':
+            raise
         raise self.retry(exc=exc)
 
     receipt_map: Dict[str, str] = {}
@@ -82,7 +84,16 @@ def send_push_notification_task(self, log_id: int) -> None:
         # that it was actually delivered -- receipts (checked after a short
         # delay, per Expo's own guidance) catch delivery-time failures like a
         # token that looked valid but the device was since unregistered.
-        check_push_receipts_task.apply_async(args=[receipt_map], countdown=20)
+        if settings.AGENT_QUEUE_BACKEND == 'database':
+            from datetime import timedelta
+            from django.utils import timezone
+            from notifications.models import PushDelivery
+            PushDelivery.objects.update_or_create(notification=log, defaults={
+                'receipts': receipt_map, 'attempts': 0,
+                'available_at': timezone.now() + timedelta(seconds=20),
+            })
+        else:
+            check_push_receipts_task.apply_async(args=[receipt_map], countdown=20)
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=10)
@@ -102,7 +113,7 @@ def send_push_notifications_batch_task(self, log_ids: List[int]) -> None:
 
     logs = {
         log.id: log
-        for log in NotificationLog.objects.filter(id__in=log_ids, status__in=_pending_statuses())
+        for log in NotificationLog.objects.filter(id__in=log_ids, dismissed_at__isnull=True, status__in=_pending_statuses())
     }
     if not logs:
         return
@@ -186,6 +197,8 @@ def check_push_receipts_task(self, receipt_map: Dict[str, str]) -> None:
     try:
         receipts = get_expo_push_receipts(list(receipt_map.keys()))
     except (ExpoPushError, Exception) as exc:
+        if self.request.is_eager and settings.AGENT_QUEUE_BACKEND == 'database':
+            raise
         raise self.retry(exc=exc)
 
     for receipt_id, receipt in receipts.items():

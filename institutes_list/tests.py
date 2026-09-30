@@ -440,6 +440,10 @@ class ClaimFlowTests(TestCase):
     @override_settings(CLAIM_PAGE_URL="https://app.kormic.example/claim")
     @mock.patch("institutes_list.views.send_invite_email_task.delay")
     def test_send_invites_emails_unclaimed_rows_and_is_idempotent(self, mock_delay):
+        # Older imports may have an attempt timestamp without delivery evidence.
+        from django.utils import timezone
+        ListedStudent.objects.filter(source_list_id=self.upload['list_id']).update(
+            invited_at=timezone.now(), invite_delivery_status='')
         # The actual SMTP send now happens in send_invite_email_task
         # (Celery), not inline -- see institutes_list/tasks.py. The view's
         # job is just to mark invited_at and queue one task per row, so

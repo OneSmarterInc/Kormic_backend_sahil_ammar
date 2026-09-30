@@ -47,7 +47,12 @@ def notify_account(
         data=data or {},
     )
     if queue_push:
-        send_push_notification_task.delay(log.id)
+        from django.conf import settings
+        if settings.AGENT_QUEUE_BACKEND == 'database':
+            from notifications.models import PushDelivery
+            PushDelivery.objects.create(notification=log)
+        else:
+            send_push_notification_task.delay(log.id)
     return log
 
 
@@ -146,6 +151,9 @@ def notify_agent_reply(*, student_id: str, agent_name: str, reply: str) -> Optio
 
     if not as_uuid(student_id):
         return None
+    from django_api.services import as_uuid
+    if not as_uuid(student_id):
+        return
     account = Account.objects.filter(student_profile__uuid=student_id).first()
     if account is None:
         return None
@@ -186,6 +194,9 @@ def send_agent_message(
 
     if not as_uuid(student_id):
         return None
+    from django_api.services import as_uuid
+    if not as_uuid(student_id):
+        return
     account = Account.objects.filter(student_profile__uuid=student_id).first()
     if account is None:
         return None
@@ -235,3 +246,19 @@ def notify_pending_query_resolved(
         },
         notification_data={"type": "pending_query_resolved", "query_id": query_id},
     )
+
+
+def notify_profile_processed(student_id, source, job_id):
+    """Call inside the fenced completion transaction, once per successful job."""
+    from notifications.models import PushDelivery
+    from django_api.services import as_uuid
+    if not as_uuid(student_id):
+        return
+    account = Account.objects.filter(student_profile__uuid=student_id).first()
+    if account is None:
+        return
+    label = {'resume': 'CV', 'linkedin': 'LinkedIn', 'github': 'GitHub'}[source]
+    log = notify_account(account=account, event_type='profile_processed',
+        title=f'{label} processing complete', body=f'Your {label} information is ready to review in your profile.',
+        data={'type': 'profile_processed', 'source': source, 'job_id': str(job_id)})
+    PushDelivery.objects.create(notification=log)

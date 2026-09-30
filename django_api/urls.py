@@ -1,3 +1,4 @@
+from django_api.job_views import agent_activity
 from django.urls import path
 
 from django_api import schema_views, views
@@ -39,6 +40,7 @@ urlpatterns = [
     # as background orchestrator calls from inside agent_chat (see agents/commons.py).
     path("chat/intake/", views.profile_intake_chat, name="profile-intake-chat"),
     path("chat/agent/", views.agent_chat, name="agent-chat"),
+    path("chat/activity/", agent_activity, name="agent-activity"),
     path("chat/jobs/active/", job_status, name="agent-job-active"),
     path("chat/jobs/<uuid:job_id>/", job_status, name="agent-job-status"),
     path("chat/agent/history/", views.agent_chat_history, name="agent-chat-history"),

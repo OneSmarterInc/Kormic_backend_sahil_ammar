@@ -116,7 +116,12 @@ def work_once():
         if not state:
             state = {'messages': messages_to_dict([HumanMessage(content='Research official programs, admissions, fees, intakes and contacts; submit supported records.')]), 'pages': {}, 'result': {}, 'errors': 0}
         state['messages'] = messages_from_dict(state['messages'])
-        output = graph_for(run.university.website, run.university.name).invoke(state)
+        from pure_multi_agent.inference_admission import workload_scope
+        from pure_multi_agent.telemetry import scope, trace_config, emit
+        with workload_scope('research:' + str(run.university_id), 20), scope('University Research Agent', run_id=str(run.pk)):
+            emit('AGENT_STEP_START', run.university.name, inputs={'website': run.university.website, 'step': run.steps})
+            output = graph_for(run.university.website, run.university.name).invoke(state, trace_config())
+            emit('AGENT_STEP_RESULT', run.university.name, outputs={'result': output.get('result'), 'pages_read': len(output.get('pages', {}))})
         output['messages'] = messages_to_dict(output['messages'])
         if output.get('result'):
             publish(run, output)

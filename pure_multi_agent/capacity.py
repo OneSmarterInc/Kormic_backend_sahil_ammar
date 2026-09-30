@@ -13,8 +13,8 @@ class AgentBusy(RuntimeError):
 
 class ResumeTurnLater(AgentBusy):
     """The graph checkpoint is safe to resume; contains only this turn's context."""
-    def __init__(self, state, delay=10):
-        super().__init__('Waiting for shared model capacity')
+    def __init__(self, state, delay=10, reason='Waiting for shared model capacity'):
+        super().__init__(reason)
         self.state, self.delay = state, delay
 
 
@@ -44,6 +44,9 @@ return count <= tonumber(ARGV[1]) and 1 or 0
 def check_rate(key, limit, seconds=60):
     if not settings.AGENT_DISTRIBUTED_LIMITS:
         return
+    if getattr(settings, 'AGENT_CAPACITY_BACKEND', 'redis') == 'database':
+        from pure_multi_agent.database_capacity import check_rate as database_rate
+        return database_rate(key, limit, seconds)
     try:
         accepted = _client(settings.AGENT_REDIS_URL).eval(RATE, 1, "kormic:rate:" + key, limit, seconds)
     except Exception as exc:
@@ -58,6 +61,11 @@ def lease(key, limit=1, ttl=900, wait=0):
         if not (settings.DEBUG or settings.TESTING):
             raise RuntimeError("Distributed agent limits are required in production")
         yield
+        return
+    if getattr(settings, 'AGENT_CAPACITY_BACKEND', 'redis') == 'database':
+        from pure_multi_agent.database_capacity import lease as database_lease
+        with database_lease(key, limit, ttl, wait):
+            yield
         return
     client = _client(settings.AGENT_REDIS_URL)
     token = str(uuid.uuid4())
@@ -108,6 +116,17 @@ class LimitedMessages:
         self.messages = messages
 
     def create(self, **kwargs):
+        skip_qwen = kwargs.pop('_skip_qwen', False)
+        if not skip_qwen:
+            try:
+                from pure_multi_agent.legacy_qwen import create
+                return create(**kwargs)
+            except Exception as exc:
+                from github_profiles.scheduling import CapacityBusy
+                if isinstance(exc, CapacityBusy):
+                    raise
+                import logging
+                logging.getLogger(__name__).info('Qwen unavailable for legacy agent call; using Claude (%s)', type(exc).__name__)
         with model_slot():
             return self.messages.create(**kwargs)
 

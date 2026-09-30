@@ -159,7 +159,8 @@ class IsolationTests(TestCase):
 
 @override_settings(AGENT_DISTRIBUTED_LIMITS=False)
 class SharedGraphTests(SimpleTestCase):
-    def test_tools_receive_only_current_runtime_context(self):
+    @mock.patch("pure_multi_agent.completion.review_completion", return_value={"complete": True})
+    def test_tools_receive_only_current_runtime_context(self, completion):
         from langgraph.checkpoint.memory import InMemorySaver
         from langchain_core.messages import AIMessage, HumanMessage
         from langchain_core.tools import tool
@@ -191,7 +192,7 @@ class SharedGraphTests(SimpleTestCase):
             def bind_tools(self, tools):
                 return self
             def invoke(self, messages):
-                return AIMessage(content=messages[0].content + ":" + messages[-1].content)
+                return AIMessage(content=messages[0].content.split("\n", 1)[0] + ":" + messages[-1].content)
         saver = InMemorySaver()
         with mock.patch("pure_multi_agent.model_router.invoke", side_effect=lambda messages, tools, **kw: Model().invoke(messages)), mock.patch("pure_multi_agent.student_graph.build_all_tools", return_value=[]):
             sessions = [build_student_agent({}, f"student-{i}", saver) for i in range(30)]
@@ -203,7 +204,7 @@ class SharedGraphTests(SimpleTestCase):
         self.assertEqual(replies, [f"student-{i}:question-{i}" for i in range(30)])
 
 
-@override_settings(AGENT_DISTRIBUTED_LIMITS=True, AGENT_MODEL_CONCURRENCY=2)
+@override_settings(AGENT_DISTRIBUTED_LIMITS=True, AGENT_MODEL_CONCURRENCY=2, AGENT_CAPACITY_BACKEND="redis")
 class RedisLeaseTests(SimpleTestCase):
     def setUp(self):
         import fakeredis
@@ -254,7 +255,7 @@ class PostgresAdmissionTests(TransactionTestCase):
 
     def request(self, owner, key):
         from pure_multi_agent.jobs import submit
-        request = SimpleNamespace(user=SimpleNamespace(account=SimpleNamespace(student_uuid=owner)),
+        request = SimpleNamespace(user=SimpleNamespace(pk=1, account=SimpleNamespace(student_uuid=owner)),
             headers={"Idempotency-Key": key}, data={"message": "Synthetic admission"}, FILES=SimpleNamespace(getlist=lambda name: []))
         try:
             return submit(request).status_code

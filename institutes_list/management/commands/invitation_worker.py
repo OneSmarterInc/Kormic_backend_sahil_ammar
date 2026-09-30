@@ -10,6 +10,8 @@ from django.utils import timezone
 
 from institutes_list.models import ListedStudent
 from institutes_list.tasks import send_invite_email_task
+from institutes_list.claim_outbox import work_once as deliver_claim_code
+from notifications.outbox import work_once as deliver_push
 
 
 def work_once():
@@ -40,6 +42,8 @@ class Command(BaseCommand):
         while True:
             close_old_connections()
             worked = work_once()
+            worked = deliver_claim_code() or worked
+            worked = deliver_push() or worked
             if options["once"]:
                 return
             if not worked:

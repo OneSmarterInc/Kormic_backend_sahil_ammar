@@ -95,8 +95,8 @@ def _user_has_confirmed_totp(user: User) -> bool:
 def _student_verification_payload(user: User) -> dict:
     """
     Builds a light-weight verification summary for the logged-in student,
-    embedded on login/me responses. Thin wrapper around the single
-    canonical check in verification.services.run_verification -- must not
+    embedded on login/me responses. Reads the canonical verification
+    snapshot without performing model inference -- must not
     reimplement the matching logic here, or this and the dedicated
     /api/verification/ endpoints can silently disagree about whether a
     student is "verified".
@@ -129,7 +129,7 @@ def _student_verification_payload(user: User) -> dict:
             },
         }
 
-    verification = run_verification(student_id, user=user)
+    verification = run_verification(student_id, user=user, allow_analysis=False)
     verification.pop("items", None)
     return {
         "verification_required": not bool(verification.get("verified")),
@@ -612,6 +612,8 @@ class GitHubOAuthConnectView(APIView):
         try:
             state = create_oauth_state(request.user.id)
             authorize_url = build_authorize_url(state)
+            from accounts.github_oauth import connection_activity
+            connection_activity(state, request.user, 'RUN_START', 'GitHub Agent is waiting for the user to authorize the connection.')
         except GitHubOAuthError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
@@ -638,6 +640,11 @@ class GitHubOAuthCallbackView(APIView):
         code = request.query_params.get("code")
 
         if error:
+            owner_id = consume_oauth_state(state) if state else None
+            owner = User.objects.filter(pk=owner_id).first() if owner_id else None
+            if owner:
+                from accounts.github_oauth import connection_activity
+                connection_activity(state, owner, 'RUN_ERROR', 'GitHub authorization was cancelled or denied.', error='The GitHub connection was not authorized.')
             return self._failure(f"GitHub authorization was not completed ({error}).")
 
         if not state or not code:
@@ -652,11 +659,16 @@ class GitHubOAuthCallbackView(APIView):
         except User.DoesNotExist:
             return self._failure("Account no longer exists.")
 
+        from accounts.github_oauth import connection_activity
+        connection_activity(state, user, 'AGENT_STEP_START', 'GitHub Agent is exchanging the approved authorization for access.')
         try:
             token_response = exchange_code_for_token(code)
+            connection_activity(state, user, 'AGENT_PROGRESS', 'GitHub Agent received authorization and is checking the GitHub account identity.')
             identity = fetch_github_identity(token_response["access_token"])
             connection = save_connection(user, token_response, identity)
+            connection_activity(state, user, 'OBJECT_CREATED', 'GitHub Agent saved the verified GitHub connection.', github_username=connection.github_username)
         except GitHubOAuthError as exc:
+            connection_activity(state, user, 'RUN_ERROR', 'GitHub Agent could not complete the connection.', error='GitHub authorization or identity verification failed.')
             return self._failure(str(exc))
 
         # Connecting an account automatically begins the same durable extraction
@@ -664,10 +676,13 @@ class GitHubOAuthCallbackView(APIView):
         try:
             from github_profiles.sync import queue_sync
             if user.account.student_uuid:
-                queue_sync(user.account.student_uuid)
+                sync_run = queue_sync(user.account.student_uuid)
+                connection_activity(state, user, 'AGENT_PROGRESS', 'GitHub Agent queued repository analysis.', job_id=str(sync_run.pk))
         except Exception:
             import logging
             logging.getLogger(__name__).exception('GitHub connected but initial sync could not be queued')
+            connection_activity(state, user, 'AGENT_STEP_ERROR', 'GitHub connected, but repository analysis could not be queued.', error='Repository analysis was not queued; retry Sync.')
+        connection_activity(state, user, 'RUN_COMPLETE', 'GitHub Agent completed the account connection.', github_username=connection.github_username)
         return self._success(connection.github_username)
 
     def _success(self, github_username: str):

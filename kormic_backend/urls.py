@@ -25,6 +25,7 @@ urlpatterns = [
     path("api/verification/", include("verification.urls")),
     path("api/university-admin/", include("universities.urls")),
     path("api/notifications/", include("notifications.urls")),
+    path("api/agent-queries/", include("agent_queries.urls")),
     path("api/superuser/", include("project_superuser.urls")),
     path("api/", include("institutes_list.urls")),
     path("api/", include("django_api.urls")),

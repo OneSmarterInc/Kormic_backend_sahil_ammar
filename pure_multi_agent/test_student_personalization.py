@@ -33,6 +33,7 @@ class StudentPersonalizationTests(TestCase):
         self.ctx["student_profile"].update({"student_id": "forged", "notes": "PRIVATE_NOTES", "email": "private@example.com"})
         from langchain_core.messages import AIMessage
         ask.return_value = AIMessage(content="Tuition is $12000")
+        next(tool for tool in university_tools(self.ctx) if tool.name == "list_universities").invoke({"query": self.university.name})
         tool = next(tool for tool in university_tools(self.ctx) if tool.name == "ask_university")
         tool.invoke({"university_id": str(self.university.uuid), "question": "Does this fit my budget?"})
         import json

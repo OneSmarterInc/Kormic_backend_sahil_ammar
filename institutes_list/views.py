@@ -513,7 +513,9 @@ def send_invites(request, list_id):
     resend = bool(request.data.get("resend"))
     rows = lst.students.filter(status=ListedStudent.Status.UNCLAIMED).exclude(invite_delivery_status="queued")
     if not resend:
-        rows = rows.filter(Q(invited_at__isnull=True) | Q(invite_delivery_status="failed"))
+        # An old invited_at timestamp records an attempt, not SMTP acceptance.
+        # Legacy rows without delivery state must not be skipped forever.
+        rows = rows.exclude(invite_delivery_status="sent")
 
     row_ids = list(rows.values_list("id", flat=True))
     now = timezone.now()

@@ -105,3 +105,32 @@ class InvitationDeliveryTests(TestCase):
         work_once()
         send_invite_email_task(self.row.pk)
         self.assertEqual(len(mail.outbox), 1)
+
+    def test_entire_roster_delivers_individual_codes_and_current_links(self):
+        rows = [self.row]
+        for i in range(30):
+            rows.append(ListedStudent.objects.create(source_list=self.row.source_list,
+                institute_id=self.row.institute_id, full_name=f'Student {i}',
+                email=f'student{i}@example.test', invited_at=timezone.now(), invite_delivery_status='queued'))
+        with override_settings(CLAIM_PAGE_URL='https://public.example/claim'):
+            for _ in rows:
+                self.assertTrue(work_once())
+            self.assertFalse(work_once())
+        self.assertEqual(len(mail.outbox), 31)
+        self.assertEqual({m.to[0] for m in mail.outbox}, {r.email for r in rows})
+        for row in rows:
+            message = next(m for m in mail.outbox if m.to == [row.email])
+            self.assertIn('https://public.example/claim?token=' + row.claim_token, message.body)
+            row.refresh_from_db()
+            self.assertEqual(row.invite_delivery_status, 'sent')
+
+    def test_one_failed_recipient_does_not_stop_following_recipient(self):
+        other = ListedStudent.objects.create(source_list=self.row.source_list,
+            institute_id=self.row.institute_id, full_name='Other', email='other@example.test',
+            invited_at=timezone.now(), invite_delivery_status='queued')
+        with patch('institutes_list.tasks.send_mail', side_effect=[ConnectionError('rejected'), 1]):
+            self.assertTrue(work_once())
+            self.assertTrue(work_once())
+        self.row.refresh_from_db(); other.refresh_from_db()
+        self.assertEqual(self.row.invite_delivery_status, 'failed')
+        self.assertEqual(other.invite_delivery_status, 'sent')

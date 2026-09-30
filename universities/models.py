@@ -19,6 +19,7 @@ class University(models.Model):
 
     # -- identity (mirrors the old UNIVERSITY_PERSONAS entry shape) --
     name = models.CharField(max_length=500)
+    record_origin = models.CharField(max_length=20, default='registered', choices=[('registered', 'Registered'), ('researched', 'Researched')])
     country = models.CharField(max_length=2, default="US")
     agent_name = models.CharField(max_length=100, unique=True, null=True, blank=True, db_index=True)
     location = models.CharField(max_length=255, blank=True, default="")
@@ -58,7 +59,7 @@ class University(models.Model):
         ordering = ["name"]
         constraints = [
             models.CheckConstraint(
-                condition=models.Q(country="US"),
+                condition=models.Q(country="US") | models.Q(record_origin='researched'),
                 name="university_country_us",
             ),
         ]

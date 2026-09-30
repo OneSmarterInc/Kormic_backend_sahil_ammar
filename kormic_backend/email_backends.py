@@ -17,12 +17,10 @@ def _is_fake_recipient(address: str) -> bool:
 
 
 class DualSendEmailBackend(BaseEmailBackend):
-    """
-    UAT mode sends every email to Ethereal for QA verification.
-    Real SMTP sending is also attempted for recipients not using seeded/test domains listed in FAKE_EMAIL_DOMAINS.
-    This allows testing real-world deliverability, such as spam filtering, without sending emails to known placeholder addresses.
-    Real SMTP failures are logged and ignored because fake or invalid addresses may bounce.
-    Ethereal is the authoritative send, so only Ethereal failures are treated as actual email failures and respect Django's fail_silently behavior.
+    """Real recipients use real SMTP as the delivery authority.
+
+    Ethereal is a best-effort QA copy after a real send. For fake recipients it
+    remains the only destination. A QA-copy failure never replays a real email.
     """
 
     def __init__(self, fail_silently: bool = False, **kwargs) -> None:
@@ -59,25 +57,26 @@ class DualSendEmailBackend(BaseEmailBackend):
         return sum(1 for message in email_messages if self._send_one(message))
 
     def _send_one(self, message) -> bool:
-        real_recipients = [a for a in message.to if not _is_fake_recipient(a)]
-        if real_recipients:
-            real_message = message
-            original = (real_message.to, real_message.cc, real_message.bcc)
-            real_message.to = real_recipients
-            real_message.cc = [a for a in message.cc if not _is_fake_recipient(a)]
-            real_message.bcc = [a for a in message.bcc if not _is_fake_recipient(a)]
+        from copy import copy
+        real_message = copy(message)
+        real_message.to = [a for a in message.to if not _is_fake_recipient(a)]
+        real_message.cc = [a for a in message.cc if not _is_fake_recipient(a)]
+        real_message.bcc = [a for a in message.bcc if not _is_fake_recipient(a)]
+        has_real_recipients = bool(real_message.recipients())
+        if has_real_recipients:
             try:
-                self._real.send_messages([real_message])
+                if self._real.send_messages([real_message]) != 1:
+                    raise RuntimeError("The real SMTP provider did not accept this message.")
             except Exception:
-                logger.warning(
-                    "Dual-send: real-provider send failed for %r (recipient likely fake but "
-                    "not on FAKE_EMAIL_DOMAINS) -- Ethereal copy still sent",
-                    message.subject,
-                    exc_info=True,
-                )
-            finally:
-                real_message.to, real_message.cc, real_message.bcc = original
-
-        # Ethereal always gets the untouched, original recipient list -- it's
-        # the audit copy of exactly what was attempted.
-        return self._ethereal.send_messages([message]) == 1
+                if self.fail_silently:
+                    logger.exception("Real SMTP delivery failed; message was not sent.")
+                    return False
+                raise
+        try:
+            copied = self._ethereal.send_messages([message]) == 1
+        except Exception:
+            if not has_real_recipients and not self.fail_silently:
+                raise
+            logger.warning("Sandbox email copy failed; real SMTP acceptance is unchanged.", exc_info=True)
+            copied = False
+        return has_real_recipients or copied
