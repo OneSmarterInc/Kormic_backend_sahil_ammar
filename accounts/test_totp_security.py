@@ -134,7 +134,7 @@ class PortalLoginTests(TestCase):
                 if enrolled:
                     TOTPDevice.objects.create(user=user, secret=pyotp.random_base32(), confirmed_at=timezone.now())
                 for portal in Account.Role.values:
-                    if role == portal:
+                    if role == portal or (role == "department" and portal == "university"):
                         continue
                     with self.subTest(role=role, portal=portal, enrolled=enrolled):
                         cache.clear()

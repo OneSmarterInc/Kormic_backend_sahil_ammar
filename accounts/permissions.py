@@ -94,3 +94,9 @@ class ScopedToOwnInstituteId(BasePermission):
             return True
         account = get_account(request)
         return account is not None and account.institute_uuid == str(institute_id)
+
+
+class IsUniversityQueryUser(BasePermission):
+    def has_permission(self, request, view):
+        account = get_account(request)
+        return bool(account and account.university_id and account.role in ("university", "department"))

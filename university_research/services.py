@@ -128,7 +128,7 @@ def public_from_candidate(candidate):
 def retrieve(row, question=''):
     from knowledge.vectors import enabled, embed_texts, MODEL
     from pgvector.django import CosineDistance
-    facts = row.facts.select_related('page').order_by('-fetched_at')
+    facts = row.facts.exclude(page__provider='claude_direct').select_related('page').order_by('-fetched_at')
     selected = []
     if enabled() and question:
         try:
@@ -144,11 +144,12 @@ def retrieve(row, question=''):
             query |= Q(topic__icontains=token) | Q(content__icontains=token)
         selected = list(facts.filter(query)[:10]) if tokens else list(facts[:10])
     from .agent import normalize
-    selected = [fact for fact in selected if fact.page.provider in ('claude_direct', 'scraper_extracted') or normalize(fact.source_quote) in normalize(fact.page.content)]
-    return {'university': reference(row), 'provider_answer':(row.coverage or {}).get('provider_answer'), 'facts': [{'topic': f.topic, 'content': f.content,
-          'source_url': f.page.url, 'source_title': f.page.title, 'source_quote': f.source_quote, 'fetched_at': f.fetched_at.isoformat()} for f in selected],
-        'courses': list(row.courses.values('name', 'level', 'duration', 'study_mode', 'tuition', 'currency', 'seats', 'academic_year', 'requirements', 'source_quote', 'page__url', 'fetched_at')[:100]),
-        'intakes': list(row.intakes.values('course_name', 'term', 'year', 'deadline', 'applicant_scope', 'page__url', 'fetched_at')[:30]),
+    selected = [fact for fact in selected if fact.page.provider in ('scraper_extracted', 'claude_research') or normalize(fact.source_quote) in normalize(fact.page.content)]
+    return {'university': reference(row), 'provider_answer': None, 'facts': [{'topic': f.topic, 'content': f.content,
+          'provider': f.page.provider, 'source_url': f.page.url, 'source_title': f.page.title, 'source_quote': f.source_quote, 'fetched_at': f.fetched_at.isoformat()} for f in selected],
+        'saved_knowledge': [],
+        'courses': list(row.courses.exclude(page__provider='claude_direct').values('name', 'level', 'duration', 'study_mode', 'tuition', 'currency', 'seats', 'academic_year', 'requirements', 'source_quote', 'page__url', 'fetched_at')[:100]),
+        'intakes': list(row.intakes.exclude(page__provider='claude_direct').values('course_name', 'term', 'year', 'deadline', 'applicant_scope', 'page__url', 'fetched_at')[:30]),
         'limits': 'Website coverage is partial. Only documented details are known; empty fields are unknown.'}
 
 
@@ -214,7 +215,13 @@ def publish_delivered_evidence(job_id):
             row.coverage = coverage
             row.save(update_fields=['coverage'])
         for uid in pending.get('research', []):
-            queue_research(PublicUniversity.objects.get(pk=uid))
+            row = PublicUniversity.objects.get(pk=uid)
+            from urllib.parse import urlsplit
+            from url_discovery.domain_policy import root_domain
+            budget = job.payload.get('claude_research', {})
+            if budget.get('attempted') and budget.get('domain') == root_domain(urlsplit(row.website).hostname or ''):
+                continue
+            queue_research(row)
         payload = dict(job.payload)
         payload.pop('university_cache_pending', None)
         job.payload = payload

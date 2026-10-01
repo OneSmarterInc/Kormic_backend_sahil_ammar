@@ -5,7 +5,9 @@ from typing import Any, Dict
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.contrib.auth.password_validation import validate_password
 from django.db import transaction
-from rest_framework import status
+from rest_framework import status, serializers
+from django.db.models import Count, Exists, OuterRef, Q
+from django.core.paginator import Paginator
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -37,6 +39,66 @@ def _error(message: str, http_status=status.HTTP_400_BAD_REQUEST) -> Response:
     return Response({"status": "error", "message": str(message)}, status=http_status)
 
 
+class ListQuery(serializers.Serializer):
+    page = serializers.IntegerField(min_value=1, required=False)
+    page_size = serializers.IntegerField(min_value=1, max_value=100, default=25)
+
+
+class AuditQuery(serializers.Serializer):
+    limit = serializers.IntegerField(min_value=1, max_value=500, default=100)
+    before_id = serializers.IntegerField(min_value=1, required=False)
+    user_id = serializers.IntegerField(min_value=1, required=False)
+    email = serializers.CharField(required=False, max_length=255)
+
+
+def _page(queryset, request):
+    query = ListQuery(data=request.query_params)
+    query.is_valid(raise_exception=True)
+    if 'page' not in query.validated_data:
+        return queryset, {}
+    page = Paginator(queryset, query.validated_data['page_size']).get_page(query.validated_data['page'])
+    return page.object_list, {'pagination': {'page': page.number, 'total': page.paginator.count,
+        'total_pages': page.paginator.num_pages, 'has_next': page.has_next()}}
+
+
+def _accounts():
+    return Account.objects.select_related('user', 'student_profile', 'university', 'institute').annotate(
+        _totp_enrolled=Exists(TOTPDevice.objects.filter(user_id=OuterRef('user_id'), confirmed_at__isnull=False)))
+
+
+def _universities():
+    from django_api.models import UniversityKnowledgeEntry
+    # Use a UUID-to-text cast for the legacy knowledge table's string identifier.
+    from django.db.models.functions import Cast
+    from django.db.models import CharField
+    return University.objects.annotate(_uuid_text=Cast('uuid', CharField())).annotate(
+        _has_knowledge=Exists(UniversityKnowledgeEntry.objects.filter(university_id=OuterRef('_uuid_text'))))
+
+
+def _university_rows(queryset):
+    rows = list(queryset)
+    officers = {}
+    for account in _accounts().filter(university_id__in=[u.pk for u in rows], role=Account.Role.UNIVERSITY).order_by('created_at'):
+        officers.setdefault(account.university_id, []).append(account)
+    for university in rows:
+        university._officers = officers.get(university.pk, [])
+    return rows
+
+
+class AdminDashboardAPIView(APIView):
+    permission_classes = SUPERUSER_PERMISSIONS
+
+    def get(self, request):
+        counts = Account.objects.aggregate(users=Count('pk'), students=Count('pk', filter=Q(role=Account.Role.STUDENT)),
+            inactive_users=Count('pk', filter=Q(user__is_active=False)))
+        counts['universities'] = University.objects.count()
+        students = _accounts().filter(role=Account.Role.STUDENT).order_by('-user__date_joined', '-pk')[:3]
+        universities = _university_rows(_universities().order_by('name', 'pk')[:3])
+        return Response({'counts': counts, 'students': [_serialize_account(a) for a in students],
+            'universities': [{key: value for key, value in _serialize_university(u).items()
+                if key in ('id', 'name', 'agent_name', 'setup_status')} for u in universities]})
+
+
 def _serialize_account(account: Account) -> Dict[str, Any]:
     user = account.user
     account_source = "direct"
@@ -58,7 +120,7 @@ def _serialize_account(account: Account) -> Dict[str, Any]:
         "university_id": account.university_uuid,
         "institute_id": account.institute_uuid,
         "is_active": user.is_active,
-        "totp_enrolled": TOTPDevice.objects.filter(user=user, confirmed_at__isnull=False).exists(),
+        "totp_enrolled": account._totp_enrolled if hasattr(account, "_totp_enrolled") else TOTPDevice.objects.filter(user=user, confirmed_at__isnull=False).exists(),
         "date_joined": user.date_joined,
         "account_source": account_source,
         "source_institute_name": source_institute_name,
@@ -71,7 +133,7 @@ def _serialize_university(university: University) -> Dict[str, Any]:
     # Exactly one officer login is created per university today (see
     # AdminEnrollUniversitySerializer) -- surfaced here so a superadmin
     # dashboard can show/contact the login without a separate /users/ call.
-    admin_account = (
+    admin_account = (university._officers[0] if university._officers else None) if hasattr(university, "_officers") else (
         Account.objects.filter(university=university, role=Account.Role.UNIVERSITY)
         .select_related("user")
         .order_by("created_at")
@@ -103,12 +165,12 @@ def _serialize_university(university: University) -> Dict[str, Any]:
         "admin_name": admin_account.user.first_name if admin_account else None,
         "admin_is_active": admin_account.user.is_active if admin_account else None,
         "admin_totp_enrolled": (
-            TOTPDevice.objects.filter(user_id=admin_account.user_id, confirmed_at__isnull=False).exists()
+            (admin_account._totp_enrolled if hasattr(admin_account, "_totp_enrolled") else TOTPDevice.objects.filter(user_id=admin_account.user_id, confirmed_at__isnull=False).exists())
             if admin_account
             else None
         ),
-        "officer_count": Account.objects.filter(university=university, role=Account.Role.UNIVERSITY).count(),
-        "setup_status": university_setup_status(str(university.uuid)),
+        "officer_count": len(university._officers) if hasattr(university, "_officers") else Account.objects.filter(university=university, role=Account.Role.UNIVERSITY).count(),
+        "setup_status": university_setup_status(str(university.uuid), university=university, has_knowledge_facts=getattr(university, "_has_knowledge", None)),
         "created_at": university.created_at,
         "updated_at": university.updated_at,
     }
@@ -127,21 +189,17 @@ class AdminStudentListCreateAPIView(APIView):
     permission_classes = SUPERUSER_PERMISSIONS
 
     def get(self, request):
-        accounts = Account.objects.filter(role=Account.Role.STUDENT).select_related("user").order_by("-created_at")
+        accounts = _accounts().filter(role=Account.Role.STUDENT).order_by("-created_at", "-pk")
 
         search = request.query_params.get("search", "").strip()
         if search:
             accounts = accounts.filter(user__email__icontains=search)
 
-        profile_pks = [a.student_profile_id for a in accounts if a.student_profile_id]
-        profiles_by_id = {
-            str(p.uuid): p
-            for p in StudentProfile.objects.filter(pk__in=profile_pks)
-        }
+        accounts, pagination = _page(accounts, request)
 
         students = []
         for account in accounts:
-            profile = profiles_by_id.get(account.student_uuid)
+            profile = account.student_profile
             students.append({
                 **_serialize_account(account),
                 "institution": profile.institution if profile else "",
@@ -149,7 +207,7 @@ class AdminStudentListCreateAPIView(APIView):
                 "verified": profile.verified if profile else False,
             })
 
-        return Response({"students": students})
+        return Response({"students": students, **pagination})
 
     def post(self, request):
         serializer = AdminCreateStudentSerializer(data=request.data)
@@ -223,13 +281,18 @@ class AdminUniversityListCreateAPIView(APIView):
     permission_classes = SUPERUSER_PERMISSIONS
 
     def get(self, request):
-        universities = University.objects.all()
+        universities = _universities().order_by("name", "pk")
 
         search = request.query_params.get("search", "").strip()
         if search:
             universities = universities.filter(name__icontains=search)
 
-        return Response({"universities": [_serialize_university(u) for u in universities]})
+        universities, pagination = _page(universities, request)
+        rows = [_serialize_university(u) for u in _university_rows(universities)]
+        if pagination:
+            fields = {'id', 'name', 'agent_name', 'admin_name', 'admin_email', 'admin_is_active', 'admin_totp_enrolled', 'setup_status'}
+            rows = [{key: value for key, value in row.items() if key in fields} for row in rows]
+        return Response({"universities": rows, **pagination})
 
     def post(self, request):
         serializer = AdminEnrollUniversitySerializer(data=request.data)
@@ -600,7 +663,7 @@ class AdminUserListAPIView(APIView):
     permission_classes = SUPERUSER_PERMISSIONS
 
     def get(self, request):
-        accounts = Account.objects.select_related("user", "student_profile").order_by("-created_at")
+        accounts = _accounts().order_by("-created_at", "-pk")
 
         role = request.query_params.get("role", "").strip()
         if role:
@@ -610,7 +673,8 @@ class AdminUserListAPIView(APIView):
         if search:
             accounts = accounts.filter(user__email__icontains=search)
 
-        return Response({"users": [_serialize_account(a) for a in accounts]})
+        accounts, pagination = _page(accounts, request)
+        return Response({"users": [_serialize_account(a) for a in accounts], **pagination})
 
 
 class AdminCreateSuperuserAPIView(APIView):
@@ -819,9 +883,12 @@ class ActivityLogListAPIView(APIView):
     def get(self, request):
         from django.db.models import Q
 
-        entries = ActivityLog.objects.all()
+        query = AuditQuery(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        params = query.validated_data
+        entries = ActivityLog.objects.order_by("-id")
 
-        user_id = request.query_params.get("user_id", "").strip()
+        user_id = params.get("user_id")
         if user_id:
             entries = entries.filter(Q(actor_id=user_id) | Q(target_user_id=user_id))
 
@@ -841,10 +908,14 @@ class ActivityLogListAPIView(APIView):
         if student_id:
             entries = entries.filter(target_student_id=student_id)
 
-        try:
-            limit = min(int(request.query_params.get("limit", 100)), 500)
-        except ValueError:
-            limit = 100
+        if params.get('email'):
+            entries = entries.filter(Q(actor_email__icontains=params['email']) | Q(target_email__icontains=params['email']))
+        if params.get('before_id'):
+            entries = entries.filter(id__lt=params['before_id'])
+        limit = params['limit']
+        rows = list(entries[:limit + 1])
+        has_more = len(rows) > limit
+        rows = rows[:limit]
 
         return Response({
             "entries": [
@@ -858,8 +929,10 @@ class ActivityLogListAPIView(APIView):
                     "target_university_id": entry.target_university_id,
                     "created_at": entry.created_at,
                 }
-                for entry in entries[:limit]
-            ]
+                for entry in rows
+            ],
+            "has_more": has_more,
+            "next_cursor": rows[-1].id if has_more else None,
         })
 
 

@@ -206,7 +206,7 @@ class StudentDocumentEvidence(models.Model):
     source_type = models.CharField(max_length=20, blank=True)
     raw_text = models.TextField(blank=True)
     extracted = models.JSONField(default=dict)
-    status = models.CharField(max_length=20, default='read')
+    status = models.CharField(max_length=32, default='read')
     created_at = models.DateTimeField(auto_now_add=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
 

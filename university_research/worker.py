@@ -11,6 +11,7 @@ from github_profiles.scheduling import CapacityBusy, database_write_lock, retry_
 from pure_multi_agent.capacity import AgentBusy
 from .models import ResearchRun, UniversityPage, UniversityFact, UniversityCourse, UniversityIntake
 from .agent import graph_for
+from pure_multi_agent.model_router import InvalidLocalToolResponse
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,41 @@ def owned(run):
 @retry_database
 def release(run, **changes):
     with database_write_lock():
+        if 'state' in changes:
+            current = owned(run).values_list('state', flat=True).first() or {}
+            if '_claude_research' in current:
+                changes['state'] = {**changes['state'], '_claude_research':current['_claude_research']}
         return owned(run).update(lease_token=None, lease_expires_at=None, updated_at=timezone.now(), **changes)
+
+
+def finish_research(run, state):
+    """Publish partial research, or use the single persisted information fallback."""
+    draft = state.get('draft', {})
+    if any(draft.get(key) for key in ('facts','courses','intakes')):
+        state['result'] = {key:draft.get(key,[]) for key in ('facts','courses','intakes')}
+        state['result']['coverage_notes'] = ('Processing limit reached. ' if run.steps >= 24 else '') + 'Partial research; unavailable details were omitted. ' + draft.get('coverage_notes','')[:1700]
+        return publish(run, state)
+    from .claude_fallback import search_official_evidence
+    from .catalogue import save_catalogue
+    from .research_budget import research_execution
+    marker = research_execution.set((run.pk, run.lease_token))
+    try:
+        page = search_official_evidence(run.university.website,
+            'courses, tuition fees, admissions requirements and deadlines, scholarships, housing, amenities and contacts',ctx={})
+        if not any(page.get('catalogue',{}).get(k) for k in ('description','facts','courses','intakes')):
+            raise ValueError('Research returned no usable university information.')
+        with transaction.atomic():
+            if not owned(run).select_for_update().exists():
+                return False
+            save_catalogue(run.university, page)
+            return release(run, status='queued',state={**state,'phase':'index'}, available_at=timezone.now(),progress='Indexing university information')
+    except (CapacityBusy, AgentBusy):
+        raise
+    except Exception:
+        logger.exception('University information fallback failed run=%s',run.pk)
+        return release(run,status='failed',error='Official research and the information fallback could not provide usable details. Previously saved information is retained.',completed_at=timezone.now())
+    finally:
+        research_execution.reset(marker)
 
 
 @retry_database
@@ -105,13 +140,7 @@ def work_once():
             index_facts(run)
             return True
         if run.steps >= 24 or run.created_at < timezone.now()-timedelta(hours=24):
-            draft = state.get('draft', {})
-            if any(draft.get(key) for key in ('facts', 'courses', 'intakes')):
-                state['result'] = {key: draft.get(key, []) for key in ('facts', 'courses', 'intakes')}
-                state['result']['coverage_notes'] = 'Processing limit reached. Only validated records were saved; unsupported records were excluded. ' + draft.get('coverage_notes', '')[:1700]
-                publish(run, state)
-            else:
-                release(run, status='failed', error='Research reached its processing limit without supported records. Try updating later.', completed_at=timezone.now())
+            finish_research(run, state)
             return True
         if not state:
             state = {'messages': messages_to_dict([HumanMessage(content='Research official programs, admissions, fees, intakes and contacts; submit supported records.')]), 'pages': {}, 'result': {}, 'errors': 0}
@@ -123,11 +152,21 @@ def work_once():
             output = graph_for(run.university.website, run.university.name).invoke(state, trace_config())
             emit('AGENT_STEP_RESULT', run.university.name, outputs={'result': output.get('result'), 'pages_read': len(output.get('pages', {}))})
         output['messages'] = messages_to_dict(output['messages'])
-        if output.get('result'):
+        if output.get('errors', 0) >= 2:
+            finish_research(run, output)
+        elif output.get('result'):
             publish(run, output)
         else:
             release(run, status='queued', state=output, steps=run.steps+1, attempts=0, available_at=timezone.now(),
                 progress=f"Researching official pages ({len(output.get('pages', {}))}/8 read)")
+    except InvalidLocalToolResponse:
+        # Argument repair is local-only. Do not pay Claude to repair a tool
+        # schema, or retry the identical checkpoint repeatedly.
+        if any(state.get('draft', {}).get(k) for k in ('facts','courses','intakes')):
+            state['messages'] = messages_to_dict(state['messages'])
+            finish_research(run, state)
+        else:
+            release(run,status='failed',error='The local model could not submit the collected information after argument correction. Previously saved information is retained.',completed_at=timezone.now())
     except (CapacityBusy, AgentBusy) as exc:
         release(run, status='queued', available_at=timezone.now()+timedelta(seconds=getattr(exc, 'delay', 10)), progress='Waiting for AI capacity; collected evidence is saved')
     except Exception:

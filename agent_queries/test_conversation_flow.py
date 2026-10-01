@@ -63,3 +63,13 @@ class ConversationFlowTests(TestCase):
         other=AgentConversation.objects.create(student=self.student,university=University.objects.create(name='Other'))
         row=message(other,'student_agent','Private',kind='request')
         self.assertEqual(self.client.get(self.url,{'message_id':row.pk}).status_code,404)
+
+
+    def test_researched_institution_uses_common_agent_name(self):
+        from agent_queries.services import names
+        self.conv.university.record_origin = 'researched'
+        self.conv.university.save()
+        self.assertEqual(names(self.conv)['university_agent'], 'Common University Agent')
+        officer = User.objects.create_user('enrolled-officer')
+        Account.objects.create(user=officer, role='university', university=self.conv.university)
+        self.assertEqual(names(self.conv)['university_agent'], 'Nova')

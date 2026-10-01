@@ -13,13 +13,55 @@ from university_research import services
 from university_research.models import PublicUniversity, UniversitySearch
 
 
+# Confirmed institution aliases. Similar titles alone are not sufficient to
+# merge separate institutions. This marketing domain was confirmed by the user.
+INSTITUTION_DOMAINS = {'discoverillinoistech.org':'iit.edu', 'illinoistechathletics.com':'iit.edu'}
+
+
+def institution_name(value):
+    return re.sub(r'\s+', ' ', re.sub(r'[^\w ]', ' ', value.casefold())).strip().removeprefix('the ')
+
+
+def exact_result_numbers(results, query):
+    """Full ordered names disambiguate University of Manchester from Manchester University."""
+    name = institution_name(query)
+    if len(name.split()) < 2:
+        return []
+    return [r['result_number'] for r in numbered_search_results(results)
+            if re.search(r'(?<!\w)' + re.escape(name) + r'(?!\w)', institution_name(r.get('title', '')))]
+
+
+def numbered_search_results(results):
+    """One representative per website; preserve original numbers for server lookup."""
+    from url_discovery.domain_policy import root_domain
+    from university_research.web import require_institution_site
+    seen, choices = set(), []
+    for i, item in enumerate(results):
+        if re.search(r'\b(athletics|bookstore|hawk shop)\b',item.get('title',''),re.I):
+            continue
+        try:
+            require_institution_site(item['url'])
+        except ValueError:
+            continue
+        domain = root_domain(urlsplit(item['url']).hostname or '')
+        canonical = INSTITUTION_DOMAINS.get(domain, domain)
+        # Prefer the institution's main site when it is among the saved results.
+        if canonical != domain and any(root_domain(urlsplit(other['url']).hostname or '') == canonical for other in results):
+            continue
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        choices.append({'result_number':i+1, 'website_domain':domain, **item})
+    return choices
+
+
 class Candidate(BaseModel):
     name: str = Field(min_length=2, max_length=400)
     website: str = Field(max_length=1000)
     address: str = Field(default='', max_length=1000)
     country: str = Field(default='', max_length=120)
-    source_indices: list[int] = Field(min_length=1, max_length=20)
-    official_identity_quote: str = Field(min_length=10, max_length=2000)
+    source_indices: list[int] = Field(default_factory=list, max_length=20)
+    official_identity_quote: str = Field(default='', max_length=2000)
 
 
 def identity_evidence(page, website, name, proposed_quote):
@@ -97,7 +139,7 @@ def recover_identity(ctx, candidate, results, reader):
             # Public topics only: no private student question is sent to research.
             page = search_official_evidence(candidate.website,
                 'institution full official name and identity; courses, tuition fees, seats, '
-                'scholarships and financial aid, hostels and housing, amenities and facilities, admissions and deadlines')
+                'scholarships and financial aid, hostels and housing, amenities and facilities, admissions and deadlines', ctx=ctx)
             ctx.setdefault('read_web_pages', {})[candidate.website] = page
             ctx.setdefault('known_web_urls', set()).update(item['url'] for item in page.get('links', []))
             identity = match(page)
@@ -156,7 +198,7 @@ def _university_evidence(ctx, university_id, question):
     entries = kb.search(question, limit=10)
     from url_discovery.domain_policy import root_domain
     official_root = root_domain(urlsplit(row.website_url).hostname or '')
-    entries = [entry for entry in entries if entry.source_type in ('human_verified', 'officer', 'university_profile')
+    entries = [entry for entry in entries if entry.source_type in ('human_verified', 'officer', 'manual', 'seed', 'university_profile')
         or (official_root and root_domain(urlsplit(entry.source_url or '').hostname or '') == official_root)]
     researched = services.public_for_registered(row)
     website_evidence = None
@@ -167,9 +209,14 @@ def _university_evidence(ctx, university_id, question):
             ctx.setdefault('research_after_reply', set()).add(str(researched.pk))
     services.add_reference(ctx, row)
     commons.record_university_interest(ctx['canonical_student_id'], str(row.uuid), 'searched')
-    return {'university': services.reference(row), 'profile': {'description': row.description, 'eligibility': row.eligibility_criteria, 'contact': {'email': row.contact_email, 'phone': row.contact_phone}},
+    return {'university': services.reference(row), 'profile': {'name': row.name, 'description': row.description, 'tagline': row.tagline,
+            'location': row.location, 'country': row.country, 'website': row.website_url,
+            'eligibility': row.eligibility_criteria, 'best_fit_notes': row.best_fit_notes,
+            'not_best_fit_notes': row.not_best_fit_notes,
+            'contact': {'email': row.contact_email, 'phone': row.contact_phone, 'address': row.admissions_office_address}},
+        'departments': list(row.knowledge_groups.values('slug', 'escalation_contact_name', 'escalation_contact_email')),
         'facts': [entry.to_dict() for entry in entries], 'official_website_research': website_evidence,
-        'instruction': 'Synthesize a source-grounded answer. Missing requirements/deadlines are unknown, not guessed. Website research is queued after the answer when no catalog is cached.'}
+        'instruction': 'When asked for a department contact, share its configured email from departments. Synthesize a source-grounded answer. Missing requirements/deadlines are unknown, not guessed. Website research is queued after the answer when no catalog is cached.'}
 
 
 def resolution_error(ctx, university_id):
@@ -199,18 +246,59 @@ def university_evidence(ctx, university_id, question):
 
 
 def build_tools(ctx):
+    @tool
+    def shortlist_universities(country: str, count: int = 5) -> dict:
+        """Return actual saved university candidates in an explicitly requested country. This is a preliminary directory shortlist, not verified admission chances or affordability."""
+        from pure_multi_agent.advice_policy import budget_context
+        if not re.fullmatch(r'[A-Za-z]{2}', country) or not 1 <= count <= 10:
+            return {'error': 'Use a two-letter destination country and 1-10 candidates.'}
+        rows = PublicUniversity.objects.filter(country__iexact=country).order_by('name')
+        seen, candidates = set(), []
+        from url_discovery.domain_policy import root_domain
+        for row in rows[:50]:
+            # Conflicting saved page identities must not become recommendations.
+            titles = list(row.pages.values_list('title', flat=True)[:10])
+            substantive = set(institution_name(row.name).split()) - {'university', 'institute', 'of', 'technology', 'the', 'college', 'state'}
+            identity_titles = [t for t in titles if re.search(r'university|institute|college', t, re.I)]
+            if substantive and identity_titles and not any(substantive & set(institution_name(t).split()) for t in identity_titles):
+                continue
+            domain = root_domain(urlsplit(row.website).hostname or '')
+            if not domain or domain in seen:
+                continue
+            seen.add(domain)
+            candidates.append({'name': row.name, 'official_website': row.website,
+                'programme_eligibility': 'not yet verified', 'whole_program_affordability': 'not yet verified',
+                'admission_category': 'not assessed'})
+            if len(candidates) == count:
+                break
+        ctx['completed_evidence_answer'] = (
+            'These are preliminary institutions to investigate, not verified matches for your budget or admission chances. '
+            'Programme eligibility, full costs and ambitious/moderate/safer categories remain unverified.\n\n' +
+            '\n'.join(f"{i+1}. [{c['name']}]({c['official_website']}) — programme fit and whole-degree affordability not yet verified."
+                      for i, c in enumerate(candidates)) +
+            (f'\n\nOnly {len(candidates)} candidates were found.' if len(candidates) < count else ''))
+        return {'requested_count': count, 'found_count': len(candidates), 'candidates': candidates,
+            'budget': budget_context(ctx.get('student_profile', {})),
+            'instruction': 'Present these as preliminary institutions to investigate, not confirmed programme or budget matches. Name every candidate; clearly disclose the count if fewer than requested. Do not invent funding, programme availability, ranking or admission categories. Offer to verify specific programmes next.'}
+
     def own_search(search_id):
+        if search_id and ctx.get('university_search_id') and search_id != ctx['university_search_id']:
+            raise ValueError('Use the active search for this task, not another search.')
+        search_id = search_id or ctx.get('university_search_id')
+        if not search_id:
+            raise ValueError('No search is active for this task. Call list_universities first.')
         return UniversitySearch.objects.get(pk=search_id, student__uuid=ctx['canonical_student_id'], created_at__gte=timezone.now()-timedelta(days=1))
 
     @tool
     def list_universities(query: str = '', country: str = '', location: str = '') -> dict:
-        """Resolve universities in order: enrolled Kormic directory, researched database, internet. Multiple candidates require clarification. Web results need identify_university_candidates before counting institutions."""
+        """Resolve universities in order: enrolled Kormic directory, researched database, internet. For web results use choose_university_result; clarify only if distinct institutions match."""
         ctx['university_source_search_required'] = False
         ctx['university_pages_pending'] = False
         ctx['university_evidence_required'] = False
         ctx['university_lookup_required'] = False
         ctx['university_discovery_pending'] = False
         ctx['university_candidates'] = []
+        ctx.pop('university_search_id', None)
         ctx.pop('university_clarification', None)
         ctx['university_resolution_turn'] = ctx.get('turn_id')
         rows = services.search_registered(query, country, location)
@@ -227,9 +315,18 @@ def build_tools(ctx):
             cached = cached.filter(country__icontains=country)
         if location:
             cached = cached.filter(address__icontains=location)
+        exact_ids = [r.pk for r in cached[:30] if institution_name(r.name) == institution_name(query)]
+        if exact_ids:
+            cached = cached.filter(pk__in=exact_ids)
         count = cached.count()
         if count:
-            refs = [services.add_reference(ctx, r) for r in cached.order_by('name')[:10]]
+            from url_discovery.domain_policy import root_domain
+            unique = {}
+            for candidate in cached.order_by('name')[:30]:
+                key = (re.sub(r'\W+', '', candidate.name.casefold()), root_domain(urlsplit(candidate.website).hostname or ''))
+                unique.setdefault(key, candidate)
+            refs = [services.add_reference(ctx, r) for r in list(unique.values())[:10]]
+            count = len(unique)
             ctx['university_candidates'] = [r['id'] for r in refs]
             ctx['university_evidence_required'] = count == 1
             if count > 1:
@@ -242,18 +339,82 @@ def build_tools(ctx):
         if ctx['web_search_count'] > 3:
             return {'error': 'Web search budget reached for this turn; refine in a follow-up.'}
         results = search_web(' '.join(filter(None, [query, location, country, 'university official website'])))
+        from url_discovery.domain_policy import root_domain
+        ctx['new_university_domains'] = list(dict.fromkeys(root_domain(urlsplit(r['url']).hostname or '') for r in results))
+        ctx['research_university_name'] = query
         from django_api.models import StudentProfile
         search = UniversitySearch.objects.create(student=StudentProfile.objects.get(uuid=ctx['canonical_student_id']), query=query[:500], candidates={'results': results, 'universities': []})
+        ctx['university_search_id'] = str(search.pk)
         ctx.setdefault('known_web_urls', set()).update(r['url'] for r in results)
         ctx['university_discovery_pending'] = bool(results)
-        return {'status': 'web_results_need_resolution', 'search_id': str(search.pk), 'results': results,
-            'instruction': 'These are pages, not university counts. Identify distinct matching universities and official websites using identify_university_candidates. Report zero if none are supported.'}
+        return {'status': 'web_results_need_resolution', 'search_id': str(search.pk), 'results': numbered_search_results(results),
+            'instruction': 'Select the official university website with choose_university_result(result_number). If distinct universities match, call clarify_university_results with their result numbers before fetching. Multiple pages of the same university are not distinct institutions.'}
+
+    def numbered_results(numbers):
+        search = own_search('')
+        results = search.candidates.get('results', [])
+        allowed = {item['result_number'] for item in numbered_search_results(results)}
+        if not numbers or any(type(n) is not int or n not in allowed for n in numbers):
+            return search, None
+        return search, [results[n-1] for n in numbers]
 
     @tool
-    def identify_university_candidates(search_id: str, candidates: list[Candidate]) -> dict:
-        """Resolve distinct universities using OFFICIAL websites only. First read each official homepage with read_university_webpage. Quote its institution identity in official_identity_quote. Source indices are zero-based discovery hints, never university facts."""
+    def clarify_university_results(result_numbers: list[int]) -> dict:
+        """Ask which distinct university the student means. Supply numbered search results for different institutions. Do not fetch websites first."""
+        search, selected = numbered_results(result_numbers)
+        if selected is None or len(set(result_numbers)) < 2:
+            return {'error':'Choose at least two valid, distinct result numbers from the saved search.'}
+        from url_discovery.domain_policy import root_domain
+        domains = [root_domain(urlsplit(item['url']).hostname or '') for item in selected]
+        if len(set(domains)) != len(domains):
+            return {'error':'Several results are pages of the same university. Do not ask the student to choose between pages. Select its official website with choose_university_result.', 'results':numbered_search_results(search.candidates.get('results', []))}
+        exact = exact_result_numbers(search.candidates.get('results', []), search.query)
+        if len(exact) == 1:
+            return choose_university_result.invoke({'result_number': exact[0]})
+        choices = [{'name':item.get('title') or search.query, 'website':item['url'],
+                    'source_indices':[number-1], 'identity_pending':True}
+                   for number,item in zip(result_numbers, selected)]
+        search.candidates = {**search.candidates, 'universities':choices}
+        search.save(update_fields=['candidates'])
+        ctx['university_discovery_pending'] = False
+        ctx['university_clarification'] = choices
+        return {'needs_clarification':True,'choices':choices,'instruction':'Ask the student to choose. No research has started.'}
+
+    @tool
+    def choose_university_result(result_number: int) -> dict:
+        """Select one official university website by its one-based search result number. The server reads identity evidence, saves the selection and routes to the university agent. If different institutions match, use clarify_university_results first."""
+        search, selected = numbered_results([result_number])
+        if selected is None:
+            return {'error':'Invalid result_number. Choose a numbered result from the saved search.',
+                    'allowed_result_numbers':[item['result_number'] for item in numbered_search_results(search.candidates.get('results', []))]}
+        if ctx.get('university_clarification'):
+            return {'error':'Ask the student to choose between the university matches first.'}
+        item = selected[0]
+        from university_research.web import require_institution_site
+        require_institution_site(item['url'])
+        page = read_university_webpage.invoke({'url':item['url']})
+        if page.get('error'):
+            return page
+        # The title is retrieved evidence, not a name invented by the model.
+        name = (page.get('provider_identity') or {}).get('name') or page.get('title') or search.query
+        parts = re.split(r'\s+[|–—-]\s+', name)
+        name = next((part.strip() for part in parts if re.search(r'university|institute|college',part,re.I)), search.query)
+        if institution_name(search.query) in institution_name(page.get('title', '') + ' ' + page.get('content', '')):
+            name = search.query
+        identified = identify_university_candidates.invoke({'candidates':[{
+            'name':name[:400], 'website':item['url'], 'source_indices':[result_number-1]}]})
+        if identified.get('error'):
+            return identified
+        return select_university_candidate.invoke({'candidate_index':1})
+
+    @tool
+    def identify_university_candidates(candidates: list[Candidate], search_id: str = '') -> dict:
+        """Resolve distinct universities using OFFICIAL websites only. The server uses the active search when search_id is omitted, derives source indices from saved results, and reads the official page to obtain identity evidence when needed. Optional quotes and source indices are hints, never facts. Multiple distinct institutions require user selection before fetching."""
         search = own_search(search_id)
         evidence = search.candidates.get('results', [])
+        for candidate in candidates:
+            if not candidate.source_indices:
+                candidate.source_indices = [i for i, item in enumerate(evidence) if item.get('url') == candidate.website]
         if len(candidates) > 10:
             return {'error': 'At most 10 candidates can be resolved.'}
         if len(candidates) > 1:
@@ -287,7 +448,11 @@ def build_tools(ctx):
                 return {'error': 'Choose an official university website, not an intermediary.'}
             page = ctx.get('read_web_pages', {}).get(c.website)
             if not page:
-                return {'error': 'Read the official university homepage first. Search snippets cannot establish identity or support university facts.'}
+                # The model supplies the candidate; the server obtains actual evidence.
+                ctx.setdefault('known_web_urls', set()).add(c.website)
+                page = read_university_webpage.invoke({'url': c.website})
+                if page.get('error'):
+                    return page
             identity = identity_evidence(page, c.website, c.name, c.official_identity_quote)
             if identity is None:
                 identity = recover_identity(ctx, c, evidence, read_university_webpage)
@@ -310,9 +475,10 @@ def build_tools(ctx):
             'needs_clarification': len(out) > 1, 'instruction': 'If multiple, say the count and ask the student for an address/campus/city or selection before calling select_university_candidate.'}
 
     @tool
-    def select_university_candidate(search_id: str, candidate_index: int, confirmation_detail: str = '') -> dict:
+    def select_university_candidate(candidate_index: int, search_id: str = '', confirmation_detail: str = '') -> dict:
         """Resolve a discovered university (one-based index). If ambiguous, confirmation_detail must be the student's new distinguishing city/address/name/option number, quoted from their latest message."""
         search = own_search(search_id)
+        search_id = str(search.pk)
         candidates = search.candidates.get('universities', [])
         if not 1 <= candidate_index <= len(candidates):
             return {'error': 'Invalid candidate index. Identify candidates first.'}
@@ -320,7 +486,8 @@ def build_tools(ctx):
         if len(candidates) > 1:
             detail = confirmation_detail.strip().casefold()
             latest = ctx.get('current_message', '').casefold().strip()
-            number_ok = latest in (str(candidate_index), 'option ' + str(candidate_index), 'number ' + str(candidate_index))
+            from pure_multi_agent.university_followup import selection_number
+            number_ok = selection_number(latest) == candidate_index
             matches = [c for c in candidates if detail and detail in ' '.join([c['name'], c.get('address', ''), c.get('country', ''), c['website']]).casefold()]
             if not number_ok and not (len(detail) >= 3 and detail in latest and len(matches) == 1 and matches[0] == candidate):
                 return {'error': 'Ambiguous university. Ask the student to choose a numbered option or give a unique city/address/campus.'}
@@ -371,7 +538,7 @@ def build_tools(ctx):
             return ctx['read_web_pages'][url]
         failures = ctx.setdefault('university_fetch_failures', {})
         if url in failures:
-            return {'error':failures[url], 'instruction':'This URL already failed in this turn. Use another official source or report N/A; do not repeat the same request.'}
+            return {'error':failures[url], 'instruction':'This URL already failed in this turn. Use saved information and explain the missing details; do not repeat the same request.'}
         ctx['pages_read'] = ctx.get('pages_read', 0) + 1
         if ctx['pages_read'] > 4:
             return {'error': 'Page budget reached for this turn.'}
@@ -379,18 +546,24 @@ def build_tools(ctx):
             page = read_page(url)
         except Exception as exc:
             failures[url] = str(exc)
-            from university_research.claude_fallback import search_official_evidence
+            from university_research.new_university import research as search_official_evidence
             from url_discovery.domain_policy import root_domain
             domain = root_domain(urlsplit(url).hostname or '')
+            if domain not in ctx.get('new_university_domains', []):
+                raise ValueError('The official page could not be read. Available saved information is retained.') from exc
             attempted = ctx.setdefault('university_fallback_domains', [])
             if domain in attempted:
                 raise
             attempted.append(domain)
             try:
                 topics = ' '.join(re.findall(r'\b(?:courses?|programs?|fees?|tuition|seats?|hostels?|amenities|scholarships?|admissions?|eligibility|deadlines?)\b',ctx.get('current_message','').lower())) or 'courses, tuition fees, seats, scholarships and financial aid, hostels and housing, amenities and facilities, admissions and eligibility, deadlines'
-                page = search_official_evidence(url, topics)
+                from pure_multi_agent.turn_policy import public_research_query
+                question = public_research_query(ctx.get('university_question') or ctx.get('current_message', ''))
+                page = search_official_evidence(ctx, url, question or topics)
                 failures.pop(url, None)
             except Exception as fallback_error:
+                import logging
+                logging.getLogger(__name__).exception('University information fallback failed for %s', domain)
                 from github_profiles.scheduling import CapacityBusy
                 from pure_multi_agent.capacity import AgentBusy
                 if isinstance(fallback_error, (CapacityBusy, AgentBusy)):
@@ -399,7 +572,7 @@ def build_tools(ctx):
                     raise
                 if ctx.get('university_discovery_pending'):
                     ctx['university_discovery_blocked'] = {'url':url,'reason':str(exc) + ' Claude could not return the requested information.'}
-                raise ValueError(str(exc) + ' Claude could not return information; unavailable values remain N/A.') from fallback_error
+                raise ValueError('Website collection and the research fallback could not complete. Available saved information is retained.') from fallback_error
         finally:
             ctx['university_pages_pending'] = False
         ctx.setdefault('read_web_pages', {})[url] = page
@@ -444,7 +617,7 @@ def build_tools(ctx):
             if not page.get('citation_pages') and not page.get('provider_answer'):
                 from university_research.claude_fallback import search_official_evidence
                 topics = ' '.join(re.findall(r'\b(?:courses?|programs?|fees?|tuition|seats?|hostels?|amenities|scholarships?|admissions?|eligibility|deadlines?)\b', ctx.get('current_message', '').lower())) or 'courses, tuition fees, seats, scholarships and financial aid, hostels and housing, amenities and facilities, admissions and eligibility, deadlines'
-                page = search_official_evidence(website, topics)
+                page = search_official_evidence(website, topics, ctx=ctx)
                 ctx.setdefault('read_web_pages', {})[website] = page
                 if isinstance(row, PublicUniversity):
                     for cited in page.get('citation_pages', [page]):
@@ -490,7 +663,7 @@ def build_tools(ctx):
             return error
         # Preserve the actual request (including profile matching and campus),
         # rather than losing it in a narrower model-generated tool argument.
-        question = ctx.get('current_message') or question
+        question = ctx.get('university_question') or ctx.get('current_message') or question
         ctx['university_reads'] = ctx.get('university_reads', 0) + 1
         if ctx['university_reads'] > 8:
             return {'error': 'Consultation budget reached. Narrow the selection.'}
@@ -518,6 +691,37 @@ def build_tools(ctx):
         return {'student': profile_evidence(ctx), 'university': university_evidence(ctx, university_id, 'admission requirements courses tuition funding intakes prerequisites')}
 
     @tool
+    def compare_named_universities(names: list[str], question: str) -> dict:
+        """Resolve and consult each explicitly requested university separately; never ask the student to choose one side of a comparison."""
+        results = []
+        for name in list(dict.fromkeys(names))[:5]:
+            try:
+                resolved = list_universities.invoke({'query': name})
+                candidates = resolved.get('candidates', [])
+                if resolved.get('status') == 'web_results_need_resolution':
+                    search = own_search('')
+                    exact = exact_result_numbers(search.candidates.get('results', []), name)
+                    if len(exact) == 1:
+                        chosen = choose_university_result.invoke({'result_number': exact[0]})
+                        candidates = [chosen['university']] if chosen.get('university') else []
+                if len(candidates) == 1 and not resolved.get('needs_clarification'):
+                    result = ask_university.invoke({'university_id': candidates[0]['id'], 'question': question})
+                else:
+                    result = {'status': 'unresolved', 'answer': 'I could not resolve and verify this institution. Its language requirements, tuition and test policy remain unknown.'}
+            except Exception as exc:
+                from github_profiles.scheduling import CapacityBusy
+                from pure_multi_agent.capacity import AgentBusy
+                if isinstance(exc, (CapacityBusy, AgentBusy)):
+                    raise
+                result = {'status': 'unavailable', 'error_type': type(exc).__name__, 'answer': 'I could not finish preparing this university’s answer. The other available university information is retained.'}
+            results.append({'requested_institution': name, 'result': result})
+            for key in ('university_clarification', 'university_discovery_pending', 'university_evidence_required',
+                        'university_lookup_required', 'university_consultation_failed', 'university_discovery_blocked'):
+                ctx.pop(key, None)
+        ctx['completed_evidence_answer'] = '\n\n'.join('**' + item['requested_institution'] + '**\n' + item['result'].get('answer', 'The requested details could not be verified.') for item in results)
+        return {'institutions': results, 'instruction': 'Compare all requested institutions on the same criteria. No unsupported rankings or invented values.'}
+
+    @tool
     def compare_all_universities(question: str, university_ids: Optional[list[str]] = None) -> dict:
         """Get cited facts for up to five selected institutions for an agent-written comparison. Results cover only this selection, not every university."""
         ids = list(dict.fromkeys(university_ids or ctx.get('university_candidates', [])))[:5]
@@ -543,5 +747,5 @@ def build_tools(ctx):
         services.add_reference(ctx, row)
         return {'status': 'queued_after_response', 'university': row.name}
 
-    return [list_universities, identify_university_candidates, select_university_candidate, read_university_webpage, search_official_university_site,
-        university_reply_status, ask_university, get_fit_assessment, compare_all_universities, get_fit_assessment_for_all_universities, request_university_refresh]
+    return [shortlist_universities, list_universities, choose_university_result, clarify_university_results, identify_university_candidates, select_university_candidate, read_university_webpage, search_official_university_site,
+        university_reply_status, ask_university, get_fit_assessment, compare_named_universities, compare_all_universities, get_fit_assessment_for_all_universities, request_university_refresh]

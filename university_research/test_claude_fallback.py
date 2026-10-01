@@ -26,3 +26,33 @@ class ClaudeEvidenceTests(SimpleTestCase):
         self.assertEqual(len(pages),1)
         self.assertEqual(pages[0]['content'],'Official fees excerpt')
         self.assertEqual(pages[0]['evidence_provider'],'claude_web_search')
+
+
+class SingleResearchCallTests(SimpleTestCase):
+    def test_same_task_reuses_result_and_blocks_other_domain(self):
+        import json
+        from university_research.claude_fallback import search_official_evidence
+        ctx = {}
+        response = Obj(content=[Obj(type='text', text=json.dumps({'name':'Example University',
+            'official_website':'https://example.edu/', 'answer':'Programmes and fees.', 'catalogue':{'description':'Example'}}))])
+        with patch('university_research.claude_fallback.Anthropic') as client, \
+             patch('university_research.claude_fallback.model_slot', return_value=nullcontext()), \
+             patch('university_research.claude_fallback.shared_slot', return_value=nullcontext()), \
+             patch('university_research.claude_fallback.operation', return_value=nullcontext({})), \
+             patch('university_research.claude_fallback.emit'):
+            client.return_value.messages.create.return_value = response
+            first = search_official_evidence('https://example.edu/', ctx=ctx)
+            self.assertEqual(search_official_evidence('https://example.edu/fees', ctx=ctx), first)
+            with self.assertRaisesRegex(ValueError, 'single Claude'):
+                search_official_evidence('https://another.edu/', ctx=ctx)
+        client.return_value.messages.create.assert_called_once()
+
+    def test_readable_page_is_extracted_locally(self):
+        from langchain_core.messages import AIMessage
+        from university_research.claude_fallback import search_official_evidence
+        with patch('pure_multi_agent.model_router.invoke', return_value=AIMessage(content='{"description":"Physics programmes"}')) as model, \
+             patch('university_research.claude_fallback.Anthropic') as client:
+            page = search_official_evidence('https://example.edu/', source_page={'url':'https://example.edu/', 'content':'Physics programmes'})
+        self.assertTrue(model.call_args.kwargs['local_only'])
+        self.assertEqual(page['catalogue']['description'], 'Physics programmes')
+        client.assert_not_called()

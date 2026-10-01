@@ -284,6 +284,8 @@ def serialize_user(user: User) -> dict:
         "role": account.role if account else None,
         "student_id": account.student_uuid if account else None,
         "university_id": account.university_uuid if account else None,
+        "university_name": account.university.name if account and account.university_id else None,
+        "departments": list(account.departments.values_list("slug", flat=True)) if account and account.role == "department" else [],
         "institute_id": account.institute_uuid if account else None,
         "totp_enrolled": totp_enrolled,
     }

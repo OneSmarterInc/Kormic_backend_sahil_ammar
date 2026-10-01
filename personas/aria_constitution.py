@@ -345,7 +345,7 @@ def build_agent_system_prompt(student_profile: dict, agent_name: str = "Aria") -
         f"Career Goals: {_format_list(student_profile.get('career_goals', []))}",
         f"Research Interests: {_format_list(student_profile.get('research_interests', []))}",
         f"Application Preferences: {student_profile.get('preferences') or 'Not provided'}",
-        f"Annual Budget (USD): {student_profile.get('budget', 'Not specified')}",
+        f"Budget as stated by student (do not assume currency or period): {student_profile.get('budget_text') or student_profile.get('budget') or 'Not specified'}",
         f"Work Experience: {student_profile.get('work_months', 0)} months",
         f"Work Experience Summary: {student_profile.get('work_experience_summary', 'Not provided')}",
         f"Research Experience: {student_profile.get('research', 'None stated')}",

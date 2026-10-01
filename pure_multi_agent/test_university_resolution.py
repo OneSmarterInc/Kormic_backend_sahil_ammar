@@ -111,7 +111,7 @@ class UniversityResolutionTests(SimpleTestCase):
             _reason({'messages':[HumanMessage(content='Find IIT Bombay courses')]},SimpleNamespace(context={'ctx':ctx,'prompt':''}))
         self.assertEqual([tool.name for tool in model.call_args.args[1]],['list_universities'])
         self.assertTrue(model.call_args.kwargs['require_tools'])
-        self.assertTrue(model.call_args.kwargs['force_claude'])
+        self.assertTrue(model.call_args.kwargs['local_only'])
 
     def test_directory_identity_cannot_skip_evidence_retrieval(self):
         from types import SimpleNamespace
@@ -123,7 +123,7 @@ class UniversityResolutionTests(SimpleTestCase):
             _reason({'messages':[HumanMessage(content='Find courses and fees')]},SimpleNamespace(context={'ctx':ctx,'prompt':''}))
         self.assertEqual([tool.name for tool in model.call_args.args[1]],['ask_university'])
         self.assertTrue(model.call_args.kwargs['require_tools'])
-        self.assertTrue(model.call_args.kwargs['force_claude'])
+        self.assertTrue(model.call_args.kwargs['local_only'])
 
     def test_college_turn_does_not_fetch_github_automatically(self):
         from types import SimpleNamespace
@@ -143,7 +143,7 @@ class UniversityResolutionTests(SimpleTestCase):
             result=_reason({'messages':[]},SimpleNamespace(context={'ctx':ctx,'prompt':''}))
         model.assert_not_called()
         self.assertNotIn('N/A',result['messages'][0].content)
-        self.assertIn('429',result['messages'][0].content)
+        self.assertIn('could not be accessed',result['messages'][0].content)
 
     def test_failed_page_is_not_fetched_repeatedly(self):
         ctx={'known_web_urls':{'https://example.edu/'},'university_discovery_pending':True}
@@ -163,18 +163,17 @@ class UniversityResolutionTests(SimpleTestCase):
         self.assertEqual(fetch.call_count,1)
         fallback.assert_not_called()
 
-    def test_search_outage_reaches_claude_after_one_failed_scrape(self):
+    def test_registered_search_outage_does_not_call_claude(self):
         from types import SimpleNamespace
         ctx={'turn_id':'new','university_resolution_turn':'new','university_candidates':['iit'],'current_message':'fees and seats'}
         tools={t.name:t for t in build_tools(ctx)}
         page={'url':'https://www.iitb.ac.in/','content':'Verified source','links':[],'citation_pages':[{'url':'https://www.iitb.ac.in/fees','content':'Verified fees','links':[]}]}
         with patch('pure_multi_agent.tools.university_tools.services.registered') as registered, patch('pure_multi_agent.tools.university_tools.services.add_reference'), patch('university_research.web.search_official_site',side_effect=RuntimeError('No results found')), patch('university_research.web.read_page',side_effect=ValueError('unavailable')) as fetch, patch('university_research.claude_fallback.search_official_evidence',return_value=page) as fallback:
             registered.return_value.get.return_value=SimpleNamespace(website_url='https://www.iitb.ac.in/')
-            result=tools['search_official_university_site'].invoke({'university_id':'iit','query':'fees'})
+            with self.assertRaises(ValueError):
+                tools['search_official_university_site'].invoke({'university_id':'iit','query':'fees'})
         self.assertEqual(fetch.call_count,1)
-        fallback.assert_called_once()
-        self.assertEqual(result['evidence'],page)
-        self.assertFalse(ctx['university_pages_pending'])
+        fallback.assert_not_called()
 
     def test_completed_university_lookup_does_not_start_unrelated_actions(self):
         from types import SimpleNamespace

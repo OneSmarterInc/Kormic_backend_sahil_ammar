@@ -8,6 +8,42 @@ from pure_multi_agent.inference_admission import choose_waiter
 
 
 class RecoveryTests(TestCase):
+    def test_capacity_resume_serializes_completed_tool_evidence(self):
+        from contextlib import nullcontext
+        from decimal import Decimal
+        from unittest.mock import patch
+        from django.test import override_settings
+        from pure_multi_agent.capacity import ResumeTurnLater
+        from pure_multi_agent.tasks import execute_agent_job
+        job = AgentJob.objects.create(owner_key='student:checkpoint', idempotency_key='checkpoint', kind='student', status='queued')
+        evidence = {'completed_tool_calls':{'read':{'amount':Decimal('12000.50'), 'checked':timezone.now()}}}
+        with override_settings(AGENT_QUEUE_BACKEND='database'), \
+             patch('pure_multi_agent.capacity.lease', return_value=nullcontext()), \
+             patch('pure_multi_agent.job_recovery.track', return_value=nullcontext()), \
+             patch('pure_multi_agent.jobs.run', side_effect=ResumeTurnLater(evidence)):
+            execute_agent_job.run(str(job.pk))
+        job.refresh_from_db()
+        self.assertEqual(job.status, 'queued')
+        self.assertEqual(job.payload['resume_state']['completed_tool_calls']['read']['amount'], '12000.50')
+        self.assertEqual(job.payload['capacity_resume_attempts'], 1)
+
+    def test_capacity_resume_is_bounded_without_replaying_completed_work(self):
+        from contextlib import nullcontext
+        from unittest.mock import patch
+        from pure_multi_agent.capacity import ResumeTurnLater
+        from pure_multi_agent.tasks import execute_agent_job
+        job = AgentJob.objects.create(owner_key='student:retry-test', idempotency_key='retry-test',
+            kind='student', status='queued', payload={'capacity_resume_attempts':20})
+        with patch('pure_multi_agent.capacity.lease', return_value=nullcontext()), \
+             patch('pure_multi_agent.job_recovery.track', return_value=nullcontext()), \
+             patch('pure_multi_agent.jobs.run', side_effect=ResumeTurnLater({'completed_tool_calls':{'saved':True}})), \
+             patch.object(execute_agent_job, 'apply_async') as dispatch:
+            execute_agent_job.run(str(job.pk))
+        job.refresh_from_db()
+        self.assertEqual(job.status, 'failed')
+        self.assertIn('recover in time', job.error)
+        dispatch.assert_not_called()
+
     def job(self, phase, key='a'):
         return AgentJob.objects.create(owner_key=key, idempotency_key=key, kind='student', status='processing',
             execution_token=uuid.uuid4(), started_at=timezone.now()-timedelta(seconds=1000),

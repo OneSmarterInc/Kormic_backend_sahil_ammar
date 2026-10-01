@@ -92,6 +92,68 @@ class QwenRoutingTests(SimpleTestCase):
         self.assertEqual(model.invoke.call_count, 2)
         claude.assert_not_called()
 
+    def test_invalid_requirement_schema_is_repaired_locally_before_execution(self):
+        from pure_multi_agent.tools.officer_tools import build_tools
+        tool = next(t for t in build_tools({}) if t.name == 'propose_admission_requirement')
+        invalid = AIMessage(content='', tool_calls=[{'id': 'bad', 'name': tool.name, 'args': {
+            'operation': 'update', 'index': 0, 'requirement': {'minimum_cgpa': 3.7, 'maximum_cgpa': 4}}}])
+        valid = AIMessage(content='', tool_calls=[{'id': 'good', 'name': tool.name, 'args': {
+            'operation': 'add', 'requirement': {'criterion': 'Minimum CGPA', 'detail': 'A CGPA of 3.7 to 4.0 is required.',
+                'category': 'gpa', 'applies_to': 'All applicants', 'minimum': 3.7, 'maximum': 4, 'scale_maximum': 4}}}])
+        model = Mock()
+        model.invoke.side_effect = [invalid, valid]
+        with patch.object(model_router, 'provider_blocked', return_value=False), \
+             patch.object(model_router, 'qwen_slot', return_value=nullcontext()), \
+             patch.object(model_router, 'qwen') as qwen, patch.object(model_router, 'claude') as claude:
+            qwen.return_value.bind_tools.return_value = model
+            result = model_router.invoke([HumanMessage(content='All applicants require 3.7 to 4.0 on a 4.0 scale')], [tool])
+        self.assertEqual(result.tool_calls[0]['args']['requirement']['minimum'], 3.7)
+        self.assertEqual(result.response_metadata['routing_provider'], 'qwen')
+        correction = model.invoke.call_args.args[0][-1].content
+        self.assertIn('minimum_cgpa', correction)
+        self.assertIn('Relevant schemas', correction)
+        self.assertIn('do not invent missing facts', correction)
+        claude.assert_not_called()
+
+    def test_consent_argument_can_be_repaired_without_executing_or_rewriting_it(self):
+        from pure_multi_agent.tools.officer_tools import build_tools
+        from pure_multi_agent.officer_graph import _validate_consent_call
+        tool = next(t for t in build_tools({}) if t.name == 'resolve_university_change')
+        consent = 'Yes, approve this exact change.'
+        def call(quote):
+            return AIMessage(content='', tool_calls=[{'id': 'r', 'name': tool.name,
+                'args': {'proposal_id': 'example', 'decision': 'approve', 'confirmation_message': quote}}])
+        model = Mock()
+        model.invoke.side_effect = [call('I approved it'), call(consent)]
+        with patch.object(model_router, 'provider_blocked', return_value=False), \
+             patch.object(model_router, 'qwen_slot', return_value=nullcontext()), \
+             patch.object(model_router, 'qwen') as qwen, patch.object(model_router, 'claude') as claude:
+            qwen.return_value.bind_tools.return_value = model
+            result = model_router.invoke([HumanMessage(content=consent)], [tool],
+                tool_call_validator=lambda call: _validate_consent_call(call, consent))
+        self.assertEqual(result.tool_calls[0]['args']['confirmation_message'], consent)
+        self.assertIn(consent, model.invoke.call_args.args[0][-1].content)
+        claude.assert_not_called()
+
+    def test_local_repair_is_bounded_and_then_uses_backup(self):
+        invalid = AIMessage(content='', tool_calls=[{'id': 'bad', 'name': 'invented_tool', 'args': {}}])
+        valid = AIMessage(content='', tool_calls=[{'id': 'good', 'name': 'read_requirements', 'args': {}}])
+        local, backup = Mock(), Mock()
+        local.invoke.return_value = invalid
+        backup.invoke.return_value = valid
+        with patch.object(model_router, 'provider_blocked', return_value=False), \
+             patch.object(model_router, 'model_slot', return_value=nullcontext()), \
+             patch('pure_multi_agent.capacity.model_slot', return_value=nullcontext()), \
+             patch.object(model_router, 'qwen') as qwen, patch.object(model_router, 'claude') as claude, \
+             patch.object(model_router, 'block_provider') as block:
+            qwen.return_value.bind_tools.return_value = local
+            claude.return_value.bind_tools.return_value = backup
+            result = model_router.invoke([HumanMessage(content='Read requirements')], [read_requirements])
+        self.assertEqual(local.invoke.call_count, 2)
+        self.assertEqual(backup.invoke.call_count, 1)
+        self.assertEqual(result.response_metadata['routing_provider'], 'claude')
+        block.assert_not_called()
+
     def test_legacy_prefers_qwen_and_falls_back_on_failure(self):
         fallback = Mock()
         wrapper = LimitedMessages(fallback)
@@ -114,3 +176,52 @@ class QwenRoutingTests(SimpleTestCase):
         self.assertEqual(post.call_args.kwargs['json']['model'], 'qwen3:1.7b')
         self.assertEqual(result.content[0].name, 'read_requirements')
         self.assertEqual(result.stop_reason, 'tool_use')
+
+
+class LocalOnlyPolicyTests(SimpleTestCase):
+    def test_invalid_calls_cannot_trigger_paid_fallback(self):
+        local = Mock()
+        local.invoke.return_value = AIMessage(content='', tool_calls=[{'id':'bad','name':'invented','args':{}}])
+        with patch.object(model_router, 'provider_blocked', return_value=False), \
+             patch.object(model_router, 'qwen_slot', return_value=nullcontext()), \
+             patch.object(model_router, 'qwen') as qwen, patch.object(model_router, 'claude') as claude:
+            qwen.return_value.bind_tools.return_value = local
+            with self.assertRaises(model_router.AIServiceUnavailable):
+                model_router.invoke([HumanMessage(content='Read requirements')], [read_requirements], local_only=True)
+        self.assertEqual(local.invoke.call_count, 2)
+        claude.assert_not_called()
+
+    def test_blocked_local_does_not_spend_on_claude(self):
+        from github_profiles.scheduling import CapacityBusy
+        with patch.object(model_router, 'provider_blocked', return_value=True), patch.object(model_router, 'claude') as claude:
+            with self.assertRaises(CapacityBusy):
+                model_router.invoke([HumanMessage(content='Hello')], local_only=True)
+        claude.assert_not_called()
+
+    def test_student_reply_is_delivered_unchanged_without_review(self):
+        from types import SimpleNamespace
+        from pure_multi_agent.student_graph import _reason
+        reply = AIMessage(content='**Courses**\n\nHere are the available programmes.')
+        ctx = {'model_steps':1, 'tool_errors':5, 'university_resolution_turn':'turn'}
+        with patch('pure_multi_agent.job_recovery.boundary'), \
+             patch('pure_multi_agent.student_graph.build_all_tools', return_value=[read_requirements]), \
+             patch.object(model_router, 'invoke', return_value=reply) as model, \
+             patch('pure_multi_agent.completion.review_completion') as review:
+            result = _reason({'messages':[HumanMessage(content='Courses?')]}, SimpleNamespace(context={'ctx':ctx,'prompt':''}))
+        self.assertIs(result['messages'][0], reply)
+        model.assert_called_once()
+        self.assertTrue(model.call_args.kwargs['local_only'])
+        self.assertNotIn('force_claude', model.call_args.kwargs)
+        review.assert_not_called()
+
+
+    def test_university_question_does_not_offer_profile_verification(self):
+        from types import SimpleNamespace
+        from pure_multi_agent.student_graph import _reason
+        reply = AIMessage(content='University answer')
+        tools = [SimpleNamespace(name='check_profile_verification'), read_requirements]
+        with patch('pure_multi_agent.student_graph.build_all_tools', return_value=tools), \
+             patch.object(model_router, 'invoke', return_value=reply) as model:
+            _reason({'messages':[HumanMessage(content='Fees?')]}, SimpleNamespace(context={
+                'ctx':{'model_steps':1,'current_message':'What are the fees at Example University?'}, 'prompt':''}))
+        self.assertNotIn('check_profile_verification', [tool.name for tool in model.call_args.args[1]])

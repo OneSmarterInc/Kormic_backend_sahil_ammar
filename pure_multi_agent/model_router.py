@@ -4,6 +4,9 @@ The DB provider pools are shared with GitHub extraction across all processes.
 Capacity exhaustion is backpressure, never an unbounded burst of paid fallback.
 """
 import logging
+from pure_multi_agent.model_usage import measured_invoke
+import json
+from pydantic import ValidationError
 import os
 import time
 from contextlib import contextmanager, ExitStack
@@ -21,6 +24,35 @@ logger = logging.getLogger(__name__)
 
 class AIServiceUnavailable(RuntimeError):
     pass
+
+
+class InvalidToolResponse(AIServiceUnavailable):
+    pass
+
+
+class InvalidLocalToolResponse(InvalidToolResponse):
+    pass
+
+
+from contextvars import ContextVar
+from functools import wraps
+_student_execution = ContextVar('student_model_policy', default=False)
+
+
+def student_model_policy(fn):
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        token = _student_execution.set(True)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _student_execution.reset(token)
+    return wrapped
+
+
+def advice_options():
+    """Student/university advice is local; paid research is an explicit operation."""
+    return {'local_only': True}
 
 
 @contextmanager
@@ -96,6 +128,9 @@ def _validate(reply, tools, *, validate_arguments=True, require_tools=False):
         if call['name'] not in mapping:
             raise ValueError('Unknown model tool')
         if validate_arguments:
+            normalize_arguments = getattr(mapping[call['name']].args_schema, 'normalize_call_arguments', None)
+            if normalize_arguments:
+                call['args'] = normalize_arguments(call['args'])
             mapping[call['name']].args_schema.model_validate(call['args'])
     if not reply.tool_calls and not reply.content:
         raise ValueError('Empty model response')
@@ -104,7 +139,29 @@ def _validate(reply, tools, *, validate_arguments=True, require_tools=False):
     return reply
 
 
-def invoke(messages, tools=(), *, force_claude=False, require_tools=False, json_schema=None):
+def _local_repair_instruction(reply, tools, error):
+    """Give the local model actionable schema feedback without executing a tool."""
+    if isinstance(error, ValidationError):
+        details = [{'field': '.'.join(map(str, item['loc'])), 'problem': item['msg']}
+                   for item in error.errors(include_input=False, include_url=False)]
+    else:
+        details = str(error)
+    calls = reply.tool_calls or []
+    names = {call['name'] for call in calls}
+    schemas = {tool.name: tool.args_schema.model_json_schema() for tool in tools if tool.name in names}
+    return ('Your last response failed validation and no tool was executed. Correct it locally. '
+        'Use the exact declared field names and types; do not invent missing facts, scope, or consent. '
+        'If required facts are absent, use a relevant read tool or ask a focused clarification '
+        '(after required retrieval). Never claim a rejected operation succeeded. '
+        'Allowed tools: ' + ', '.join(tool.name for tool in tools) +
+        '\nValidation: ' + json.dumps(details, ensure_ascii=False)[:6000] +
+        '\nRejected calls: ' + json.dumps(calls, ensure_ascii=False)[:6000] +
+        '\nRelevant schemas: ' + json.dumps(schemas, ensure_ascii=False)[:14000])
+
+
+def invoke(messages, tools=(), *, force_claude=False, require_tools=False, json_schema=None, tool_call_validator=None, local_only=False, response_validator=None, single_attempt=False, research=False):
+    if _student_execution.get() and not research:
+        local_only, force_claude = True, False
     # Text-only Qwen cannot interpret an uploaded image. Claude can.
     vision = any(isinstance(m.content, list) and any(isinstance(b, dict) and b.get('type') in ('image', 'image_url', 'document') for b in m.content) for m in messages)
     def token_estimate(content):
@@ -116,6 +173,9 @@ def invoke(messages, tools=(), *, force_claude=False, require_tools=False, json_
         return len(str(content)) // 3
     estimate = max(1500, sum(token_estimate(m.content) for m in messages) + sum(len(str(t.args)) for t in tools) // 3 + 6000)
     local_busy = False
+    first_reply = None
+    if local_only and provider_blocked('qwen'):
+        raise CapacityBusy('The local model is recovering; your request will resume shortly.', 10)
     if not (force_claude or vision or provider_blocked('qwen')):
         try:
             with qwen_slot(estimate):
@@ -123,20 +183,47 @@ def invoke(messages, tools=(), *, force_claude=False, require_tools=False, json_
                 if json_schema is not None:
                     model = model.bind(format=json_schema)
                 current_messages = provider_messages(messages, 'Qwen', qwen().model)
-                reply = model.invoke(current_messages)
-                if require_tools and not reply.tool_calls:
-                    # Small models can echo stale assistant history instead of
-                    # retrieving. Give Qwen one bounded retry before fallback.
+                reply = measured_invoke(model, current_messages, 'qwen', qwen().model)
+                first_reply = reply
+                try:
+                    _validate(reply, tools, require_tools=require_tools)
+                    if response_validator:
+                        response_validator(reply)
+                    if tool_call_validator:
+                        for call in reply.tool_calls:
+                            tool_call_validator(call)
+                except ValueError as exc:
+                    # Exactly one local repair for missing tools, invalid schema,
+                    # malformed calls or caller-supplied pre-execution checks.
+                    # Neither the rejected call nor its replacement is executed here.
                     from langchain_core.messages import HumanMessage
-                    last_human = max((i for i, m in enumerate(messages) if m.type == 'human'), default=1)
-                    retry = [current_messages[0], *messages[last_human:], HumanMessage(content=
-                        'Call the relevant available tool now. Do not repeat earlier answers. Return a tool call, not a promise or final answer.')]
-                    reply = model.invoke(retry)
-                reply = _validate(reply, tools, require_tools=require_tools)
+                    if require_tools and not reply.tool_calls and not reply.invalid_tool_calls:
+                        last_human = max((i for i, m in enumerate(messages) if m.type == 'human'), default=1)
+                        retry = [current_messages[0], *messages[last_human:], HumanMessage(content=
+                            'Call the relevant available tool now. Do not repeat earlier answers. Return a tool call, not a promise or final answer.')]
+                    elif not reply.tool_calls and not reply.invalid_tool_calls and response_validator:
+                        retry = [*current_messages, HumanMessage(content=
+                            'Answer the student question again in ordinary language. Keep useful supported guidance, '
+                            'but correct these specific problems: ' + str(exc)[:1800] +
+                            '\nDo not mention this correction, validation, tools or internal processing. '
+                            'Do not replace missing university requirements or costs with student scores or budget. '
+                            'If a fact is unavailable, explain that naturally and give the useful guidance you can provide.')]
+                    else:
+                        retry = [*current_messages, HumanMessage(content=_local_repair_instruction(reply, tools, exc))]
+                    logger.info('Repairing local tool response before fallback (%s)', type(exc).__name__)
+                    reply = _validate(measured_invoke(model, retry, 'qwen', qwen().model), tools, require_tools=require_tools)
+                    if response_validator:
+                        response_validator(reply)
+                    if tool_call_validator:
+                        for call in reply.tool_calls:
+                            tool_call_validator(call)
                 if json_schema is not None:
-                    import json
                     import jsonschema
-                    jsonschema.validate(json.loads(reply.content), json_schema)
+                    try:
+                        jsonschema.validate(json.loads(reply.content), json_schema)
+                    except jsonschema.ValidationError as exc:
+                        # Bad output does not mean the local provider is down.
+                        raise ValueError('The local response did not match the requested JSON schema.') from exc
                 reply.response_metadata['routing_provider'] = 'qwen'
                 reply.response_metadata['routing_model'] = qwen().model
                 logger.info('AI response provider=qwen model=%s tool_calls=%s', qwen().model, len(reply.tool_calls))
@@ -151,8 +238,19 @@ def invoke(messages, tools=(), *, force_claude=False, require_tools=False, json_
             # A malformed answer is specific to this prompt; do not disable
             # healthy Qwen for every other user's request for a minute.
             if not isinstance(exc, ValueError):
-                block_provider('qwen', 60)
+                block_provider('qwen', 20)
+                if local_only and isinstance(exc, (httpx.TransportError, ConnectionError, TimeoutError)):
+                    raise CapacityBusy('The local model connection was interrupted; retrying this step.', 10) from exc
+            if local_only and isinstance(exc, ValueError):
+                failure = InvalidLocalToolResponse('The local response remained invalid after one correction attempt.')
+                failure.draft = getattr(first_reply, 'content', '')
+                failure.validation_error = str(exc)
+                raise failure from exc
+            if local_only:
+                raise AIServiceUnavailable('The local model could not complete this action after a correction attempt. No Claude call was made.') from exc
             logger.info('Qwen unavailable or invalid tool response; using Claude (%s)', type(exc).__name__)
+    if local_only:
+        raise AIServiceUnavailable('The local model is unavailable for this action. No Claude call was made.')
     if provider_blocked('claude'):
         if local_busy:
             raise CapacityBusy('Local AI is busy; retry shortly.', 5)
@@ -165,16 +263,32 @@ def invoke(messages, tools=(), *, force_claude=False, require_tools=False, json_
                 # LangChain tools validate arguments before execution. Return
                 # errors to Claude through the graph so it can repair a call.
                 current_messages = provider_messages(messages, 'Claude', claude().model)
-                reply = model.invoke(current_messages)
+                reply = measured_invoke(model, current_messages, 'claude', claude().model)
                 try:
-                    reply = _validate(reply, tools, validate_arguments=False, require_tools=require_tools)
-                except ValueError:
+                    reply = _validate(reply, tools, require_tools=require_tools)
+                    if response_validator:
+                        response_validator(reply)
+                    if tool_call_validator:
+                        for call in reply.tool_calls:
+                            tool_call_validator(call)
+                except ValueError as validation_error:
+                    if single_attempt:
+                        raise InvalidToolResponse('Research response was invalid; no second paid request was made.') from validation_error
                     # Retry the model only: no invalid or duplicate tool is executed.
                     from langchain_core.messages import HumanMessage
                     correction = 'Your previous response did not match the available tools. Allowed tools: ' + ', '.join(t.name for t in tools)
                     correction += '. Use only these tools with their declared parameters.' if tools else '. Return a text answer without tool calls.'
-                    reply = _validate(model.invoke([*current_messages, HumanMessage(content=correction)]), tools,
-                        validate_arguments=False, require_tools=require_tools)
+                    correction += '\nValidation failure: ' + str(validation_error)[:4000]
+                    try:
+                        reply = _validate(measured_invoke(model, [*current_messages, HumanMessage(content=correction)], 'claude', claude().model), tools,
+                            require_tools=require_tools)
+                        if response_validator:
+                            response_validator(reply)
+                        if tool_call_validator:
+                            for call in reply.tool_calls:
+                                tool_call_validator(call)
+                    except ValueError as invalid:
+                        raise InvalidToolResponse('Tool arguments remained invalid after one correction attempt.') from invalid
                 reply.response_metadata['routing_provider'] = 'claude'
                 reply.response_metadata['routing_model'] = claude().model
                 logger.info('AI response provider=claude tool_calls=%s', len(reply.tool_calls))

@@ -19,7 +19,8 @@ def require_institution_site(url):
     intermediaries = ('wikipedia.org', 'wikidata.org', 'facebook.com', 'instagram.com', 'linkedin.com',
         'youtube.com', 'reddit.com', 'topuniversities.com', 'timeshighereducation.com', 'usnews.com',
         'shiksha.com', 'collegedunia.com', 'collegeboard.org', 'studyportals.com', 'mastersportal.com',
-        'bachelorsportal.com', 'yocket.com', 'google.com', 'bing.com', 'duckduckgo.com')
+        'bachelorsportal.com', 'studyindenmark.dk', 'yocket.com', 'google.com', 'bing.com', 'duckduckgo.com',
+        'globaladmissions.com', 'universities.nl', 'educations.com', 'hotcoursesabroad.com')
     if any(host == domain or host.endswith('.' + domain) for domain in intermediaries):
         raise ValueError('Use the official university website. Third-party sources are not supported for university research.')
 
@@ -41,7 +42,13 @@ def search_web(query, limit=10):
     if saved is not None:
         return saved
     # Explicit search-engine backends: auto also queries encyclopedia services.
-    rows = DDGS(timeout=12).text(query, max_results=min(limit, 10), backend='duckduckgo,yahoo')
+    try:
+        rows = DDGS(timeout=12).text(query, max_results=min(limit, 10), backend='duckduckgo,yahoo')
+    except Exception as exc:
+        # An empty search is a recoverable result, not a failed whole comparison.
+        if 'No results found' not in str(exc):
+            raise
+        rows = []
     results, seen = [], set()
     for row in rows:
         url = row.get('href') or row.get('url') or ''
@@ -93,10 +100,14 @@ def read_page(url, base_url=None):
         robots_url = urlunsplit((parts.scheme, parts.netloc, '/robots.txt', '', ''))
         robots_key = 'research-robots:' + hashlib.sha256(robots_url.encode()).hexdigest()
         robots = cache.get(robots_key)
+        if isinstance(robots, dict):
+            raise ValueError(robots['error'])
         if robots is None:
             status, _, body, _ = request_with_policy(client, robots_url, policy, max_bytes=150000)
             if status in (401, 403, 429) or status >= 500:
-                raise ValueError(f'Official website access unavailable: robots.txt returned HTTP {status}. ' + ('Rate limited; retry later.' if status == 429 else 'Access could not be verified; do not bypass it.'))
+                error = f'Official website access unavailable: robots.txt returned HTTP {status}.'
+                cache.set(robots_key, {'error': error}, 60)
+                raise ValueError(error)
             robots = body.decode('utf-8', errors='replace') if status == 200 else ''
             cache.set(robots_key, robots, 3600)
         parser = RobotFileParser(robots_url)
@@ -132,5 +143,8 @@ def read_page(url, base_url=None):
     # boundaries so the answer can quote facts instead of a flattened menu.
     for row in main.find_all('tr'):
         row.replace_with(row.get_text(' | ', strip=True) + '\n')
-    content = '\n'.join(re.sub(r'\s+', ' ', line).strip() for line in main.get_text('\n', strip=True).splitlines() if line.strip())[:20000]
+    # Put intact rows with their headers into the text used by extraction too.
+    # Previously only the separate `tables` field preserved these relationships.
+    table_text = '\n\n'.join(t['heading']+'\n'+'\n'.join(t['rows']) for t in tables)
+    content = (table_text + '\n\n' + '\n'.join(re.sub(r'\s+', ' ', line).strip() for line in main.get_text('\n', strip=True).splitlines() if line.strip()))[:20000]
     return {'url': final, 'title': title, 'content': content, 'tables': tables, 'links': links[:100], 'truncated': len(content) >= 20000}
