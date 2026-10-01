@@ -100,7 +100,7 @@ class PollNotificationsView(APIView):
         if account is None:
             return Response({"error": "No account associated with this user."}, status=status.HTTP_403_FORBIDDEN)
 
-        qs = NotificationLog.objects.filter(account=account)
+        qs = NotificationLog.objects.filter(account=account, dismissed_at__isnull=True)
 
         since = request.query_params.get("since")
         if since:
@@ -173,13 +173,17 @@ class NotificationListView(APIView):
         except (TypeError, ValueError):
             return Response({"error": "page and page_size must be positive integers."}, status=status.HTTP_400_BAD_REQUEST)
 
-        qs = NotificationLog.objects.filter(account=account)
+        qs = NotificationLog.objects.filter(account=account, dismissed_at__isnull=True)
         unread_only = request.query_params.get("unread_only", "").lower() == "true"
         if unread_only:
             qs = qs.filter(read_at__isnull=True)
 
+        search = request.query_params.get("search", "").strip()[:200]
+        if search:
+            from django.db.models import Q
+            qs = qs.filter(Q(title__icontains=search) | Q(body__icontains=search))
         total = qs.count()
-        unread_count = NotificationLog.objects.filter(account=account, read_at__isnull=True).count()
+        unread_count = NotificationLog.objects.filter(account=account, dismissed_at__isnull=True, read_at__isnull=True).count()
         start = (page - 1) * page_size
         logs = list(qs.order_by("-created_at", "-id")[start : start + page_size])
 
@@ -202,7 +206,7 @@ class NotificationUnreadCountView(APIView):
         account = get_account(request)
         if account is None:
             return Response({"error": "No account associated with this user."}, status=status.HTTP_403_FORBIDDEN)
-        count = NotificationLog.objects.filter(account=account, read_at__isnull=True).count()
+        count = NotificationLog.objects.filter(account=account, dismissed_at__isnull=True, read_at__isnull=True).count()
         return Response({"unread_count": count})
 
 
@@ -213,7 +217,7 @@ class NotificationMarkReadView(APIView):
         account = get_account(request)
         if account is None:
             return Response({"error": "No account associated with this user."}, status=status.HTTP_403_FORBIDDEN)
-        log = NotificationLog.objects.filter(id=notification_id, account=account).first()
+        log = NotificationLog.objects.filter(id=notification_id, account=account, dismissed_at__isnull=True).first()
         if log is None:
             return Response({"error": "Notification not found."}, status=status.HTTP_404_NOT_FOUND)
         if log.read_at is None:
@@ -229,5 +233,20 @@ class NotificationMarkAllReadView(APIView):
         account = get_account(request)
         if account is None:
             return Response({"error": "No account associated with this user."}, status=status.HTTP_403_FORBIDDEN)
-        updated = NotificationLog.objects.filter(account=account, read_at__isnull=True).update(read_at=timezone.now())
+        updated = NotificationLog.objects.filter(account=account, dismissed_at__isnull=True, read_at__isnull=True).update(read_at=timezone.now())
         return Response({"marked_read": updated, "unread_count": 0})
+
+
+class NotificationClearView(APIView):
+    """Dismiss from the inbox persistently, retaining the delivery audit record."""
+    permission_classes = [IsAuthenticated, IsTOTPEnrolled]
+
+    def post(self, request, notification_id=None):
+        account = get_account(request)
+        if account is None:
+            return Response({"error": "Account required."}, status=403)
+        rows = NotificationLog.objects.filter(account=account, dismissed_at__isnull=True)
+        if notification_id is not None:
+            rows = rows.filter(pk=notification_id)
+        count = rows.update(dismissed_at=timezone.now(), read_at=timezone.now())
+        return Response({"cleared": count, "unread_count": NotificationLog.objects.filter(account=account, dismissed_at__isnull=True, read_at__isnull=True).count()})

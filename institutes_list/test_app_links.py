@@ -3,6 +3,7 @@ from urllib.parse import urlencode
 from django.test import SimpleTestCase, override_settings
 
 
+@override_settings(STUDENT_WEB_CLAIM_URL="")
 class AppLinkTests(SimpleTestCase):
     @override_settings(APP_LINK_ANDROID_SHA256_FINGERPRINTS=['AB:' * 31 + 'AB'])
     def test_android_association_is_public_json_without_redirect(self):

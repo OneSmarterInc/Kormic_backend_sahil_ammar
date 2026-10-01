@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import logging
 import secrets
+import uuid
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
@@ -22,7 +24,8 @@ from rest_framework.decorators import api_view, permission_classes, throttle_cla
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from .models import ListedStudent, InstituteStudentList
+from .models import ListedStudent, InstituteStudentList, ClaimCodeDelivery
+from .claim_outbox import delivery_code
 from .tasks import (
     cache_claim_otp_code,
     discard_claim_otp_code,
@@ -67,7 +70,9 @@ def start_claim(request):
     if not row:
         return Response({"sent": True}, status=status.HTTP_200_OK)
 
-    code = f"{secrets.randbelow(10**6):06d}"
+    database_delivery = settings.INVITE_DELIVERY_MODE == "database"
+    nonce = uuid.uuid4()
+    code = delivery_code(row.id, nonce) if database_delivery else f"{secrets.randbelow(10**6):06d}"
     otp_hash = _hash_otp(row.id, code)
     expires_at = timezone.now() + timezone.timedelta(seconds=OTP_TTL_SECONDS)
 
@@ -87,7 +92,11 @@ def start_claim(request):
             if updated != 1:
                 raise ClaimInvitationUnavailable()
 
-            if not cache_claim_otp_code(
+            if database_delivery:
+                ClaimCodeDelivery.objects.create(
+                    student=row, nonce=nonce, otp_hash=otp_hash, expires_at=expires_at,
+                )
+            elif not cache_claim_otp_code(
                 row.id,
                 otp_hash,
                 code,
@@ -100,6 +109,9 @@ def start_claim(request):
     except Exception:
         logger.exception("Unable to prepare claim OTP delivery for ListedStudent %s.", row.id)
         _clear_failed_otp_state(row.id, otp_hash)
+        return Response({"sent": True}, status=status.HTTP_200_OK)
+
+    if database_delivery:
         return Response({"sent": True}, status=status.HTTP_200_OK)
 
     try:

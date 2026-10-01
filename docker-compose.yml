@@ -16,7 +16,11 @@ x-app: &app
   env_file:
     - .env
   environment:
+    DJANGO_DEBUG: "false"
     DB_ENGINE: postgresql
+    GITHUB_OLLAMA_BASE_URL: http://host.docker.internal:11434
+    STUDENT_OLLAMA_BASE_URL: http://host.docker.internal:11434
+    GITHUB_OLLAMA_ALLOWED_HOSTS: localhost,127.0.0.1,::1,host.docker.internal
     UNIVERSITY_EMBEDDING_CACHE_DIR: /home/app/.cache/kormic-embeddings
     CELERY_BROKER_URL: redis://redis:6379/0
     CELERY_RESULT_BACKEND: redis://redis:6379/1
@@ -25,6 +29,8 @@ x-app: &app
     DJANGO_CACHE_URL: redis://redis:6379/2
     AGENT_REDIS_URL: redis://redis:6379/3
     AGENT_QUEUE_ENABLED: "true"
+    AGENT_QUEUE_BACKEND: celery
+    AGENT_CAPACITY_BACKEND: redis
     AGENT_DISTRIBUTED_LIMITS: "true"
     AGENT_CONFIG_CACHE_URL: redis://redis_cache:6379/0
     # Database identity comes from the deployment environment. Compose keeps
@@ -43,6 +49,8 @@ x-app: &app
     migrate:
       condition: service_completed_successfully
   restart: unless-stopped
+  extra_hosts:
+    - host.docker.internal:host-gateway
 
 services:
   university_worker:
@@ -155,6 +163,11 @@ services:
   index_worker:
     <<: *app
     command: celery -A kormic_backend worker -l info -Q knowledge_index --concurrency=2 --hostname=index@%h
+    stop_grace_period: 620s
+
+  document_worker:
+    <<: *app
+    command: celery -A kormic_backend worker -l info -Q agent_documents --concurrency=2 --hostname=documents@%h
     stop_grace_period: 620s
 
   celery_beat:

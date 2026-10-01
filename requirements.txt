@@ -91,6 +91,7 @@ pytest==9.0.3
 pytest-django==4.14.0
 python-dateutil==2.9.0.post0
 python-docx==1.2.0
+pypdf==6.18.1
 python-dotenv==1.2.2
 python-multipart==0.0.32
 PyYAML==6.0.3
@@ -127,6 +128,7 @@ xxhash==4.0.1
 zstandard==0.25.0
 pgvector==0.4.2
 fastembed==0.8.1
-
+pytesseract==0.3.13
+rapidocr-onnxruntime==1.4.4
 # MeshKor SDK (From TestPyPI for Pilot)
 https://test-files.pythonhosted.org/packages/b1/47/8546fa92e869446586fa95de17df6284ca24cfb7240325956a9291dd26cf/meshkor-1.0.3-py3-none-any.whl

@@ -1,209 +1,115 @@
-# pure_multi_agent/tracing.py
-# Terminal tracing for the LangGraph student agent -- prints every model call
-# and every tool call/result as they happen, so you can see the agent's
-# actual tool/agent-selection decisions live instead of guessing. Purely for
-# understanding/debugging; toggle off with PURE_MULTI_AGENT_VERBOSE=false.
-
-from __future__ import annotations
-
+"""LangChain callbacks preserving actor, tool identity, and turn correlation."""
+from uuid import uuid4
 import json
 import os
-from typing import Any, Dict, List, Optional
-
 from langchain_core.callbacks import BaseCallbackHandler
-from rich.console import Console
+from pure_multi_agent.telemetry import current, emit, safe_data
 
-from django_api.tasks import save_audit_log_task
-import logging
-
-console = Console()
-logger = logging.getLogger(__name__)
-
-VERBOSE = os.getenv("PURE_MULTI_AGENT_VERBOSE", "true").strip().lower() not in {"0", "false", "no"}
+VERBOSE = os.getenv('PURE_MULTI_AGENT_VERBOSE', 'true').lower() not in {'0', 'false', 'no'}
 
 
-def _truncate(text: Any, limit: int = 400) -> str:
-    text = str(text)
-    return text if len(text) <= limit else text[: limit - 15] + "... [truncated]"
-
-def _safe_dict(data: Any) -> Dict[str, Any]:
-    if not isinstance(data, dict):
-        data = {"payload": str(data)}
-    try:
-        # Try converting to dict using a stringifier for non-serializable objects
-        return json.loads(json.dumps(data, default=str))
-    except Exception:
-        return {"error": "Could not serialize payload"}
-
-def _message_preview(message) -> str:
-    content = getattr(message, "content", "")
+def _content(value):
+    content = getattr(value, 'content', value)
     if isinstance(content, list):
-        content = "".join(
-            block.get("text", "") for block in content if isinstance(block, dict) and block.get("type") == "text"
-        )
-    return _truncate(content, 200)
+        return ''.join(b.get('text', '') for b in content if isinstance(b, dict) and b.get('type') == 'text')
+    return content
 
 
 class GraphTraceLogger(BaseCallbackHandler):
-    """Logs the student agent's reasoning loop to the terminal and database:
-    - every time the model is invoked (and with how much context)
-    - every tool the model decides to call, with its arguments
-    - every tool's result
-    - the model's final natural-language decision (tool call vs direct reply)
-    """
+    run_inline = True
 
-    def __init__(self, label: str = ""):
-        self.label = label
+    def __init__(self, label='', actor='Aria (Student Agent)', root_run_id=None):
+        self.label, self.actor = label, actor
+        self.root_run_id = str(root_run_id or current().get('run_id') or uuid4())
         self._step = 0
+        self._calls = {}
+        self._nodes = {}
 
-    def _tag(self) -> str:
-        return f"[bold blue]\\[{self.label}][/bold blue]" if self.label else ""
+    def on_chain_start(self, serialized, inputs, *, run_id, **kwargs):
+        node = (kwargs.get('metadata') or {}).get('langgraph_node')
+        if node and kwargs.get('name') == node:
+            self._nodes[str(run_id)] = (self._identity(), node)
+            self._log('AGENT_STEP_START', node, run_id, inputs={'method': node},
+                parent_run_id=kwargs.get('parent_run_id'))
 
-    def on_chat_model_start(
-        self,
-        serialized: Dict[str, Any],
-        messages: List[List[Any]],
-        *,
-        run_id,
-        **kwargs: Any,
-    ) -> None:
+    def on_chain_end(self, outputs, *, run_id, **kwargs):
+        entry = self._nodes.pop(str(run_id), None)
+        if entry:
+            identity, node = entry
+            self._log('AGENT_STEP_RESULT', node, run_id, identity=identity,
+                outputs={'updated_state_fields': list(outputs) if isinstance(outputs, dict) else []})
+
+    def on_chain_error(self, error, *, run_id, **kwargs):
+        entry = self._nodes.pop(str(run_id), None)
+        from github_profiles.scheduling import CapacityBusy
+        from pure_multi_agent.capacity import AgentBusy
+        if isinstance(error, (CapacityBusy, AgentBusy)):
+            return  # The enclosing run records this single resumable pause.
+        if entry:
+            identity, node = entry
+            self._log('AGENT_STEP_ERROR', node, run_id, identity=identity, outputs={'error': str(error)})
+
+    def _identity(self):
+        ctx = current()
+        return {'actor': ctx.get('actor', self.actor), 'student_id': ctx.get('student_id', self.label),
+                'run_id': ctx.get('run_id', self.root_run_id)}
+
+    def _log(self, action, target, run_id, *, inputs=None, outputs=None, identity=None, parent_run_id=None):
+        emit(action, target, inputs={'call_id': str(run_id), 'parent_call_id': str(parent_run_id or ''), **(inputs or {})},
+            outputs=outputs, **(identity or self._identity()))
+
+    def on_chat_model_start(self, serialized, messages, *, run_id, **kwargs):
         self._step += 1
-        history = messages[0] if messages else []
-        if VERBOSE:
-            console.print(
-                f"{self._tag()} [dim]step {self._step}: asking the model "
-                f"({len(history)} messages of context so far)[/dim]"
-            )
-        try:
-            from django_api.models import AgentAuditLog
-            AgentAuditLog.objects.create(
-                run_id=str(run_id),
-                student_id=self.label,
-                actor_agent="Aria (Student Agent)",
-                action_type="REASONING_START",
-                target="Model Invocation",
-                inputs=_safe_dict({"context_messages": len(history)}),
-                outputs=_safe_dict({})
-            )
-        except Exception as e:
-            logger.error(f"Failed to log reasoning start: {e}")
+        self._calls[str(run_id)] = (self._identity(), current().get('recipient', 'Student'))
+        params = kwargs.get('invocation_params') or {}
+        model = params.get('model') or params.get('model_name') or (serialized or {}).get('kwargs', {}).get('model') or ''
+        kind = str((serialized or {}).get('id', '')) + ' ' + str(params.get('_type', '')) + ' ' + str(model)
+        provider = 'claude' if 'anthropic' in kind.lower() or 'claude' in kind.lower() else 'qwen' if 'qwen' in kind.lower() else 'unknown'
+        self._log('MODEL_START', 'Model invocation', run_id,
+            inputs={'context_messages': len(messages[0]) if messages else 0, 'provider': provider, 'model': str(model)}, parent_run_id=kwargs.get('parent_run_id'))
 
-    def on_llm_end(self, response, *, run_id, **kwargs: Any) -> None:
+    def on_llm_end(self, response, *, run_id, **kwargs):
+        identity, recipient = self._calls.pop(str(run_id), (self._identity(), 'Student'))
         try:
             message = response.generations[0][0].message
-        except Exception:
+        except (AttributeError, IndexError):
             return
+        calls = getattr(message, 'tool_calls', None) or []
+        self._log('MODEL_END', 'Model invocation', run_id, identity=identity,
+            outputs={'selected_tools': [call.get('name') for call in calls]})
+        # Only provider-designated public summaries; never persist raw thinking blocks.
+        for block in message.content if isinstance(message.content, list) else []:
+            if isinstance(block, dict) and block.get('type') == 'reasoning' and block.get('summary'):
+                self._log('REASONING_SUMMARY', 'Model summary', run_id, identity=identity,
+                    outputs={'summary': block['summary']})
+        if calls:
+            for call in calls:
+                self._log('TOOL_CALL_INTENT', call.get('name', 'tool'), run_id, identity=identity,
+                    inputs={'arguments': call.get('args', {}), 'tool_call_id': call.get('id')})
+        else:
+            self._log('MODEL_OUTPUT', recipient, run_id, identity=identity, outputs={'reply': _content(message)})
 
-        tool_calls = getattr(message, "tool_calls", None) or []
-        
-        try:
-            from django_api.models import AgentAuditLog
-            if tool_calls:
-                for call in tool_calls:
-                    args = call.get("args", {})
-                    args_str = json.dumps(args, ensure_ascii=False)
-                    if VERBOSE:
-                        console.print(
-                            f"{self._tag()} [bold cyan]model decided to call tool[/bold cyan] "
-                            f"{call.get('name')}({args_str})"
-                        )
-                    
-                    # Check if it's agent communication
-                    is_agent_comm = call.get('name') in ['ask_university', 'compare_all_universities']
-                    
-                    AgentAuditLog.objects.create(
-                        run_id=str(run_id),
-                        student_id=self.label,
-                        actor_agent="Aria (Student Agent)",
-                        action_type="AGENT_COMMUNICATION_INTENT" if is_agent_comm else "TOOL_CALL_INTENT",
-                        target=call.get('name', 'unknown_tool'),
-                        inputs=_safe_dict(args),
-                        outputs=_safe_dict({})
-                    )
-            else:
-                final_reply = _message_preview(message)
-                if VERBOSE:
-                    console.print(
-                        f"{self._tag()} [bold green]model produced a final reply:[/bold green] "
-                        f"{final_reply}"
-                    )
-                AgentAuditLog.objects.create(
-                    run_id=str(run_id),
-                    student_id=self.label,
-                    actor_agent="Aria (Student Agent)",
-                    action_type="FINAL_REPLY",
-                    target="Student",
-                    inputs=_safe_dict({}),
-                    outputs=_safe_dict({"reply": final_reply})
-                )
-        except Exception as e:
-            logger.error(f"Failed to log llm end: {e}")
+    def on_tool_start(self, serialized, input_str, *, run_id, inputs=None, **kwargs):
+        name = (serialized or {}).get('name', kwargs.get('name', 'tool'))
+        self._calls[str(run_id)] = (self._identity(), name)
+        self._log('TOOL_CALL_START', name, run_id, inputs={'arguments': inputs if inputs is not None else input_str},
+            parent_run_id=kwargs.get('parent_run_id'))
 
-    def on_tool_start(
-        self,
-        serialized: Dict[str, Any],
-        input_str: str,
-        *,
-        run_id,
-        inputs: Optional[Dict[str, Any]] = None,
-        **kwargs: Any,
-    ) -> None:
-        name = serialized.get("name", "tool")
-        payload = inputs if inputs is not None else input_str
-        if VERBOSE:
-            console.print(
-                f"{self._tag()} [yellow]-> running tool[/yellow] {name}"
-                f"({_truncate(payload, 300)})"
-            )
-        
-        is_agent_comm = name in ['ask_university', 'compare_all_universities']
-        
-        try:
-            from django_api.models import AgentAuditLog
-            AgentAuditLog.objects.create(
-                run_id=str(run_id),
-                student_id=self.label,
-                actor_agent="Aria (Student Agent)",
-                action_type="AGENT_COMMUNICATION_START" if is_agent_comm else "TOOL_CALL_START",
-                target=name,
-                inputs=_safe_dict({"payload": payload}),
-                outputs=_safe_dict({})
-            )
-        except Exception as e:
-            logger.error(f"Failed to log tool start: {e}")
+    def on_tool_end(self, output, *, run_id, **kwargs):
+        identity, name = self._calls.pop(str(run_id), (self._identity(), getattr(output, 'name', 'tool')))
+        value = _content(output)
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (ValueError, TypeError):
+                pass
+        failed = isinstance(value, dict) and (bool(value.get('error')) or value.get('status') == 'failed')
+        self._log('TOOL_ERROR' if failed else 'TOOL_RESULT', name, run_id, identity=identity, outputs={'result': safe_data(value)})
 
-    def on_tool_end(self, output: Any, *, run_id, **kwargs: Any) -> None:
-        text = output if isinstance(output, str) else getattr(output, "content", str(output))
-        if VERBOSE:
-            console.print(f"{self._tag()} [green]<- tool result:[/green] {_truncate(text, 400)}")
-        
-        try:
-            from django_api.models import AgentAuditLog
-            AgentAuditLog.objects.create(
-                run_id=str(run_id),
-                student_id=self.label,
-                actor_agent="Aria (Student Agent)",
-                action_type="TOOL_RESULT",
-                target="unknown",
-                inputs=_safe_dict({}),
-                outputs=_safe_dict({"result": text})
-            )
-        except Exception as e:
-            logger.error(f"Failed to log tool end: {e}")
+    def on_tool_error(self, error, *, run_id, **kwargs):
+        identity, name = self._calls.pop(str(run_id), (self._identity(), 'tool'))
+        self._log('TOOL_ERROR', name, run_id, identity=identity, outputs={'error': str(error)})
 
-    def on_tool_error(self, error: BaseException, *, run_id, **kwargs: Any) -> None:
-        if VERBOSE:
-            console.print(f"{self._tag()} [red]tool error: {error}[/red]")
-        try:
-            from django_api.models import AgentAuditLog
-            AgentAuditLog.objects.create(
-                run_id=str(run_id),
-                student_id=self.label,
-                actor_agent="Aria (Student Agent)",
-                action_type="TOOL_ERROR",
-                target="unknown",
-                inputs=_safe_dict({}),
-                outputs=_safe_dict({"error": str(error)})
-            )
-        except Exception as e:
-            logger.error(f"Failed to log tool error: {e}")
+    def on_llm_error(self, error, *, run_id, **kwargs):
+        identity, _ = self._calls.pop(str(run_id), (self._identity(), 'Model invocation'))
+        self._log('MODEL_ERROR', 'Model invocation', run_id, identity=identity, outputs={'error': str(error)})

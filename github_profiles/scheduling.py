@@ -115,6 +115,13 @@ def block_provider(provider, seconds=60):
 
 @contextmanager
 def model_slot(provider, run, estimated_tokens):
+    from pure_multi_agent.inference_admission import admission
+    with admission(provider, run, estimated_tokens, _provider_slot):
+        yield
+
+
+@contextmanager
+def _provider_slot(provider, run, estimated_tokens):
     limit = getattr(settings, 'GITHUB_' + provider.upper() + '_CONCURRENCY')
     if limit < 1:
         raise CapacityBusy(provider + ' inference is paused', 30)

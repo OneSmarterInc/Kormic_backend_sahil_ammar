@@ -92,15 +92,92 @@ class RouterTests(SimpleTestCase):
         with self.assertRaises(ValueError):
             read_record.invoke(response.tool_calls[0]['args'])
 
+    @patch('pure_multi_agent.model_router.claude')
+    @patch('pure_multi_agent.model_router.qwen')
+    def test_required_workflow_action_falls_back_when_qwen_only_replies(self, qwen, claude):
+        from pure_multi_agent.model_router import invoke
+        @tool
+        def prepare_change() -> dict:
+            """Prepare a change for confirmation."""
+            return {}
+        qwen.return_value.bind_tools.return_value.invoke.return_value = AIMessage(content='Please confirm')
+        claude.return_value.bind_tools.return_value.invoke.return_value = AIMessage(content='', tool_calls=[{'id': 'draft', 'name': 'prepare_change', 'args': {}}])
+        result = invoke([HumanMessage(content='Prepare changes')], [prepare_change], require_tools=True)
+        self.assertEqual(result.tool_calls[0]['name'], 'prepare_change')
+        claude.return_value.bind_tools.assert_called_once_with([prepare_change], tool_choice='any')
+
 
 @override_settings(UNIVERSITY_VECTOR_SEARCH=False, AGENT_DISTRIBUTED_LIMITS=False)
 class ResearchTests(TestCase):
+    def test_submit_research_accepts_summarized_program_names(self):
+        from university_research.agent import build_tools
+        url='https://example.edu/programs'
+        quotes=["Learn more about the diverse degree programs at UChicago, which offer students flexibility through full-time, part-time, executive, and online formats:",
+            "For those looking to continue their academic journey or pivot their careers, UChicago's 60-plus programs offer opportunities to conduct research in cutting-edge labs and facilities."]
+        result={}
+        submit={t.name:t for t in build_tools({url:{'url':url,'content':'\n'.join(quotes)}},result,'https://example.edu/')}['submit_research']
+        response=submit.invoke({'facts':[],'courses':[{'name':name,'source_url':url,'source_quote':quote}
+            for name,quote in zip(["Master's Programs",'Doctoral Programs'],quotes)],'intakes':[],'coverage_notes':'Degree categories; individual course details not supplied.'})
+        self.assertTrue(response['accepted'])
+        self.assertEqual([c['name'] for c in result['courses']],["Master's Programs",'Doctoral Programs'])
+
+    def test_unlisted_university_saves_catalogue_before_agent_reply(self):
+        from django_api.models import AgentJob
+        from university_research.services import publish_delivered_evidence
+        from pure_multi_agent.university_grounding import grounded_reply
+        website = 'https://new-example.edu/'
+        name = 'New Example University'
+        self.ctx['current_message'] = 'New Example University tuition fees'
+        cited = {'url':website+'fees','title':'2026 Undergraduate tuition','content':'New Example University undergraduate tuition for 2026 is USD 12000 per year.','links':[],'evidence_provider':'claude_web_search'}
+        page = {'url':website,'title':'2026 Undergraduate tuition','content':cited['content'],'links':[],'citation_pages':[cited],'evidence_provider':'claude_web_search'}
+        provider_answer={'text':cited['content'],'sources':[cited['url']]}
+        page['catalogue']={'description':name,'facts':[{'topic':'Tuition','content':cited['content']}]}
+        page['provider_answer']=provider_answer
+        cited['provider_answer']=provider_answer
+        with patch('university_research.web.search_web',return_value=[{'url':website,'title':name,'snippet':name}]):
+            found = self.tools()['list_universities'].invoke({'query':name})
+        self.assertEqual(found['status'],'web_results_need_resolution')
+        with patch('university_research.web.read_page',side_effect=ValueError('Official page unavailable: HTTP 403')) as scrape, patch('university_research.claude_fallback.search_official_evidence',return_value=page) as fallback:
+            self.tools()['read_university_webpage'].invoke({'url':website})
+        self.assertEqual(scrape.call_count,1)
+        fallback.assert_called_once()
+        identity = self.tools()['identify_university_candidates'].invoke({'search_id':found['search_id'],'candidates':[{'name':name,'website':website,'source_indices':[0],'official_identity_quote':'This paraphrased quote is not in the source'}]})
+        self.assertEqual(identity['count'],1)
+        self.assertEqual(identity['candidates'][0]['sources'][0]['identity_quote'],cited['content'])
+        with patch('university_research.web.validate_public_base_url'):
+            selected = self.tools()['select_university_candidate'].invoke({'search_id':found['search_id'],'candidate_index':1})
+        uid = selected['university']['id']
+        with self.adviser_reply('Tuition is USD 12000 per year.'):
+            self.tools()['ask_university'].invoke({'university_id':uid,'question':'tuition fees'})
+        answer = grounded_reply(self.ctx,'')
+        self.assertIn('USD 12000',answer)
+        row = PublicUniversity.objects.get(pk=uid.split(':',1)[1])
+        self.assertTrue(row.pages.exists())
+        pending={'pages':list(self.ctx['university_cache_after_reply'].values()),'universities':[str(row.pk)],'missing':[],'checked':['fees']}
+        job=AgentJob.objects.create(owner_key='synthetic:new-university',idempotency_key='delivery',kind='student',status='completed',payload={'university_cache_pending':pending})
+        self.assertTrue(publish_delivered_evidence(job.pk))
+        self.assertTrue(row.pages.exists())
+        with patch('university_research.web.search_web') as search:
+            cached = self.tools()['list_universities'].invoke({'query':name})
+        self.assertEqual(cached['source'],'researched')
+        search.assert_not_called()
+
+    def adviser_reply(self, answer):
+        return patch('pure_multi_agent.registered_adviser.invoke', side_effect=[
+            AIMessage(content='', tool_calls=[{'id':'read-catalogue','name':'retrieve_official_information','args':{'query':'courses fees'}}]),
+            AIMessage(content=answer)])
+
     def setUp(self):
+        # Worker cleanup must not close the TestCase transaction.
+        cleanup = patch("university_research.worker.close_old_connections")
+        cleanup.start(); self.addCleanup(cleanup.stop)
+        completion = patch("pure_multi_agent.completion.review_completion", return_value={"complete": True, "next_action": ""})
+        completion.start(); self.addCleanup(completion.stop)
         self.student = StudentProfile.objects.create(name='Student', gpa=3.6)
         self.user = User.objects.create_user(username='student', email='student@example.test')
         Account.objects.create(user=self.user, role='student', student_profile=self.student)
         TOTPDevice.objects.create(user=self.user, confirmed_at=timezone.now())
-        self.ctx = {'canonical_student_id': str(self.student.uuid), 'student_profile': {'name': 'Student', 'gpa': 3.6}, 'current_message': 'Boston'}
+        self.ctx = {'canonical_student_id': str(self.student.uuid), 'student_profile': {'name': 'Student', 'gpa': 3.6}, 'current_message': 'Boston', 'turn_id': 'test-turn'}
         self.client = APIClient(); self.client.force_authenticate(self.user)
 
     def tools(self):
@@ -145,9 +222,109 @@ class ResearchTests(TestCase):
         candidate = {'name': 'Example University', 'website': 'https://example.edu/', 'source_indices': [0], 'official_identity_quote': 'Welcome to Example University'}
         result = self.tools()['identify_university_candidates'].invoke({'search_id': str(search.pk), 'candidates': [candidate]})
         self.assertIn('error', result)
-        self.ctx['read_web_pages'] = {'https://example.edu/': {'title': 'Example University', 'content': 'Welcome to Example University'}}
+        self.ctx['read_web_pages'] = {'https://example.edu/': {'url': 'https://example.edu/', 'title': 'Example University', 'content': 'Welcome to Example University'}}
         result = self.tools()['identify_university_candidates'].invoke({'search_id': str(search.pk), 'candidates': [candidate]})
         self.assertEqual(result['count'], 1)
+
+    @patch('university_research.claude_fallback.search_official_evidence')
+    @patch('university_research.web.read_page_once')
+    def test_ambiguous_discovery_asks_before_scraping_calling_claude_or_saving(self, scrape, claude):
+        choices = [{'name':'Example University','website':'https://example.edu/','address':'Boston','source_indices':[0],'official_identity_quote':'Example University Boston'},
+            {'name':'Example University','website':'https://other.edu/','address':'London','source_indices':[1],'official_identity_quote':'Example University London'}]
+        search=UniversitySearch.objects.create(student=self.student,query='Example',candidates={'results':[{'url':c['website']} for c in choices]})
+        result=self.tools()['identify_university_candidates'].invoke({'search_id':str(search.pk),'candidates':choices})
+        self.assertTrue(result['needs_clarification'])
+        self.assertEqual(len(self.ctx['university_clarification']),2)
+        self.assertIn('error',self.tools()['select_university_candidate'].invoke({'search_id':str(search.pk),'candidate_index':1}))
+        scrape.assert_not_called(); claude.assert_not_called()
+        self.assertFalse(PublicUniversity.objects.exists())
+
+    @patch('university_research.claude_fallback.search_official_evidence')
+    @patch('university_research.web.read_page',side_effect=ValueError('HTTP 403'))
+    def test_direct_fallback_one_call_full_answer_and_no_duplicate_research(self, scrape, claude):
+        website='https://example.edu/'
+        answer={'text':'Courses: MSc. Fees: N/A. Seats: N/A. Scholarships: need-based.','sources':[website],'provider':'claude_direct'}
+        claude.return_value={'url':website,'title':'Example University','content':answer['text'],'links':[],
+            'provider_answer':answer,'evidence_provider':'claude_direct','catalogue':{'description':'Example University','courses':[{'name':'MSc Physics','tuition':'USD 10000 per year'}]}}
+        search=UniversitySearch.objects.create(student=self.student,query='Example University',candidates={'results':[{'url':website}]})
+        self.ctx.update(known_web_urls={website},turn_id='direct',current_message='courses fees seats scholarships')
+        tools=self.tools()
+        tools['read_university_webpage'].invoke({'url':website})
+        tools['identify_university_candidates'].invoke({'search_id':str(search.pk),'candidates':[{
+            'name':'Example University','website':website,'source_indices':[0],'official_identity_quote':'Example University'}]})
+        with patch('university_research.web.canonical_url',lambda url:url):
+            selected=tools['select_university_candidate'].invoke({'search_id':str(search.pk),'candidate_index':1})
+        with self.adviser_reply('Physics is offered. Fees are USD 10000 per year.'):
+            evidence=tools['ask_university'].invoke({'university_id':selected['university']['id'],'question':'courses fees seats scholarships'})
+        self.assertIn('Physics',evidence['answer'])
+        self.assertFalse(self.ctx['research_after_reply'])
+        self.assertFalse(self.ctx['university_cache_after_reply'])
+        self.assertTrue(PublicUniversity.objects.get().pages.exists())
+        self.assertFalse(self.ctx['university_source_search_required'])
+        scrape.assert_called_once(); claude.assert_called_once()
+
+    @patch('university_research.claude_fallback.search_official_evidence')
+    def test_successful_heading_only_scrape_delivers_claude_answer_and_terminates(self, claude):
+        from pure_multi_agent.student_graph import _reason
+        from types import SimpleNamespace
+        row=public(name='Example University')
+        uid='public:'+str(row.pk)
+        answer={'text':'**Example University**\n\nCourses: Physics. Fees: USD 10000 per year. Seats: N/A.',
+            'sources':[row.website],'provider':'claude_direct'}
+        claude.return_value={'url':row.website,'title':row.name,'content':answer['text'],'links':[],
+            'provider_answer':answer,'evidence_provider':'claude_direct','catalogue':{'description':'Example University','courses':[{'name':'MSc Physics','tuition':'USD 10000 per year'}]}}
+        self.ctx.update(turn_id='headings',university_resolution_turn='headings',university_candidates=[uid],
+            current_message='courses fees seats',read_web_pages={row.website:{'url':row.website,'title':row.name,'content':'Tuition and Fees 2026-27','links':[]}},
+            university_cache_after_reply={row.website:{'university_id':str(row.pk),'page':{'url':row.website,'title':row.name,'content':'Tuition and Fees 2026-27'}}})
+        with self.adviser_reply('Physics is offered. The university has not provided its seat count.'):
+            self.tools()['ask_university'].invoke({'university_id':uid,'question':'courses fees seats'})
+        with patch('pure_multi_agent.student_graph.build_all_tools',return_value=[]), patch('pure_multi_agent.change_proposals.conversation_state',return_value={}), patch('pure_multi_agent.model_router.invoke') as model:
+            response=_reason({'messages':[]},SimpleNamespace(context={'ctx':self.ctx,'prompt':''}))
+        self.assertEqual(response['messages'][0].content,'Physics is offered. The university has not provided its seat count.')
+        self.assertFalse(self.ctx['research_after_reply'])
+        self.assertFalse(self.ctx['university_source_search_required'])
+        self.assertFalse(self.ctx['university_cache_after_reply'])
+        self.assertEqual(row.courses.get().name,'MSc Physics')
+        model.assert_not_called(); claude.assert_called_once()
+
+    def test_fetched_official_title_can_verify_identity_without_site_navigation(self):
+        search = UniversitySearch.objects.create(student=self.student, query='MIT', candidates={'results':[{'url':'https://www.mit.edu/','title':'Search hint'}]})
+        self.ctx['read_web_pages'] = {'https://www.mit.edu/': {'url':'https://www.mit.edu/','title':'MIT - Massachusetts Institute of Technology','content':'Research highlights'}}
+        candidate = {'name':'Massachusetts Institute of Technology','website':'https://www.mit.edu/','source_indices':[0],'official_identity_quote':'MIT - Massachusetts Institute of Technology'}
+        result = self.tools()['identify_university_candidates'].invoke({'search_id':str(search.pk),'candidates':[candidate]})
+        self.assertEqual(result['count'],1)
+
+    @patch('university_research.claude_fallback.search_official_evidence')
+    @patch('university_research.web.read_page_once')
+    def test_caltech_homepage_recovers_through_about_page_with_nine_references(self, read, fallback):
+        website = 'https://www.caltech.edu/'
+        about = website + 'about'
+        results = [{'url':website,'title':'Home'}, {'url':about,'title':'About Caltech'}]
+        results.extend({'url':website+'news/'+str(i),'title':'News'} for i in range(7))
+        search = UniversitySearch.objects.create(student=self.student, query='Caltech University', candidates={'results':results})
+        self.ctx['read_web_pages'] = {website:{'url':website,'title':'Home - www.caltech.edu',
+            'content':'Caltech Homepage. Research news.', 'links':[{'url':about,'label':'About'}]}}
+        read.return_value = {'url':about,'title':'About Caltech',
+            'content':'California Institute of Technology (Caltech)', 'links':[]}
+        result = self.tools()['identify_university_candidates'].invoke({'search_id':str(search.pk), 'candidates':[{
+            'name':'California Institute of Technology','website':website,'source_indices':list(range(9)),
+            'official_identity_quote':'Caltech is a world-renowned science and engineering institute.'}]})
+        self.assertEqual(result['count'],1)
+        self.assertEqual(result['candidates'][0]['sources'][0]['url'],about)
+        self.assertNotIn('university_discovery_blocked',self.ctx)
+        read.assert_called_once_with(about)
+        fallback.assert_not_called()
+
+    @patch('university_research.claude_fallback.search_official_evidence', side_effect=ValueError('No identity evidence'))
+    def test_invalid_identity_attempts_are_bounded(self, fallback):
+        search = UniversitySearch.objects.create(student=self.student, query='MIT', candidates={'results':[{'url':'https://www.mit.edu/','title':'Search hint'}]})
+        self.ctx['read_web_pages'] = {'https://www.mit.edu/': {'url':'https://www.mit.edu/','title':'Unrelated College','content':'Research highlights'}}
+        candidate = {'name':'Massachusetts Institute of Technology','website':'https://www.mit.edu/','source_indices':[0],'official_identity_quote':'Invented institution identity'}
+        for _ in range(3):
+            result = self.tools()['identify_university_candidates'].invoke({'search_id':str(search.pk),'candidates':[candidate]})
+        self.assertEqual(result['attempt'],3)
+        self.assertIn('university_discovery_blocked',self.ctx)
+        fallback.assert_called_once()
 
     def test_search_and_saved_advice_are_owner_scoped(self):
         other = StudentProfile.objects.create(name='Other')
@@ -235,6 +412,32 @@ class ResearchTests(TestCase):
         self.assertEqual(row.pages.get().url, row.website)
         self.assertEqual(model.call_count, 2)
 
+
+    def test_live_official_read_is_saved_without_private_question(self):
+        row=public()
+        page={'url':row.website+'housing','title':'Housing','content':'University hostels provide shared rooms and a dining hall.'}
+        services.save_live_page(row,page,'My private student number 123456; tell me about hostels')
+        self.assertEqual(row.pages.count(),1)
+        fact=row.facts.get()
+        self.assertNotIn('123456',fact.content)
+        self.assertIn(fact.source_quote,page['content'])
+        answer=services.retrieve(row,'hostels')
+        self.assertEqual(answer['facts'][0]['source_url'],page['url'])
+
+    def test_saved_alias_and_refresh_policy_drive_reuse(self):
+        from .models import InformationPolicy
+        row = public(fetched_at=timezone.now()-timedelta(days=31))
+        row.name = 'Indian Institute of Technology Bombay'
+        row.discovery_sources = [{'search_name': 'IIT Bombay', 'url': row.website}]
+        row.save()
+        self.assertEqual(services.search_public('IIT Bombay').get().pk, row.pk)
+        services.add_reference(self.ctx, row)
+        self.assertIn(str(row.pk), self.ctx['research_after_reply'])
+        self.ctx['research_after_reply'] = set()
+        InformationPolicy.objects.update_or_create(pk=1, defaults={'refresh_days':90})
+        services.add_reference(self.ctx, row)
+        self.assertEqual(self.ctx['research_after_reply'], set())
+
     def test_invalid_source_quote_is_rejected(self):
         from .agent import build_tools
         pages = {'https://example.edu/': {'content': 'Only MSc Physics is offered.'}}
@@ -316,6 +519,9 @@ class ResearchTests(TestCase):
         from .worker import claim, release
         rows = [public(name=f'University {i}') for i in range(100)]
         jobs = [services.queue_research(row, self.user) for row in rows]
+        # Give queue entries distinct times; Windows clock resolution can tie.
+        for i, job in enumerate(jobs):
+            ResearchRun.objects.filter(pk=job.pk).update(available_at=timezone.now()-timedelta(minutes=2)+timedelta(milliseconds=i))
         active = [claim() for _ in range(4)]
         self.assertEqual(len({run.pk for run in active}), 4)
         release(active[0], status='queued', available_at=timezone.now())

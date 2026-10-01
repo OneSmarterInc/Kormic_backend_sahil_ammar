@@ -1,4 +1,5 @@
 from django.db import models
+from django.utils import timezone
 
 from accounts.models import Account
 
@@ -65,6 +66,7 @@ class NotificationLog(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     error = models.TextField(blank=True, default="")
     read_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    dismissed_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -73,3 +75,11 @@ class NotificationLog(models.Model):
 
     def __str__(self) -> str:
         return f"NotificationLog(account={self.account_id}, {self.event_type}, {self.status})"
+
+
+class PushDelivery(models.Model):
+    """Persistent push/receipt outbox for the database-worker deployment."""
+    notification = models.OneToOneField(NotificationLog, on_delete=models.CASCADE)
+    available_at = models.DateTimeField(default=timezone.now)
+    attempts = models.PositiveIntegerField(default=0)
+    receipts = models.JSONField(default=dict, blank=True)

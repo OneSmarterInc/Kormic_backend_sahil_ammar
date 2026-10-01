@@ -24,6 +24,18 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Load ANTHROPIC_API_KEY / GITHUB_TOKEN / etc. from .env before any agent code runs.
 load_dotenv(BASE_DIR / ".env")
+from dotenv import dotenv_values
+_frontend_env = BASE_DIR.parent / 'kormic_frontend_ammar_sahil' / '.env'
+KORMIC_PUBLIC_URL = (dotenv_values(_frontend_env).get('KORMIC_API_ORIGIN_PUBLIC', '') or '').strip().rstrip('/') if _frontend_env.exists() else ''
+if KORMIC_PUBLIC_URL:
+    from urllib.parse import urlsplit
+    _public_parts = urlsplit(KORMIC_PUBLIC_URL)
+    if (_public_parts.scheme != 'https' or not _public_parts.hostname
+            or _public_parts.path or _public_parts.query or _public_parts.fragment
+            or _public_parts.username or 'YOUR_' in KORMIC_PUBLIC_URL):
+        raise ImproperlyConfigured('Frontend .env KORMIC_API_ORIGIN_PUBLIC must be a public HTTPS origin without a path.')
+    os.environ['GITHUB_OAUTH_REDIRECT_URI'] = KORMIC_PUBLIC_URL + '/api/auth/github/callback/'
+    os.environ['CLAIM_PAGE_URL'] = KORMIC_PUBLIC_URL + '/claim'
 
 # GitHub source analysis uses local Qwen first, then the existing Claude key.
 GITHUB_OLLAMA_BASE_URL = os.getenv("GITHUB_OLLAMA_BASE_URL", "http://127.0.0.1:11434")
@@ -124,6 +136,7 @@ INSTALLED_APPS = [
     'universities',
     'institutes',
     'notifications',
+    'agent_queries',
     'project_superuser',
     'url_discovery',
     'university_research',
@@ -183,18 +196,24 @@ UNIVERSITY_VECTOR_SEARCH = os.getenv("UNIVERSITY_VECTOR_SEARCH", "true").lower()
 AGENT_QUEUE_ENABLED = os.getenv("AGENT_QUEUE_ENABLED", "false" if DEBUG else "true").lower() == "true" and not TESTING
 AGENT_DISTRIBUTED_LIMITS = os.getenv("AGENT_DISTRIBUTED_LIMITS", "false" if DEBUG else "true").lower() == "true" and not TESTING
 AGENT_REDIS_URL = os.getenv("AGENT_REDIS_URL", "redis://localhost:6379/3")
+AGENT_CAPACITY_BACKEND = os.getenv("AGENT_CAPACITY_BACKEND", "redis").strip().lower()
+if AGENT_CAPACITY_BACKEND not in {'redis', 'database'}:
+    raise ImproperlyConfigured('AGENT_CAPACITY_BACKEND must be redis or database.')
 AGENT_MODEL_CONCURRENCY = max(1, int(os.getenv("AGENT_MODEL_CONCURRENCY", "16")))
 AGENT_MODEL_REQUESTS_PER_MINUTE = max(1, int(os.getenv("AGENT_MODEL_REQUESTS_PER_MINUTE", "120")))
 AGENT_STUDENT_REQUESTS_PER_MINUTE = max(1, int(os.getenv("AGENT_STUDENT_REQUESTS_PER_MINUTE", "10")))
 AGENT_UNIVERSITY_CONCURRENCY = max(1, int(os.getenv("AGENT_UNIVERSITY_CONCURRENCY", "4")))
 AGENT_MAX_UNIVERSITIES = max(1, min(10, int(os.getenv("AGENT_MAX_UNIVERSITIES", "5"))))
 AGENT_QUEUE_CAPACITY = max(1, int(os.getenv("AGENT_QUEUE_CAPACITY", "1000")))
+AGENT_QUEUE_BACKEND = os.getenv('AGENT_QUEUE_BACKEND', 'celery').lower()
+if AGENT_QUEUE_BACKEND not in {'celery', 'database'}:
+    raise ImproperlyConfigured('AGENT_QUEUE_BACKEND must be celery or database.')
 AGENT_JOB_TIMEOUT = 600
 AGENT_QUEUE_TIMEOUT = 900
 if not DEBUG and not TESTING and (not AGENT_QUEUE_ENABLED or not AGENT_DISTRIBUTED_LIMITS):
     raise ImproperlyConfigured("Production requires queued chat and distributed agent limits.")
 from corsheaders.defaults import default_headers
-CORS_ALLOW_HEADERS = (*default_headers, "idempotency-key")
+CORS_ALLOW_HEADERS = (*default_headers, "idempotency-key", "prefer")
 UNIVERSITY_EMBEDDING_CACHE_DIR = Path(os.getenv("UNIVERSITY_EMBEDDING_CACHE_DIR", str(BASE_DIR / ".embedding_cache")))
 
 if DB_ENGINE in {"sqlite", "sqlite3"}:
@@ -381,7 +400,8 @@ SIMPLE_JWT = {
 # state, and other cache-backed development flows continue to work without a
 # separate service. Production keeps Redis because it is shared across
 # gunicorn workers; LocMemCache is deliberately development-only.
-if DEBUG or TESTING:
+REDIS_CACHE_ENABLED = os.getenv('REDIS_CACHE_ENABLED', 'false').lower() == 'true'
+if TESTING or (DEBUG and not REDIS_CACHE_ENABLED):
     CACHES = {
         "default": {
             "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
@@ -403,7 +423,7 @@ else:
 CACHES["agent_config"] = ({
     "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
     "LOCATION": "university-config", "OPTIONS": {"MAX_ENTRIES": 128},
-} if DEBUG or TESTING else {
+} if TESTING or (DEBUG and not REDIS_CACHE_ENABLED) else {
     "BACKEND": "django_redis.cache.RedisCache",
     "LOCATION": os.getenv("AGENT_CONFIG_CACHE_URL", "redis://localhost:6380/0"),
     "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient", "SOCKET_TIMEOUT": 2, "SOCKET_CONNECT_TIMEOUT": 2},
@@ -503,11 +523,11 @@ EXPO_PUSH_ACCESS_TOKEN = os.environ.get("EXPO_PUSH_ACCESS_TOKEN", "")
 
 # Email configuration -- used to deliver password-reset OTP codes (see
 # accounts.email) and claim-invite emails (institutes_list.tasks).
-# dev → Ethereal only; no real emails sent.
-# prod → Real SMTP only; no Ethereal.
-# dual → Ethereal + real SMTP for non-test domains.
-# Default → dev when DEBUG=True, otherwise prod.
-# prod/dual → Require all real SMTP settings; missing values cause startup failure.
+# dev â†’ Ethereal only; no real emails sent.
+# prod â†’ Real SMTP only; no Ethereal.
+# dual â†’ Ethereal + real SMTP for non-test domains.
+# Default â†’ dev when DEBUG=True, otherwise prod.
+# prod/dual â†’ Require all real SMTP settings; missing values cause startup failure.
 EMAIL_MODE = os.getenv("EMAIL_MODE", "dev" if DEBUG else "prod").lower()
 
 FAKE_EMAIL_DOMAINS = {
@@ -582,7 +602,12 @@ AGENT_ALERT_EMAILS = [
 # Celery worker, not the portal frontends. Leave unset until that page is ready:
 # institutes_list.views.send_invites intentionally fails rather than emailing
 # an unconfigured destination.
-CLAIM_PAGE_URL = os.getenv("CLAIM_PAGE_URL", "")
+CLAIM_PAGE_URL = os.getenv("CLAIM_PAGE_URL", "").strip()
+# "database" uses manage.py invitation_worker; "celery" uses the existing broker.
+INVITE_DELIVERY_MODE = os.getenv("INVITE_DELIVERY_MODE", "celery").strip().lower()
+if INVITE_DELIVERY_MODE not in ("celery", "database"):
+    raise ImproperlyConfigured("INVITE_DELIVERY_MODE must be celery or database")
+STUDENT_WEB_CLAIM_URL = os.getenv("STUDENT_WEB_CLAIM_URL", "").strip()
 
 # Served on app.kormic.ai by the dedicated proxy in deploy/app-links.nginx.conf.
 # Use the Play app-signing certificate (not merely the upload certificate).

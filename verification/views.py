@@ -19,7 +19,7 @@ class VerificationStatusAPIView(APIView):
     """
     GET /api/verification/status/
     Full verification state, including every item (open and resolved).
-    Always recomputed live -- safe to poll after any reupload.
+    Reads the current evidence state without starting model inference.
 
     Triggering a fresh check and acting on flagged items (confirm/ignore/
     clarify) is chat-only now -- the student's personal agent runs
@@ -32,7 +32,7 @@ class VerificationStatusAPIView(APIView):
 
     def get(self, request):
         student_id = request.user.account.student_uuid
-        return Response(services.run_verification(student_id, user=request.user), status=status.HTTP_200_OK)
+        return Response(services.run_verification(student_id, user=request.user, allow_analysis=False), status=status.HTTP_200_OK)
 
 
 class VerificationItemListAPIView(APIView):

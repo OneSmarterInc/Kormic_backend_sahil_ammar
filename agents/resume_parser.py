@@ -205,6 +205,10 @@ class ResumeParserAgent:
     """Parse PDF/DOCX/TXT resumes into the internal Kormic student profile schema."""
 
     def parse(self, file_path: str) -> Dict[str, Any]:
+        from agents.resume_graph import extract_resume
+        return extract_resume(file_path)
+
+    def parse_legacy(self, file_path: str) -> Dict[str, Any]:
         path = Path(file_path)
         suffix = path.suffix.lower()
 
@@ -254,7 +258,9 @@ class ResumeParserAgent:
             if not response.content:
                 raise RuntimeError("Claude returned an empty response.")
 
-            return self._process(response.content[0].text)
+            result = self._process(response.content[0].text)
+            result['parser_engine'] = 'qwen' if str(response.model).startswith('qwen') else 'claude'
+            return result
 
         except Exception as exc:
             raise RuntimeError(
@@ -294,7 +300,9 @@ class ResumeParserAgent:
             if not response.content:
                 raise RuntimeError("Claude returned an empty response.")
 
-            return self._process(response.content[0].text)
+            result = self._process(response.content[0].text)
+            result['parser_engine'] = 'qwen' if str(response.model).startswith('qwen') else 'claude'
+            return result
 
         except Exception as exc:
             raise RuntimeError(

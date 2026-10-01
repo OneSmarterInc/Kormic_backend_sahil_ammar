@@ -241,7 +241,21 @@ def get_profile(student_id: str) -> Dict[str, Any]:
     if not as_uuid(student_id) or not StudentProfile.objects.filter(uuid=student_id).exists():
         raise FileNotFoundError(f"Profile not found for student_id: {student_id}")
 
-    return load_profile_data(student_id)
+    profile = load_profile_data(student_id)
+    profile['gaps'] = current_profile_gaps(profile)
+    return profile
+
+
+def current_profile_gaps(profile):
+    """Remove stale missing-field flags, retaining qualitative AI assessments."""
+    aliases = {'undergraduate_institution': ('institution',), 'undergraduate_major': ('major',),
+        'technical_skills': ('technical_skills', 'skills'), 'target_disciplines': ('disciplines',),
+        'work_experience_entries': ('work_experience_entries', 'experience'),
+        'research_experience': ('research_experience', 'research')}
+    def supplied(value):
+        return value is not None and value != '' and value != [] and value != {}
+    return [gap for gap in (profile.get('gaps') or [])
+        if not isinstance(gap, str) or not any(supplied(profile.get(key)) for key in aliases.get(gap, (gap,)))]
 
 
 def _normalize_gpa_to_4_scale(gpa: Any, gpa_scale: Any) -> Optional[float]:
@@ -699,7 +713,7 @@ def format_profile_response(profile: Dict[str, Any]) -> Dict[str, Any]:
     response["resume_notes"] = profile.get("notes") or ""
     consumed.add("notes")
 
-    response["gaps"] = profile.get("gaps") or []
+    response["gaps"] = current_profile_gaps(profile)
     consumed.add("gaps")
 
     response["conversation_insights"] = profile.get("conversation_insights") or []
@@ -1052,34 +1066,54 @@ def merge_resume_data_into_profile(student_id: str, extracted_data: Dict[str, An
     }
 
     for key, value in (extracted_data or {}).items():
+        if key in {'agent_trace', 'schema_version', 'warnings', 'document_sha256'}:
+            continue
         if value in [None, "", [], {}]:
             continue
         mapped_key = field_map.get(key, key)
-        profile[mapped_key] = value
+        if mapped_key in {'skills', 'technical_skills', 'soft_skills'} and isinstance(value, list):
+            from django_api.profile_sources import merge_skills
+            profile[mapped_key] = merge_skills(value, profile.get(mapped_key, []))
+        else:
+            profile[mapped_key] = value
 
     profile.setdefault("evidence", {})
     profile["evidence"]["resume"] = extracted_data
+    profile.setdefault('field_sources', {}).update({field_map.get(k, k): 'resume'
+        for k, v in extracted_data.items() if v not in (None, '', [], {})
+        and k not in {'agent_trace', 'schema_version', 'warnings', 'document_sha256'}})
     generate_summary(profile)
     save_profile_data(student_id, profile)
     return profile
 
 
+from pure_multi_agent.telemetry import traced_operation
+
+
+@traced_operation('CV Agent')
 def parse_resume(student_id: str, uploaded_file) -> Dict[str, Any]:
     validate_upload(uploaded_file, allowed_types=RESUME_ALLOWED_TYPES, label="Resume")
     file_path = save_uploaded_file(student_id, uploaded_file, "resumes")
 
     from agents.resume_parser import ResumeParserAgent
 
+    from pure_multi_agent.document_progress import report
+    report('extracting')
     parser = ResumeParserAgent()
     extracted_data = parser.parse(str(file_path))
-    updated_profile = merge_resume_data_into_profile(student_id, extracted_data)
-
-    resume_row = ResumeUpload.objects.create(
-        student=StudentProfile.objects.get(uuid=student_id),
-        file_path=relative_upload_path(file_path),
-        original_filename=Path(uploaded_file.name).name,
-        extracted_data=extracted_data,
-    )
+    from pure_multi_agent.job_recovery import boundary
+    boundary()
+    from django.db import transaction
+    report('saving')
+    with transaction.atomic():
+        student = StudentProfile.objects.select_for_update().get(uuid=student_id)
+        updated_profile = merge_resume_data_into_profile(student_id, extracted_data)
+        resume_row = ResumeUpload.objects.create(
+            student=student,
+            file_path=relative_upload_path(file_path),
+            original_filename=Path(uploaded_file.name).name,
+            extracted_data=extracted_data,
+        )
 
     return {
         "student_id": student_id,
@@ -1247,6 +1281,20 @@ def evaluate_university_eligibility(profile: Dict[str, Any], university: Any) ->
             field = "gre_total"
 
         if field:
+            if item.get('category') in ('gpa', 'test_score') and item.get('minimum') is not None:
+                required = _eligibility_number(item['minimum'])
+                maximum = _eligibility_number(item.get('maximum'))
+                scale = _eligibility_number(item.get('scale_maximum'))
+                actual = _eligibility_number(facts.get(field))
+                scale_matches = field != 'gpa' or _eligibility_number(facts.get('gpa_scale')) == scale
+                passed = required <= actual <= maximum if actual is not None and maximum is not None and scale_matches else None
+                if passed is not None:
+                    recognized += 1
+                    failed += not passed
+                details.append({'criterion': criterion, 'detail': detail, 'field': field,
+                    'required': required, 'maximum': maximum, 'scale': scale, 'actual': actual,
+                    'passed': passed, 'note': '' if scale_matches else 'Grading scales differ or are missing; an official equivalency is required.'})
+                continue
             numbers = [float(n) for n in re.findall(r"(?<![a-z])\d+(?:\.\d+)?", text)]
             if numbers:
                 required = numbers[0]
@@ -1441,6 +1489,7 @@ def get_priority_tier_counts(university_id: str) -> Dict[str, int]:
     return counts
 
 
+@traced_operation('LinkedIn Agent')
 def analyze_linkedin(student_id: str, uploaded_images: List[Any]) -> Dict[str, Any]:
     absolute_image_paths = []
     stored_image_paths = []
@@ -1452,38 +1501,44 @@ def analyze_linkedin(student_id: str, uploaded_images: List[Any]) -> Dict[str, A
 
     from agents.linkedin_agent import LinkedInAgent
 
+    from pure_multi_agent.document_progress import report
+    report('extracting')
     linkedin_agent = LinkedInAgent()
-    extracted = linkedin_agent.extract(absolute_image_paths)
+    from github_profiles.scheduling import CapacityBusy
+    from pure_multi_agent.capacity import AgentBusy
+    try:
+        extracted = linkedin_agent.extract(absolute_image_paths)
+    except (CapacityBusy, AgentBusy):
+        # The queued originals remain available; don't accumulate copies each
+        # time shared model capacity postpones this extraction.
+        for path in absolute_image_paths:
+            Path(path).unlink(missing_ok=True)
+        raise
+    from pure_multi_agent.job_recovery import boundary
+    boundary()
 
-    profile = load_profile_data(student_id)
-    profile["linkedin_profile"] = extracted
+    # Merge only LinkedIn fields under a short writer transaction. Saving a
+    # complete stale profile here can overwrite a concurrent GitHub result.
+    from django.db import transaction
+    from django.utils import timezone
+    from github_profiles.scheduling import retry_database
 
-    if not profile.get("name") and isinstance(extracted, dict) and extracted.get("name"):
-        profile["name"] = extracted["name"]
+    @retry_database
+    def persist():
+        with transaction.atomic():
+            StudentProfile.objects.filter(uuid=student_id).update(updated_at=timezone.now())
+            student = StudentProfile.objects.select_for_update().get(uuid=student_id)
+            student.linkedin_profile = extracted
+            student.evidence = {**(student.evidence or {}), 'linkedin': {'image_paths': stored_image_paths, 'result': extracted}}
+            profile = profile_row_to_dict(student)
+            student.summary = generate_summary(profile)
+            student.save(update_fields=['linkedin_profile', 'evidence', 'summary', 'updated_at'])
+            analysis = LinkedInAnalysis.objects.create(student=student, image_paths=stored_image_paths, extracted=extracted)
+            return profile, analysis
 
-    if not profile.get("country") and isinstance(extracted, dict) and extracted.get("location"):
-        profile["country"] = extracted["location"]
-
-    existing_skills = list(profile.get("skills", []) or [])
+    report('saving')
+    profile, analysis = persist()
     skills_added = []
-
-    if isinstance(extracted, dict):
-        for skill in extracted.get("skills", []) or []:
-            if skill and skill not in existing_skills:
-                existing_skills.append(skill)
-                skills_added.append(skill)
-
-    profile["skills"] = existing_skills[:80]
-    profile.setdefault("evidence", {})
-    profile["evidence"]["linkedin"] = {"image_paths": stored_image_paths, "result": extracted}
-    generate_summary(profile)
-    save_profile_data(student_id, profile)
-
-    analysis = LinkedInAnalysis.objects.create(
-        student=StudentProfile.objects.get(uuid=student_id),
-        image_paths=stored_image_paths,
-        extracted=extracted,
-    )
 
     return {
         "student_id": student_id,

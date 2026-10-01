@@ -3,6 +3,8 @@ from django.urls import path
 from notifications import views
 
 urlpatterns = [
+    path("clear-all/", views.NotificationClearView.as_view()),
+    path("<int:notification_id>/clear/", views.NotificationClearView.as_view()),
     path("", views.NotificationListView.as_view(), name="notification-list"),
     path("unread-count/", views.NotificationUnreadCountView.as_view(), name="notification-unread-count"),
     path("<int:notification_id>/read/", views.NotificationMarkReadView.as_view(), name="notification-mark-read"),

@@ -112,4 +112,7 @@ docker compose exec web python manage.py migrate
 
 ## Deployment
 
+For agent tools, confirmation rules, separate document sources and complete
+university records, see [AGENT_CHAT.md](AGENT_CHAT.md).
+
 Production uses the same application port, `8000`; Nginx proxies HTTPS traffic to `127.0.0.1:8000` on the server. For the complete production instructions, see [DEPLOYMENT.md](DEPLOYMENT.md).

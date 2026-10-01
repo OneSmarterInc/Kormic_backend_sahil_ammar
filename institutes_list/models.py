@@ -9,8 +9,10 @@ destination university with an AI-agent and knowledge base. Never conflate
 them.
 """
 import secrets
+import uuid
 
 from django.db import models
+from django.utils import timezone
 
 
 class InstituteStudentList(models.Model):
@@ -111,6 +113,7 @@ class ListedStudent(models.Model):
     )
     invite_delivery_error = models.CharField(max_length=500, blank=True, default="")
     invite_delivered_at = models.DateTimeField(null=True, blank=True)
+    invite_delivery_started_at = models.DateTimeField(null=True, blank=True)
 
     # OTP state: only ever a hash at rest; short-lived; attempt-limited.
     otp_hash = models.CharField(max_length=128, blank=True, default="")
@@ -135,3 +138,13 @@ class ListedStudent(models.Model):
 
     def __str__(self):
         return f"ListedStudent({self.email}, {self.status})"
+
+
+class ClaimCodeDelivery(models.Model):
+    """Durable local outbox. A secret-keyed nonce avoids storing plaintext OTPs."""
+
+    student = models.ForeignKey(ListedStudent, on_delete=models.CASCADE)
+    nonce = models.UUIDField(default=uuid.uuid4)
+    otp_hash = models.CharField(max_length=128)
+    expires_at = models.DateTimeField()
+    available_at = models.DateTimeField(default=timezone.now)

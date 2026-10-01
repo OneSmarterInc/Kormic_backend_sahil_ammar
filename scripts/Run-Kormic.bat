@@ -24,6 +24,8 @@ try {
     }
     $env:PATH = (Split-Path -Parent $node) + ';' + $env:PATH
     $env:PORT = '5173'
+    $env:PYTHONIOENCODING = 'utf-8'
+    $env:INVITE_DELIVERY_MODE = 'database'
     $processes = @(Get-CimInstance Win32_Process)
     function Get-PortOwner([int]$port) {
         $listener = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object LocalPort -eq $port | Select-Object -First 1
@@ -39,11 +41,12 @@ try {
     }
     $worker = $processes | Where-Object { $_.ExecutablePath -eq $python -and $_.CommandLine -match 'manage\.py\s+github_worker(?:\s|$)' } | Select-Object -First 1
     $researchWorker = $processes | Where-Object { $_.ExecutablePath -eq $python -and $_.CommandLine -match 'manage\.py\s+university_worker(?:\s|$)' } | Select-Object -First 1
+    $mailWorker = $processes | Where-Object { $_.ExecutablePath -eq $python -and $_.CommandLine -match 'manage\.py\s+invitation_worker(?:\s|$)' } | Select-Object -First 1
     if ($env:KORMIC_LAUNCH_MODE -eq '--check') {
         Write-Host "Python: $python"
         Write-Host "Node: $node"
         Write-Host "Backend running: $([bool]$backendOwner); frontend running: $([bool]$frontendOwner); worker running: $([bool]$worker)"
-        Write-Host "University research worker running: $([bool]$researchWorker)"
+        Write-Host "University research worker running: $([bool]$researchWorker); invitation worker running: $([bool]$mailWorker)"
         Write-Host 'Launcher checks passed. Ollama/Qwen is never started by this file.'
         exit 0
     }
@@ -67,6 +70,7 @@ try {
     if (!$backendOwner) { $started += Start-ServiceProcess 'backend' $python @('-u','manage.py','runserver','127.0.0.1:8000','--noreload') $backend }
     if (!$worker) { $started += Start-ServiceProcess 'github-worker' $python @('-u','manage.py','github_worker') $backend }
     if (!$researchWorker) { $started += Start-ServiceProcess 'university-worker' $python @('-u','manage.py','university_worker') $backend }
+    if (!$mailWorker) { $started += Start-ServiceProcess 'invitation-worker' $python @('-u','manage.py','invitation_worker') $backend }
     if (!$frontendOwner) { $started += Start-ServiceProcess 'frontend' $node @('scripts/serve.mjs') $frontend }
     function Wait-Http([string]$url, [int]$expected) {
         for ($attempt = 0; $attempt -lt 30; $attempt++) {

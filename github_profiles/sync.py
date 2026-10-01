@@ -21,6 +21,10 @@ def expire_interrupted_runs():
     recover_legacy_runs()
 
 
+from pure_multi_agent.telemetry import traced_operation
+
+
+@traced_operation('GitHub Agent', mode='queue_request')
 def queue_sync(student_id):
     connection = get_connection_for_student_id(student_id)
     if connection is None:
@@ -53,6 +57,9 @@ def pulse(run, progress=None):
     changed = owned(run).update(**fields)
     if not changed:
         raise ServiceError('This GitHub sync is no longer active. Reconnect or sync again.')
+    if progress:
+        from pure_multi_agent.telemetry import emit
+        emit('AGENT_PROGRESS', run.stage, outputs={'summary': progress, 'job_id': str(run.pk)})
 
 
 def save_snapshot(run):
@@ -80,6 +87,10 @@ def finish_profile(run, repos, projects):
         'frameworks_and_tools': [r['name'] for r in snapshot.technologies], 'domains': snapshot.domains,
         'raw_signal_summary': snapshot.statistics, 'coverage': snapshot.coverage, 'warnings': snapshot.warnings,
         'academic_guidance': snapshot.academic_guidance,
+        'projects': [{'title': p.get('full_name') or p.get('name', ''),
+            'description': p.get('description') or '',
+            'technologies': [skill['name'] for skill in (p.get('analysis') or {}).get('skills', []) if skill.get('name')]}
+            for p in projects],
         'strengths': [f"{r['name']} appears in inspected source in {r['projects']} projects." for r in snapshot.technologies[:4]],
         'honest_gaps': ['Source analysis is sampled; private work outside the OAuth grant and personal proficiency were not assessed.']}
     url = 'https://github.com/' + snapshot.identity['login']
@@ -88,7 +99,8 @@ def finish_profile(run, repos, projects):
         student = StudentProfile.objects.select_for_update().get(pk=snapshot.student_id)
         skills = list(student.skills or [])
         added = [s for s in [r['name'] for r in result['languages']] + result['frameworks_and_tools'] if s not in skills]
-        student.skills = list(dict.fromkeys(skills + added))[:80]
+        from django_api.profile_sources import merge_skills
+        student.skills = merge_skills(skills, added)
         student.github, student.github_assessment = url, result
         student.evidence = {**(student.evidence or {}), 'github': {'github_url': url, 'result': result}}
         student.save(update_fields=['github', 'github_assessment', 'skills', 'evidence', 'updated_at'])

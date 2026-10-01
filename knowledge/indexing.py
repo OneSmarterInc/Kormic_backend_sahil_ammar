@@ -13,7 +13,7 @@ def changed(sender, instance, **kwargs):
     if kwargs.get("raw"):
         return
     fields = kwargs.get("update_fields")
-    if fields and not set(fields) & {"topic", "content", "confidence", "source_type", "source_url", "group", "group_id"}:
+    if fields and not set(fields) & {"topic", "content", "details", "confidence", "source_type", "source_url", "group", "group_id"}:
         return
     if kwargs.get("signal") is post_save:
         UniversityKnowledgeEntry.objects.filter(pk=instance.pk).update(embedding=None, embedding_hash="", embedding_model="")

@@ -17,6 +17,7 @@ from .github import PROFILE_FIELDS, REPO_FIELDS
 from .overview import factual_overview, synthesize_overview
 from .redaction import redact
 from .scheduling import fenced, owned, release, LeaseLost, CapacityBusy
+from pure_multi_agent.telemetry import emit
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ def initialize(run, gh):
     identity = gh.get('/user')
     if identity.get('id') != run.profile.github_user_id:
         raise ServiceError('GitHub account changed. Reconnect before syncing.')
+    emit('AGENT_PROGRESS', 'GitHub authentication', outputs={'summary': 'GitHub connection verified. Account information received.'})
     run.profile.identity = {k: identity.get(k) for k in PROFILE_FIELDS}
     run.profile.warnings = []
     run.profile.academic_guidance = {}
@@ -74,6 +76,7 @@ def inventory(run, gh):
     batch = gh.get('/user/repos', {'sort': 'updated', 'per_page': 100, 'page': page})
     if not isinstance(batch, list):
         raise ServiceError('GitHub returned an invalid repository page.')
+    emit('AGENT_PROGRESS', 'Repository inventory', outputs={'summary': f'Received {len(batch)} repositories on page {page}. Saving repository information.', 'page': page, 'count': len(batch)})
     with fenced(run):
         for row in batch:
             repo, _ = GitHubRepository.objects.get_or_create(profile=run.profile, github_id=row['id'],
@@ -191,6 +194,8 @@ def finalize(run):
     with fenced(run):
         sync.save_snapshot(run)
         result = sync.finish_profile(run, repos, projects)
+        from notifications.services import notify_profile_processed
+        notify_profile_processed(result['student_id'], 'github', run.pk)
         owned(run).update(status='completed', progress='GitHub agent profile saved', result=result,
             stage='done', lease_token=None, lease_expires_at=None, updated_at=timezone.now())
 
@@ -214,6 +219,10 @@ def skip_failed_resource(run, error):
     sync.save_snapshot(run)
 
 
+from pure_multi_agent.telemetry import trace_github_slice
+
+
+@trace_github_slice
 def execute_slice(run):
     try:
         sync.pulse(run)
@@ -222,7 +231,10 @@ def execute_slice(run):
         if run.stage == 'finalize':
             finalize(run)
             return
-        gh = sync.GitHub(sync.get_valid_access_token(run.profile.connection), progress=lambda: sync.pulse(run))
+        emit('AGENT_PROGRESS', 'GitHub authentication', outputs={'summary': 'Checking the saved GitHub connection and obtaining authorized access.'})
+        access = sync.get_valid_access_token(run.profile.connection)
+        emit('AGENT_PROGRESS', 'GitHub authentication', outputs={'summary': 'Authorized GitHub access is ready. Starting the next collection step.'})
+        gh = sync.GitHub(access, progress=lambda: sync.pulse(run))
         step = {'collect': initialize, 'inventory': inventory, 'organizations': organizations,
             'activity': activity, 'details': details, 'agent': agent_step}[run.stage]
         try:

@@ -18,7 +18,7 @@ from institutes_list.tasks import (
 )
 
 
-@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend", INVITE_DELIVERY_MODE="celery")
 class ClaimOtpDeliveryTests(TestCase):
     def setUp(self):
         cache.clear()
@@ -182,6 +182,7 @@ class ClaimOtpDeliveryTests(TestCase):
         self.assertEqual(response.json(), {"sent": True})
 
 
+@override_settings(INVITE_DELIVERY_MODE="celery")
 class ClaimOtpRouteIsolationTests(TestCase):
     """The public claim flow must not require an authenticated account."""
 
@@ -218,3 +219,48 @@ class ClaimOtpRouteIsolationTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         mock_delay.assert_called_once()
+
+
+@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+                   INVITE_DELIVERY_MODE="database", CELERY_TASK_ALWAYS_EAGER=False)
+class DatabaseClaimDeliveryTests(TestCase):
+    setUp = ClaimOtpDeliveryTests.setUp
+
+    @mock.patch("institutes_list.claim_views.send_claim_otp_email_task.delay")
+    def test_worker_delivers_without_broker_or_shared_cache_and_code_works_on_both_routes(self, delay):
+        from .claim_outbox import work_once
+        from .models import ClaimCodeDelivery
+        import re
+
+        response = self.client.post("/api/claim/start/", {"token": self.student.claim_token}, format="json")
+        self.assertEqual(response.status_code, 200)
+        delay.assert_not_called()
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(ClaimCodeDelivery.objects.count(), 1)
+        cache.clear()  # Simulate the separate worker process's local cache.
+        self.assertTrue(work_once())
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertFalse(ClaimCodeDelivery.objects.exists())
+        code = re.search(r"code is (\d{6})", mail.outbox[0].body).group(1)
+        for route in ("/api/claim/verify/", "/claim/verify/"):
+            response = APIClient().post(route, {"token": self.student.claim_token, "code": code}, format="json")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["prefill"]["email"], self.student.email)
+
+    def test_resend_skips_old_delivery(self):
+        from .claim_outbox import work_once
+        for _ in range(2):
+            self.client.post("/api/claim/start/", {"token": self.student.claim_token}, format="json")
+        work_once()
+        self.assertEqual(len(mail.outbox), 0)
+        work_once()
+        self.assertEqual(len(mail.outbox), 1)
+
+    @mock.patch("institutes_list.tasks.send_mail", return_value=0)
+    def test_failed_delivery_stays_queued(self, send):
+        from .claim_outbox import work_once
+        from .models import ClaimCodeDelivery
+        self.client.post("/api/claim/start/", {"token": self.student.claim_token}, format="json")
+        work_once()
+        self.assertTrue(ClaimCodeDelivery.objects.exists())
+        self.assertFalse(work_once())

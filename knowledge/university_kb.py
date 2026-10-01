@@ -23,6 +23,7 @@ class KnowledgeEntry:
         learned_at: Optional[str] = None,
         times_used: int = 0,
         group_id: Optional[int] = None,
+        details: Optional[dict] = None,
     ):
         self.topic = str(topic or "").strip()
         self.content = str(content or "").strip()
@@ -32,6 +33,7 @@ class KnowledgeEntry:
         self.learned_at = learned_at or datetime.now().isoformat()
         self.times_used = int(times_used or 0)
         self.group_id = group_id
+        self.details = details or {}
         self.search_score = 0.0
         self.db_id: Optional[int] = None
 
@@ -45,6 +47,7 @@ class KnowledgeEntry:
     def to_dict(self) -> Dict[str, Any]:
         """Serialize entry for optional future persistence."""
         return {
+            "id": self.db_id,
             "topic": self.topic,
             "content": self.content,
             "source_type": self.source_type,
@@ -53,6 +56,7 @@ class KnowledgeEntry:
             "learned_at": self.learned_at,
             "times_used": self.times_used,
             "group_id": self.group_id,
+            "details": self.details,
         }
 
     @classmethod
@@ -67,6 +71,7 @@ class KnowledgeEntry:
             learned_at=data.get("learned_at"),
             times_used=data.get("times_used", 0),
             group_id=data.get("group_id"),
+            details=data.get("details"),
         )
 
     def __repr__(self) -> str:
@@ -150,6 +155,8 @@ class UniversityKnowledgeBase:
     }
 
     SOURCE_PRIORITY = {
+        "officer": 1.7,
+        "university_profile": 1.6,
         "human_verified": 1.6,
         "verified": 1.5,
         "seed": 1.3,
@@ -203,6 +210,7 @@ class UniversityKnowledgeBase:
                 learned_at=row.created_at.isoformat(),
                 times_used=row.times_used,
                 group_id=row.group_id,
+                details=row.details,
             )
             entry.db_id = row.id
             self.entries.append(entry)

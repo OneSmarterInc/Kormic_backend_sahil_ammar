@@ -44,6 +44,26 @@ KB_SYNCED_UNIVERSITY_FIELDS = {
 }
 
 
+class AdminUpdateUserSerializer(serializers.Serializer):
+    name = serializers.CharField(required=False, allow_blank=False, max_length=150)
+    email = serializers.EmailField(required=False, max_length=150)
+    is_active = serializers.BooleanField(required=False)
+
+    def validate_email(self, value):
+        account = self.context["account"]
+        value = value.strip().lower()
+        if (User.objects.exclude(pk=account.user_id).filter(email__iexact=value).exists()
+                or User.objects.exclude(pk=account.user_id).filter(username__iexact=value).exists()
+                or StudentProfile.objects.exclude(pk=account.student_profile_id).filter(email__iexact=value).exists()):
+            raise serializers.ValidationError("This email is already used by another account or profile.")
+        return value
+
+    def validate(self, attrs):
+        if not attrs:
+            raise serializers.ValidationError("Provide name, email, or is_active to update.")
+        return attrs
+
+
 class AdminCreateStudentSerializer(serializers.Serializer):
     """Superuser-driven equivalent of accounts.serializers.RegisterSerializer's
     student branch -- creates the login (User+Account) and a blank

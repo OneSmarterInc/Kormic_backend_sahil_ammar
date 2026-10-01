@@ -41,6 +41,28 @@ class UploadSecurityTests(TestCase):
         row = ResumeUpload.objects.get(pk=response.data["resume_id"])
         self.assertFalse(Path(row.file_path).is_absolute())
 
+    @mock.patch('agents.resume_parser.ResumeParserAgent')
+    def test_resume_identity_projects_and_evidence_are_saved_together(self, parser):
+        from django_api.models import StudentProfile
+        from django.contrib.auth import get_user_model
+        user = get_user_model().objects.get(email='upload-security@example.com')
+        original_email = user.email
+        parser.return_value.parse.return_value = {
+            'name': 'Resume Name', 'email': 'resume@example.test', 'skills': ['Python'],
+            'projects': [{'title': 'Atlas', 'description': 'Search application', 'technologies': ['Python']}],
+            'schema_version': 1, 'agent_trace': [{'tool': 'finish_resume', 'result': {'complete': True}}],
+        }
+        response = self.client.post('/api/profile/resume/', {'file': SimpleUploadedFile('resume.pdf', b'test', content_type='application/pdf')}, format='multipart')
+        self.assertEqual(response.status_code, 200)
+        profile = StudentProfile.objects.get(uuid=self.student_id)
+        self.assertEqual(profile.name, 'Resume Name')
+        self.assertEqual(profile.email, 'resume@example.test')
+        self.assertEqual(profile.projects[0]['title'], 'Atlas')
+        self.assertEqual(profile.extra_data['field_sources']['name'], 'resume')
+        self.assertEqual(ResumeUpload.objects.get(student=profile).extracted_data['schema_version'], 1)
+        user.refresh_from_db()
+        self.assertEqual(user.email, original_email)
+
     @mock.patch("agents.linkedin_agent.LinkedInAgent")
     def test_linkedin_rejects_unsupported_type(self, mock_agent):
         upload = SimpleUploadedFile("profile.gif", b"gif-data", content_type="image/gif")

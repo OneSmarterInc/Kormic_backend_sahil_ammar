@@ -36,6 +36,17 @@ def search_registered(query='', country='', location=''):
     return rows.order_by('name')
 
 
+def search_public(query=''):
+    """Search saved names and verified discovery aliases, including pending crawls."""
+    rows = PublicUniversity.objects.all()
+    if not query.strip():
+        return rows
+    terms = [t for t in re.findall(r'\w+', query.casefold()) if t not in {'the', 'of', 'university'}]
+    for term in terms:
+        rows = rows.filter(Q(name__icontains=term) | Q(discovery_sources__icontains=term))
+    return rows
+
+
 def reference(row):
     if isinstance(row, PublicUniversity):
         dates = [row.fetched_at] if row.fetched_at else []
@@ -77,6 +88,10 @@ def add_reference(ctx, row):
     ref = reference(row)
     refs = ctx.setdefault('university_references', {})
     refs[ref['id']] = ref
+    if isinstance(row, PublicUniversity) and ref['stale'] and not ref['processing']:
+        ctx.setdefault('research_after_reply', set()).add(str(row.pk))
+    elif ref.get('research_id') and ref.get('stale') and not ref.get('processing'):
+        ctx.setdefault('research_after_reply', set()).add(ref['research_id'].split(':', 1)[1])
     return ref
 
 
@@ -128,8 +143,80 @@ def retrieve(row, question=''):
         for token in tokens:
             query |= Q(topic__icontains=token) | Q(content__icontains=token)
         selected = list(facts.filter(query)[:10]) if tokens else list(facts[:10])
-    return {'university': reference(row), 'facts': [{'topic': f.topic, 'content': f.content,
-        'source_url': f.page.url, 'source_quote': f.source_quote, 'fetched_at': f.fetched_at.isoformat()} for f in selected],
-        'courses': list(row.courses.values('name', 'level', 'duration', 'study_mode', 'tuition', 'currency', 'requirements', 'page__url', 'fetched_at')[:30]),
+    from .agent import normalize
+    selected = [fact for fact in selected if fact.page.provider in ('claude_direct', 'scraper_extracted') or normalize(fact.source_quote) in normalize(fact.page.content)]
+    return {'university': reference(row), 'provider_answer':(row.coverage or {}).get('provider_answer'), 'facts': [{'topic': f.topic, 'content': f.content,
+          'source_url': f.page.url, 'source_title': f.page.title, 'source_quote': f.source_quote, 'fetched_at': f.fetched_at.isoformat()} for f in selected],
+        'courses': list(row.courses.values('name', 'level', 'duration', 'study_mode', 'tuition', 'currency', 'seats', 'academic_year', 'requirements', 'source_quote', 'page__url', 'fetched_at')[:100]),
         'intakes': list(row.intakes.values('course_name', 'term', 'year', 'deadline', 'applicant_scope', 'page__url', 'fetched_at')[:30]),
         'limits': 'Website coverage is partial. Only documented details are known; empty fields are unknown.'}
+
+
+def save_live_page(row, page, question=''):
+    """Persist public page excerpts; never store the student's question in shared research."""
+    from .models import UniversityPage
+    from .agent import normalize
+    now = timezone.now()
+    content = page['content']
+    if page.get('evidence_provider') == 'claude_web_search':
+        existing = UniversityPage.objects.filter(university=row, url=page['url']).first()
+        if existing and content not in existing.content:
+            content = existing.content + '\n' + content
+    saved, _ = UniversityPage.objects.update_or_create(university=row, url=page['url'], defaults={
+        'title':page.get('title','')[:500], 'content':content,
+        'content_hash':hashlib.sha256(content.encode()).hexdigest(), 'fetched_at':now})
+    words = [word for word in re.findall(r'\w{4,}', question.lower()) if word not in {'about','which','there','their','tell','information','please','also'}]
+    offsets = sorted({content.lower().find(word) for word in words if word in content.lower()})[:3]
+    for offset in offsets or [0]:
+        quote = content[max(0,offset-160):offset+900]
+        if len(quote.strip()) < 8:
+            continue
+        UniversityFact.objects.get_or_create(university=row, page=saved, source_quote=quote,
+            defaults={'topic':'Official page information', 'content':quote, 'fetched_at':now})
+    return saved
+
+
+def publish_delivered_evidence(job_id):
+    """Idempotent cache update, called only after the client receives the reply."""
+    from django_api.models import AgentJob
+    with transaction.atomic():
+        job = AgentJob.objects.select_for_update().get(pk=job_id)
+        if job.status != 'completed':
+            return False
+        pending = job.payload.get('university_cache_pending')
+        if not pending:
+            return True
+        for item in pending.get('pages', []):
+            row = PublicUniversity.objects.select_for_update().get(pk=item['university_id'])
+            direct = item['page'].get('evidence_provider') == 'claude_direct'
+            if not direct:
+                save_live_page(row, item['page'], 'fees tuition seats hostel amenities courses admission scholarship placement')
+            coverage = dict(row.coverage or {})
+            if item['page'].get('provider_answer'):
+                coverage['provider_answer'] = item['page']['provider_answer']
+            providers = dict(coverage.get('source_providers', {}))
+            providers[item['page']['url']] = item['page'].get('evidence_provider', 'scraper')
+            coverage['source_providers'] = providers
+            row.coverage = coverage
+            if direct:
+                # Cache model answers separately: they are not scraped pages or
+                # independently verified university facts.
+                row.fetched_at = timezone.now()
+            row.save(update_fields=['coverage', 'fetched_at'] if direct else ['coverage'])
+        for uid in pending.get('universities', []):
+            row = PublicUniversity.objects.select_for_update().get(pk=uid)
+            coverage = dict(row.coverage or {})
+            unavailable = dict(coverage.get('unavailable_fields', {}))
+            for field in pending.get('checked', []):
+                unavailable.pop(field, None)
+            unavailable.update({field:'N/A' for field in pending.get('missing', [])})
+            coverage['unavailable_fields'] = unavailable
+            row.coverage = coverage
+            row.save(update_fields=['coverage'])
+        for uid in pending.get('research', []):
+            queue_research(PublicUniversity.objects.get(pk=uid))
+        payload = dict(job.payload)
+        payload.pop('university_cache_pending', None)
+        job.payload = payload
+        job.save(update_fields=['payload'])
+    return True

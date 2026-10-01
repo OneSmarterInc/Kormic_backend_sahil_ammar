@@ -62,6 +62,7 @@ class Inference:
             system = '\n'.join(m['content'] for m in messages if m['role'] == 'system')
             with capacity('claude'):
                 response = _get_anthropic_client().messages.create(
+                    _skip_qwen=True,
                     model=MODEL, max_tokens=2400,
                     system=system + '\nReturn only JSON matching this schema: ' + json.dumps(schema),
                     tools=[{'name': 'structured_response', 'description': 'Return the requested validated structured result.', 'input_schema': schema}],

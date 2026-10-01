@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from copy import deepcopy
 import os
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -132,6 +133,19 @@ def _load_context(student_id: str) -> Dict[str, Any]:
 
 
 def _persist_context(student_id: str, ctx: Dict[str, Any]) -> None:
+    """Retry only idempotent persistence, never the model or executed tools."""
+    import time
+    from django.db import OperationalError
+    for attempt in range(5):
+        try:
+            return _persist_context_once(student_id, ctx)
+        except OperationalError as exc:
+            if not any(word in str(exc).lower() for word in ('locked', 'busy')) or attempt == 4:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+
+def _persist_context_once(student_id: str, ctx: Dict[str, Any]) -> None:
     from django_api.models import AriaMemory, StudentProfile
     from django_api.services import _apply_dict_to_profile, profile_row_to_dict
     from django.db import transaction
@@ -153,6 +167,10 @@ def _persist_context(student_id: str, ctx: Dict[str, Any]) -> None:
     # Background extraction may complete during a chat turn. Merge only fields
     # changed by this turn into the latest locked profile, preserving its work.
     with transaction.atomic():
+        from django.db import connection
+        from django.db.models import F
+        if connection.vendor == 'sqlite':
+            StudentProfile.objects.filter(uuid=student_id).update(id=F('id'))
         row = StudentProfile.objects.select_for_update().get(uuid=student_id)
         _apply_dict_to_profile(row, merge_changes(baseline, ctx['student_profile'], profile_row_to_dict(row)))
         row.save()
@@ -202,6 +220,8 @@ def reset_conversation(student_id: str) -> None:
     """
     key = student_id
     _checkpointer.delete_thread(key)
+    from pure_multi_agent.change_proposals import clear_conversation
+    clear_conversation(student_id=student_id)
 
 
 def seed_conversation(student_id: str, turns: List[Tuple[str, str]]) -> None:
@@ -247,13 +267,21 @@ class TurnResult(tuple):
         return value
 
 
+from pure_multi_agent.activity import track_activity
+
+@track_activity("student")
 def run_turn(
-    student_id: str, message: str, image_blocks: Optional[List[Dict[str, Any]]] = None, *, raise_errors=False, resume_state=None
+    student_id: str, message: str, image_blocks: Optional[List[Dict[str, Any]]] = None, *, raise_errors=False, resume_state=None, message_id=None
 ) -> tuple[str, str]:
     ctx = _load_context(student_id)
     ctx['current_message'] = message
-    resume_keys = ('university_references', 'university_candidates', 'known_web_urls', 'read_web_pages',
-        'research_after_reply', 'model_steps', 'tool_errors', 'web_search_count', 'pages_read', 'university_reads', 'document_availability')
+    from pure_multi_agent.document_evidence import unfinished_documents
+    ctx['documents_read'] = unfinished_documents(student_id)
+    ctx['turn_id'] = str(uuid.uuid4())
+    from pure_multi_agent.document_evidence import manifest
+    ctx['chat_attachments'] = manifest(student_id, message_id) if message_id else []
+    resume_keys = ('turn_id', 'documents_read', 'chat_attachments', 'change_proposals', 'university_references', 'university_candidates', 'university_resolution_turn', 'university_lookup_required', 'university_discovery_pending', 'university_evidence_required', 'university_answer_evidence', 'university_source_search_required', 'university_pages_pending', 'university_fetch_failures', 'university_identity_attempts', 'university_fallback_domains', 'university_discovery_blocked', 'last_provider', 'last_model', 'known_web_urls', 'read_web_pages',
+        'research_after_reply', 'university_cache_after_reply', 'university_missing_fields', 'completion_reviews', 'model_steps', 'tool_errors', 'web_search_count', 'pages_read', 'university_reads', 'document_availability')
     if resume_state is not None:
         ctx.update({key: value for key, value in resume_state.items() if key in resume_keys})
         for key in ('known_web_urls', 'research_after_reply'):
@@ -275,7 +303,9 @@ def run_turn(
     )
 
     agent = build_student_agent(ctx, system_prompt, _checkpointer)
-    tracer = GraphTraceLogger(label=ctx["canonical_student_id"])
+    from pure_multi_agent.telemetry import current
+    current()['actor'] = f"{ctx['agent_name']} (Student Agent)"
+    tracer = GraphTraceLogger(label=ctx["canonical_student_id"], actor=current()['actor'])
 
    
     human_content: Any = message
@@ -301,7 +331,7 @@ def run_turn(
             # appending/replaying the user's message or previous tools.
             _persist_context(student_id, ctx)
             state = {key: list(ctx[key]) if isinstance(ctx[key], set) else ctx[key] for key in resume_keys if key in ctx}
-            raise ResumeTurnLater(state, getattr(exc, 'delay', 10)) from exc
+            raise ResumeTurnLater(state, getattr(exc, 'delay', 10), str(exc)) from exc
         if raise_errors:
             raise
         logger.exception("Agent turn failed for student %s", ctx["canonical_student_id"])
@@ -316,27 +346,21 @@ def run_turn(
         except Exception:
             logger.exception("Failed to queue agent-error alert task")
         reply = (
-            "I hit an error while generating the response, likely a token limit "
-            "issue on our side. Please try again in a little while."
+            "I couldn’t complete this request because the AI service encountered an error. "
+            "Please try again. Any previously saved university queries are still available in Queries."
         )
 
+    # Missing-value storage tokens are not student-facing prose.
+    import re
+    reply = re.sub(r'(?<![\w/])N/A(?![\w/])', 'not available', reply)
     preprocessing.update_memory(ctx, message, reply)
     _persist_context(student_id, ctx)
 
     if VERBOSE:
         console.print(f"[bold magenta]=== turn complete ({tracer._step} model call(s)) ===[/bold magenta]\n")
 
-    # Schedule website research only after the student response has been
-    # generated; acquisition/crawl/model calls never block response delivery.
-    from university_research.models import PublicUniversity
-    from university_research.services import queue_research, add_reference
-    from accounts.models import Account
-    account = Account.objects.filter(student_profile__uuid=student_id).select_related('user').first()
-    for research_id in ctx.get('research_after_reply', set()):
-        try:
-            row = PublicUniversity.objects.get(pk=research_id)
-            queue_research(row, account.user if account else None)
-            add_reference(ctx, row.registered_university if row.registered_university_id else row)
-        except Exception:
-            logger.exception('Could not queue university research')
-    return TurnResult(ctx['agent_name'], reply, {'university_references': list(ctx.get('university_references', {}).values())})
+    from pure_multi_agent.change_proposals import conversation_state
+    turn_result = TurnResult(ctx['agent_name'], reply, {'model_provider': ctx.get('last_provider', ''), 'model_name': ctx.get('last_model', ''), 'university_references': list(ctx.get('university_references', {}).values()),
+        'change_proposals': list(ctx.get('change_proposals', {}).values()), **conversation_state(ctx)})
+    turn_result.university_cache = {'pages':list(ctx.get('university_cache_after_reply', {}).values()), 'missing':ctx.get('university_missing_fields', []), 'research':list(ctx.get('research_after_reply', [])), 'checked':ctx.get('university_checked_fields', []), 'universities':[uid.split(':',1)[1] for uid in ctx.get('university_candidates', []) if uid.startswith('public:')]}
+    return turn_result
