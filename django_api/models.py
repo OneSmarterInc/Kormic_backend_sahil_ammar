@@ -777,7 +777,7 @@ class AgentIdentity(models.Model):
     agent_name = models.CharField(max_length=255, blank=True, default="")
     
     # MeshKor Cryptographic Agent Identity Number
-    ain = models.CharField(max_length=120, null=True, blank=True, help_text="MeshKor Cryptographic Identity")
+    ain = models.CharField(max_length=255, null=True, blank=True, help_text="MeshKor Cryptographic Identity")
     
     created_at = models.DateTimeField(auto_now_add=True)
 

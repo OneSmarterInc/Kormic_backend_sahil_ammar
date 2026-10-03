@@ -37,7 +37,7 @@ class VerificationCheck(models.Model):
     engine = models.CharField(max_length=20, choices=Engine.choices, blank=True, default="")
     
     # MeshKor Cryptographic Agent Identity Number
-    ain = models.CharField(max_length=120, null=True, blank=True, help_text="MeshKor Cryptographic Identity")
+    ain = models.CharField(max_length=255, null=True, blank=True, help_text="MeshKor Cryptographic Identity")
     
     last_analyzed_at = models.DateTimeField(null=True, blank=True)
     input_signature = models.CharField(max_length=64, blank=True, default="")

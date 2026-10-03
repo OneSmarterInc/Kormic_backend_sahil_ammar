@@ -35,3 +35,10 @@ MANIFEST_VERIFICATION = {
     "read_scopes": ["profile", "resume", "github", "linkedin"],
     "allowed_egress": ["api.github.com", "api.anthropic.com"],
 }
+
+import contextvars
+current_ain = contextvars.ContextVar('current_ain', default=None)
+
+import meshkor.integrations.kormic
+# Overriding strict 0.2s fail-open timeout for Pilot environment (AWS geographic distance)
+meshkor.integrations.kormic.NETWORK_TIMEOUT_SEC = 5.0

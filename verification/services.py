@@ -348,7 +348,7 @@ def run_verification(student_id: str, user: Any = None, *, force: bool = False, 
         try:
             from agents.meshkor_client import meshkor_client, MANIFEST_VERIFICATION, CONSTITUTION_HASH
             check.ain = meshkor_client.enroll_agent(
-                agent_class="BLD.Verification_agent",
+                agent_class="BLD",
                 instance_ref=f"verif_{check.id}",
                 manifest=MANIFEST_VERIFICATION,
                 constitution_hash=CONSTITUTION_HASH

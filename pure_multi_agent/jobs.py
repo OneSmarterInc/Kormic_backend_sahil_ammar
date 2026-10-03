@@ -170,6 +170,19 @@ def guarded_history(fn):
 
 def run(job):
     """Execute once; recovery never blindly replays a partially executed turn."""
+    try:
+        from agents.identity_registry import get_or_create_identity
+        from agents.meshkor_client import current_ain
+        if job.kind == "university":
+            identity = get_or_create_identity("university", job.university_id)
+            if identity.ain: current_ain.set(identity.ain)
+        elif job.kind in ("student", "student_edit"):
+            identity = get_or_create_identity("student", job.student_id)
+            if identity.ain: current_ain.set(identity.ain)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"MeshKor Agent Enrollment Failed: {e}")
+
     if job.kind in ('resume', 'linkedin'):
         from pure_multi_agent.document_jobs import run_document
         return run_document(job)
