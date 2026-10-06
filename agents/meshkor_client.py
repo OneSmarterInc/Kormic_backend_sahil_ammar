@@ -11,34 +11,23 @@ meshkor_client = KormicMeshKorIntegration()
 
 # Finding 2a: Real constitution hash computed once at module load
 CONSTITUTION_PATH = Path(settings.BASE_DIR) / "personas" / "aria_constitution.py"
-try:
-    CONSTITUTION_HASH = hashlib.sha256(CONSTITUTION_PATH.read_bytes()).hexdigest()
-except Exception as e:
-    logger.warning(f"Could not compute constitution hash: {e}")
-    CONSTITUTION_HASH = "pilot_hash_1"
+CONSTITUTION_HASH = hashlib.sha256(CONSTITUTION_PATH.read_bytes()).hexdigest()
 
 # Finding 2b: Real-schema manifests per class
 MANIFEST_STUDENT = {
-    "allowed_tools": ["advising_tools", "profile_tools", "roadmap_tools"],
+    "allowed_tools": [],
     "read_scopes": ["student_profile", "chat_history", "academic_data"],
-    "allowed_egress": ["api.openai.com", "api.anthropic.com"],
+    "allowed_egress": ["host.docker.internal"],
 }
 
 MANIFEST_UNIVERSITY = {
-    "allowed_tools": ["university_tools", "knowledge_base", "officer_tools"],
+    "allowed_tools": [],
     "read_scopes": ["university_data", "student_context"],
-    "allowed_egress": ["api.openai.com", "api.anthropic.com"],
+    "allowed_egress": ["host.docker.internal"],
 }
 
 MANIFEST_VERIFICATION = {
-    "allowed_tools": ["verification_engine"],
+    "allowed_tools": [],
     "read_scopes": ["profile", "resume", "github", "linkedin"],
-    "allowed_egress": ["api.github.com", "api.anthropic.com"],
+    "allowed_egress": ["api.github.com", "host.docker.internal"],
 }
-
-import contextvars
-current_ain = contextvars.ContextVar('current_ain', default=None)
-
-import meshkor.integrations.kormic
-# Overriding strict 0.2s fail-open timeout for Pilot environment (AWS geographic distance)
-meshkor.integrations.kormic.NETWORK_TIMEOUT_SEC = 5.0

@@ -33,7 +33,7 @@ def get_or_create_identity(owner_type: str, owner_id: str, agent_name: str = "")
             manifest = MANIFEST_STUDENT if owner_type == "student" else MANIFEST_UNIVERSITY
             # Finding 2b / Finding 2a / Finding 2c applied
             identity.ain = meshkor_client.enroll_agent(
-                agent_class="STU" if owner_type == "student" else "UNI",
+                agent_class=f"BLD.{owner_type}_agent".capitalize(),
                 instance_ref=f"agent_{identity.agent_id}",
                 manifest=manifest,
                 constitution_hash=CONSTITUTION_HASH

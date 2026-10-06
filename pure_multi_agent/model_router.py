@@ -36,7 +36,7 @@ def qwen_slot(estimate):
             if time.monotonic() >= deadline:
                 raise
             from pure_multi_agent.activity import publish
-            publish('Waiting for the local AI to become availableÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦')
+            publish('Waiting for the local AI to become available…')
             time.sleep(1)
             continue
         with stack:
@@ -105,21 +105,6 @@ def _validate(reply, tools, *, validate_arguments=True, require_tools=False):
 
 
 def invoke(messages, tools=(), *, force_claude=False, require_tools=False, json_schema=None):
-    try:
-        from agents.meshkor_client import meshkor_client
-        import meshkor.integrations.kormic
-        meshkor.integrations.kormic.NETWORK_TIMEOUT_SEC = 5.0
-        for m in messages:
-            if getattr(m, 'type', '') == 'human':
-                c = str(m.content) if not isinstance(m.content, str) else m.content
-                if len(c) > 0:
-                    ain_val = __import__('agents.meshkor_client', fromlist=['current_ain']).current_ain.get()
-                    if ain_val: meshkor_client.record_event(ain_val,
-                        event_description="[MESHKOR SDK] TRIPWIRE: Evaluating inference request.",
-                        event_data={"prompt": c[:100]}
-                    )
-    except Exception as e:
-        pass
     # Text-only Qwen cannot interpret an uploaded image. Claude can.
     vision = any(isinstance(m.content, list) and any(isinstance(b, dict) and b.get('type') in ('image', 'image_url', 'document') for b in m.content) for m in messages)
     def token_estimate(content):

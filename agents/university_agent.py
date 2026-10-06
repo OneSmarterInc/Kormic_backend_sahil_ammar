@@ -758,16 +758,6 @@ Return ONLY the reformatted answer text. No JSON, no preamble.
     ) -> Dict[str, Any]:
         # Finding 2c: Receiver-side validate (Advisory)
         try:
-            if student_context and student_context.get("ain"):
-                import logging
-                from meshkor import ReceiverClient
-                # In Advisory mode, we just validate and log, we don't refuse.
-                logger = logging.getLogger(__name__)
-                # We need the pedigree to validate fully, but ReceiverClient.validate() usually needs the identity/manifest.
-                # Assuming ReceiverClient can validate an AIN against HQ:
-                logger.info(f"Advisory Receiver Validate called for AIN {student_context['ain']}")
-        except Exception:
-            pass
         """
         Answer a question from Aria or direct mode.
 

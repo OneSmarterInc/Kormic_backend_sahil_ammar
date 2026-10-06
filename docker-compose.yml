@@ -1,4 +1,4 @@
-﻿x-app: &app
+x-app: &app
   build: .
   volumes:
     - .:/app
@@ -16,7 +16,7 @@
   env_file:
     - .env
   environment:
-    DJANGO_DEBUG: "true"
+    DJANGO_DEBUG: "false"
     DB_ENGINE: postgresql
     GITHUB_OLLAMA_BASE_URL: http://host.docker.internal:11434
     STUDENT_OLLAMA_BASE_URL: http://host.docker.internal:11434
