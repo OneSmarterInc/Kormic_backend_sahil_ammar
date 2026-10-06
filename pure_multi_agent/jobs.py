@@ -206,7 +206,11 @@ def run(job):
     if cache.get('pages') or cache.get('missing') or cache.get('research'):
         from django.core.serializers.json import DjangoJSONEncoder
         import json
-        AgentJob.objects.filter(pk=job.pk).update(payload={**job.payload, 'university_cache_pending':json.loads(json.dumps(cache, cls=DjangoJSONEncoder))})
+        from django.db import transaction
+        with transaction.atomic():
+            current = AgentJob.objects.select_for_update().get(pk=job.pk)
+            current.payload = {**current.payload, 'university_cache_pending':json.loads(json.dumps(cache, cls=DjangoJSONEncoder))}
+            current.save(update_fields=['payload'])
     name, reply = turn_result
     turn_meta = getattr(turn_result, "metadata", {})
     pending = _new_pending_query(job.student_id, prior_queries)

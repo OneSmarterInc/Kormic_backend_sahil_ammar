@@ -59,9 +59,27 @@ def execute_agent_job(self, job_id):
             except ResumeTurnLater as exc:
                 from datetime import timedelta
                 from django.conf import settings
-                payload = {**job.payload, 'resume_state': exc.state}
                 available = timezone.now() + timedelta(seconds=exc.delay if settings.AGENT_QUEUE_BACKEND == 'database' else 0)
-                AgentJob.objects.filter(pk=job_id, status='processing', execution_token=token).update(status='queued', payload=payload, dispatched_at=available, execution_token=None)
+                with transaction.atomic():
+                    current = AgentJob.objects.select_for_update().filter(pk=job_id, status='processing', execution_token=token).first()
+                    if current is None:
+                        return
+                    attempts = int(current.payload.get('capacity_resume_attempts', 0)) + 1
+                    if attempts > 20 or (timezone.now() - current.created_at).total_seconds() > 600:
+                        current.status = 'failed'
+                        current.completed_at = timezone.now()
+                        current.execution_token = None
+                        current.error = 'The AI service could not recover in time. Please retry; completed changes have been retained.'
+                        current.save(update_fields=['status', 'completed_at', 'execution_token', 'error'])
+                        return
+                    # Keep research budget/result written during this execution.
+                    # The job object loaded before the turn has a stale payload.
+                    import json
+                    from django.core.serializers.json import DjangoJSONEncoder
+                    current.payload = json.loads(json.dumps({**current.payload, 'resume_state': exc.state,
+                        'capacity_resume_attempts': attempts}, cls=DjangoJSONEncoder))
+                    current.status, current.dispatched_at, current.execution_token = 'queued', available, None
+                    current.save(update_fields=['payload', 'status', 'dispatched_at', 'execution_token'])
                 if settings.AGENT_QUEUE_BACKEND != 'database':
                     queue = 'agent_documents' if job.kind in ('resume', 'linkedin') else 'agent_chat'
                     execute_agent_job.apply_async(args=[str(job_id)], countdown=exc.delay, queue=queue, retry=False)

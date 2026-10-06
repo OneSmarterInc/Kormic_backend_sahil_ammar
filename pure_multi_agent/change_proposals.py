@@ -18,7 +18,7 @@ from django_api.services import profile_row_to_dict, _apply_dict_to_profile
 
 STUDENT_FIELDS = {
     'name', 'institution', 'major', 'program', 'gpa', 'gpa_scale', 'gre_quant',
-    'gre_verbal', 'toefl', 'ielts', 'budget', 'graduation_year', 'work_months',
+    'gre_verbal', 'toefl', 'ielts', 'budget', 'budget_text', 'graduation_year', 'work_months',
     'research', 'skills', 'projects', 'career_goals', 'research_interests',
     'preferences.preferred_intake', 'preferences.preferred_locations', 'preferences.funding_required',
 }
@@ -187,6 +187,10 @@ def update_student(ctx, values):
     # GPA and its scale form one fact; never save half of a conflicting pair.
     if {'gpa', 'gpa_scale'} & conflicts.keys():
         for key in ('gpa', 'gpa_scale'):
+            if key in missing:
+                conflicts[key] = missing.pop(key)
+    if {'budget', 'budget_text'} & conflicts.keys():
+        for key in ('budget', 'budget_text'):
             if key in missing:
                 conflicts[key] = missing.pop(key)
     applied = None

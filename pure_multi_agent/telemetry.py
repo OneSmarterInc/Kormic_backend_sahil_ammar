@@ -8,12 +8,25 @@ import logging
 
 logger = logging.getLogger(__name__)
 _current = ContextVar('agent_audit_context', default=None)
+_diagnostic = ContextVar('agent_diagnostic_context', default=False)
+
+
+@contextmanager
+def diagnostic_scope():
+    """Use for manual smoke checks so they never masquerade as student runs."""
+    token = _diagnostic.set(True)
+    try:
+        yield
+    finally:
+        _diagnostic.reset(token)
 
 
 def safe_data(value):
     if isinstance(value, dict):
         return {str(k): '[redacted]' if any(word in str(k).lower() for word in
                 ('password', 'token', 'secret', 'authorization', '_media_blocks'))
+                and not (str(k) in {'input_tokens', 'output_tokens', 'total_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'} and type(v) is int)
+                and not (str(k) in {'input_token_details', 'output_token_details'} and isinstance(v, dict))
                 else safe_data(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [safe_data(v) for v in value]
@@ -27,6 +40,9 @@ def current():
 
 
 def emit(action, target='', *, inputs=None, outputs=None, actor=None, student_id=None, run_id=None):
+    if _diagnostic.get():
+        logger.debug('Diagnostic telemetry: %s %s', action, target)
+        return
     ctx = current()
     if not ctx and not actor:
         return

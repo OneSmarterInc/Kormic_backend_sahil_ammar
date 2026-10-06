@@ -24,6 +24,8 @@ def scoped_queries(account):
         return rows.filter(conversation__student_id=account.student_profile_id)
     if account and account.role == "university" and account.university_id:
         return rows.filter(conversation__university_id=account.university_id)
+    if account and account.role == "department" and account.university_id:
+        return rows.filter(conversation__university_id=account.university_id, group__in=account.departments.filter(university_id=account.university_id))
     raise PermissionDenied("Student or university account required.")
 
 
@@ -35,10 +37,40 @@ def serialize(row):
         "answer_scope": row.answer_scope, "created_at": row.created_at, "answered_at": row.answered_at}
 
 
+def combined_student_queries(request, account, agent_rows, status, search):
+    """One student inbox, retaining each record's existing answer workflow."""
+    from django_api.models import PendingQuery
+    from django_api.views import serialize_pending_query
+    legacy = PendingQuery.objects.filter(university_id=account.university_uuid).select_related('group')
+    if account.role == 'department':
+        legacy = legacy.filter(group__in=account.departments.filter(university_id=account.university_id))
+    states = {'unanswered': 'pending', 'answered': 'resolved', 'archived': 'ignored'}
+    if status:
+        legacy = legacy.filter(status=states[status])
+    if search:
+        legacy = legacy.filter(Q(question__icontains=search) | Q(answer__icontains=search) |
+            Q(student_name__icontains=search) | Q(agent_name__icontains=search) | Q(routed_to_name__icontains=search))
+    try:
+        page = max(1, int(request.query_params.get('page', 1)))
+    except (ValueError, TypeError):
+        raise ValidationError('Invalid page.')
+    size, end = 10, page * 10
+    total = agent_rows.count() + legacy.count()
+    # Only the first page*size records from each stream can appear on this page.
+    items = [dict(serialize(row), record_type='agent') for row in agent_rows.order_by('-created_at', '-id')[:end]]
+    items += [dict(serialize_pending_query(row), id=row.pk, record_type='department', created_at=row.created_at)
+        for row in legacy.order_by('-created_at', '-id')[:end]]
+    items.sort(key=lambda row: (row['created_at'], row['record_type'], row['id']), reverse=True)
+    return Response({'results': items[(page-1)*size:end], 'pagination': {
+        'page': page, 'page_size': size, 'total': total, 'has_next': end < total}})
+
+
 class QueryListView(APIView):
     permission_classes = [IsAuthenticated, IsTOTPEnrolled]
     def get(self, request):
-        rows = scoped_queries(get_account(request))
+        account = get_account(request)
+        rows = scoped_queries(account)
+        combined = request.query_params.get("include_department_queries") == "true" and account.role in ("university", "department")
         selected = request.query_params.get("query_id")
         if selected:
             try: rows = rows.filter(pk=int(selected))
@@ -48,14 +80,34 @@ class QueryListView(APIView):
             if direction not in AgentQuery.Direction.values: raise ValidationError("Invalid direction.")
             rows = rows.filter(direction=direction)
         if status:
-            if status not in ("answered", "unanswered"): raise ValidationError("Invalid status.")
+            if status not in (("answered", "unanswered", "archived") if combined else ("answered", "unanswered")): raise ValidationError("Invalid status.")
             rows = rows.filter(status=status)
         query = request.query_params.get("search", "").strip()[:200]
         if query:
             rows = rows.filter(Q(question__icontains=query) | Q(answer__icontains=query) | Q(conversation__university__name__icontains=query) | Q(conversation__student__name__icontains=query) | Q(raised_by_agent__icontains=query))
+        if combined and not selected and direction == AgentQuery.Direction.STUDENT:
+            return combined_student_queries(request, account, rows, status, query)
         rows = rows.annotate(pending_first=Case(When(status="unanswered", then=Value(0)), default=Value(1), output_field=IntegerField())).order_by("pending_first", "-created_at", "-id")
         rows, page = pagination(request, rows)
         return Response({"results": [serialize(row) for row in rows], "pagination": page})
+
+
+    def post(self, request):
+        from accounts.permissions import IsUniversityRole
+        from .services import conversation_for, raise_query
+        from django.core.exceptions import ObjectDoesNotExist, ValidationError as ModelValidationError
+        if not IsUniversityRole().has_permission(request, self):
+            raise PermissionDenied("Only university administrators can raise a query from a profile.")
+        class Input(serializers.Serializer):
+            student_id = serializers.UUIDField()
+            question = serializers.CharField(max_length=2000)
+        form = Input(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            conv = conversation_for(form.validated_data['student_id'], request.user.account.university_uuid, require_interest=True)
+        except (ObjectDoesNotExist, ModelValidationError):
+            raise NotFound("Student profile not found.")
+        return Response(raise_query(conv, AgentQuery.Direction.UNIVERSITY, form.validated_data['question']), status=201)
 
 
 class AnswerInput(serializers.Serializer):

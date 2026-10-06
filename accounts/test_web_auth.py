@@ -43,6 +43,19 @@ class WebAuthTests(TestCase):
         self.assertNotIn(cookie_name('university'), password.cookies)
         return self.post('verify-totp', {'mfa_token': password.data['mfa_token'], 'code': pyotp.TOTP(self.seed).now()})
 
+    def test_department_user_uses_university_cookie_and_preserves_restricted_role(self):
+        from universities.models import University
+        account = self.user.account
+        account.role = 'department'
+        account.university = University.objects.create(name='Department login university')
+        account.save()
+        response = self.login()
+        self.assertEqual(response.status_code, 200, response.data)
+        refreshed = self.post('refresh')
+        self.assertEqual(refreshed.status_code, 200, refreshed.data)
+        self.assertEqual(refreshed.data['user']['role'], 'department')
+        self.assertEqual(self.post('refresh', {'portal': 'superuser'}).status_code, 401)
+
     def test_cookie_flags_no_refresh_in_json_and_short_access(self):
         response = self.login()
         self.assertEqual(response.status_code, 200)

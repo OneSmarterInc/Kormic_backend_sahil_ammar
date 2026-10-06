@@ -2,6 +2,7 @@
 import uuid
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 from pgvector.django import VectorField
 
 
@@ -47,6 +48,20 @@ class ResearchRun(models.Model):
     class Meta:
         constraints = [models.UniqueConstraint(fields=['university'], condition=models.Q(status__in=['queued', 'running']), name='research_one_active')]
         indexes = [models.Index(fields=['status', 'available_at'], name='research_dispatch')]
+
+
+class CommonAgentMessage(models.Model):
+    """Private consultation history; no registered profile or personal agent."""
+    student = models.ForeignKey('django_api.StudentProfile', on_delete=models.CASCADE)
+    university = models.ForeignKey(PublicUniversity, on_delete=models.CASCADE)
+    actor = models.CharField(max_length=30)
+    content = models.TextField()
+    kind = models.CharField(max_length=30, default='message')
+    metadata = models.JSONField(default=dict)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        indexes = [models.Index(fields=['student', 'university', '-created_at'], name='common_agent_history')]
 
 
 class UniversityPage(models.Model):

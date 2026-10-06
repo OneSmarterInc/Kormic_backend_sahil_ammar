@@ -14,6 +14,7 @@ class Account(models.Model):
     class Role(models.TextChoices):
         STUDENT = "student", "Student"
         UNIVERSITY = "university", "University"
+        DEPARTMENT = "department", "Department staff"
         # Local institute, only a superuser
         # creates these via /api/superuser/institutes/.
         INSTITUTE = "institute", "Institute"
@@ -41,6 +42,8 @@ class Account(models.Model):
         "institutes.Institute", null=True, blank=True,
         on_delete=models.SET_NULL, related_name="accounts",
     )
+
+    departments = models.ManyToManyField("universities.KnowledgeGroup", blank=True, related_name="staff_accounts")
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

@@ -23,6 +23,7 @@ class AgentQuery(models.Model):
     conversation = models.ForeignKey(AgentConversation, on_delete=models.CASCADE, related_name="queries")
     direction = models.CharField(max_length=30, choices=Direction.choices)
     question = models.TextField()
+    group = models.ForeignKey("universities.KnowledgeGroup", null=True, blank=True, on_delete=models.SET_NULL)
     question_hash = models.CharField(max_length=64)
     raised_by_agent = models.CharField(max_length=255)
     recipient_agent = models.CharField(max_length=255)

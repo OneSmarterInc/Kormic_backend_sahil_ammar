@@ -1,8 +1,10 @@
 from django.urls import path
 
 from universities import views
+from universities.department_users import DepartmentUsersView
 
 urlpatterns = [
+    path("department-users/", DepartmentUsersView.as_view(), name="department-users"),
     path("profile/", views.UniversityProfileAPIView.as_view(), name="university-admin-profile"),
     path(
         "profile/completion/",

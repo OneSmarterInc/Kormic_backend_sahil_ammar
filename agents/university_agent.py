@@ -600,7 +600,12 @@ STUDENT CONTEXT:
             },
         )
 
-        return self._serialize_pending_query(query)
+        result = self._serialize_pending_query(query)
+        result['student_message'] = f"Your query has been raised to {query.university_name or self.university_id} for further details."
+        if routed_to_email:
+            result['student_message'] += f" You can contact {routed_to_name or 'the department'} at {routed_to_email}."
+        result['instruction'] = "Include student_message in your reply. When asked for contacts, share the configured department email."
+        return result
 
     def show_pending_queries(self) -> None:
         from django_api.models import PendingQuery
@@ -787,6 +792,7 @@ Return ONLY the reformatted answer text. No JSON, no preamble.
             "location": university.location,
             "description": university.description,
             "website_url": university.website_url,
+            "departments": list(university.knowledge_groups.values("slug", "escalation_contact_name", "escalation_contact_email")),
             "contact_email": university.contact_email,
             "contact_phone": university.contact_phone,
             "admissions_office_address": university.admissions_office_address,

@@ -44,6 +44,46 @@ def build_tools(ctx):
             'instruction': 'Separate general learning directions from verified available programs. Explain tradeoffs and missing preferences; never claim a universal best course.'}
 
     @tool
+    def calculate_study_budget(currency: Literal['INR', 'USD', 'GBP', 'EUR', 'CAD', 'AUD'],
+                               tuition_total: float, living_monthly: float, months: int,
+                               other_total: float = 0, budget_total: Optional[float] = None) -> dict:
+        """Calculate whole-program costs in one currency from sourced amounts or explicitly labelled estimates. Tuition is the full programme, living is monthly. Never invent an exchange rate."""
+        from decimal import Decimal
+        from pure_multi_agent.advice_policy import budget_context
+        import re
+        duration = re.search(r'\b(one|two|three|four|five|six|\d+)\s*[- ]\s*years?\b', ctx.get('current_message', ''), re.I)
+        if duration:
+            word = duration[1].lower()
+            years = {'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6}.get(word)
+            months = (years if years is not None else int(word)) * 12
+        values = [Decimal(str(v)) for v in (tuition_total, living_monthly, other_total)]
+        if not all(v.is_finite() and v >= 0 for v in values) or not 1 <= months <= 120:
+            return {'error': 'Use non-negative finite costs and a duration of 1-120 months.'}
+        total = values[0] + values[1] * months + values[2]
+        budget = budget_context(ctx['student_profile'])
+        import re
+        explicit = re.search(r'\bbudget\s*(?:is|of|:)?\s*' + currency + r'\s*([\d,]+(?:\.\d+)?)', ctx.get('current_message', ''), re.I)
+        if explicit:
+            budget_total = float(explicit[1].replace(',', ''))
+        if budget_total is not None:
+            import re
+            supplied = Decimal(str(budget_total))
+            text = ctx.get('current_message', '')
+            amounts = [Decimal(n.replace(',', '')) for n in re.findall(r'(?<!\w)\d[\d,]*(?:\.\d+)?', text)]
+            if not supplied.is_finite() or supplied < 0 or supplied not in amounts or currency not in text.upper():
+                return {'error': 'budget_total must be explicitly supplied in the current question in the calculation currency.'}
+            budget = {'amount': str(supplied), 'currency': currency, 'period': 'entire_program',
+                      'source': 'current question; not saved to profile'}
+        comparable = budget['currency'] == currency and budget['period'] == 'entire_program' and budget['amount'] is not None
+        return {'currency': currency, 'period': 'entire_program', 'months': months,
+                'tuition_total': str(values[0]), 'living_monthly': str(values[1]),
+                'living_total': str(values[1] * months), 'other_total': str(values[2]),
+                'total': str(total), 'student_budget': budget,
+                'within_budget': total <= Decimal(str(budget['amount'])) if comparable else None,
+                'remaining': str(Decimal(str(budget['amount'])) - total) if comparable else None,
+                'instruction': 'Label estimated inputs. This calculation does not verify fees or establish sufficient visa funds. Unknown/mismatched currency or period prevents an affordability conclusion.'}
+
+    @tool
     def search_study_resources(query: str, category: Literal['scholarships', 'courses', 'exams', 'careers', 'applications'] = 'courses') -> dict:
         """Search public learning resources, scholarships, exams, careers or applications. Verify eligibility and dates from sources; never include student personal data in search queries."""
         from university_research.web import search_web
@@ -86,4 +126,4 @@ def build_tools(ctx):
             rows = rows.filter(kind=kind)
         return {'items': list(rows.order_by('-updated_at').values('id', 'kind', 'title', 'content', 'sources', 'updated_at')[:10])}
 
-    return [review_student_profile, recommend_courses, search_study_resources, save_advising_artifact, get_saved_advice]
+    return [review_student_profile, recommend_courses, calculate_study_budget, search_study_resources, save_advising_artifact, get_saved_advice]

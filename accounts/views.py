@@ -207,7 +207,7 @@ class LoginView(APIView):
         )
 
         portal = serializer.validated_data.get('portal')
-        wrong_portal = user is not None and portal is not None and not Account.objects.filter(user=user, role=portal).exists()
+        wrong_portal = user is not None and portal is not None and not Account.objects.filter(user=user, role__in=(["university", "department"] if portal == "university" else [portal])).exists()
         if user is None or not user.is_active or wrong_portal:
             # No account, wrong password, or an existing-but-inactive
             # account -- look the email up regardless so a real account's
@@ -364,7 +364,7 @@ class TOTPLoginVerifyView(APIView):
         if expected_portal and portal != expected_portal:
             return Response({'detail': 'Invalid credentials.'}, status=status.HTTP_401_UNAUTHORIZED)
         user = User.objects.filter(id=user_id, is_active=True).first()
-        if user is None or (portal and not Account.objects.filter(user=user, role=portal).exists()):
+        if user is None or (portal and not Account.objects.filter(user=user, role__in=(["university", "department"] if portal == "university" else [portal])).exists()):
             invalidate_mfa_session(mfa_token)
             return Response({'detail': 'Invalid credentials.'}, status=status.HTTP_401_UNAUTHORIZED)
 

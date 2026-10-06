@@ -4,6 +4,7 @@ from project_superuser import views
 from university_research.views import InformationPolicyView, ResearchUniversityListView
 
 urlpatterns = [
+    path("dashboard/", views.AdminDashboardAPIView.as_view(), name="superuser-dashboard"),
     path('update-information/', InformationPolicyView.as_view()),
     path('update-information/universities/', ResearchUniversityListView.as_view()),
     path("students/", views.AdminStudentListCreateAPIView.as_view(), name="superuser-students"),

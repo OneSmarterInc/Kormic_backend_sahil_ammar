@@ -106,7 +106,7 @@ class WebRefreshView(APIView):
             if token.get('web_portal') != self.portal:
                 raise TokenError('Wrong portal')
             user = User.objects.filter(pk=token['user_id'], is_active=True,
-                                       account__role=self.portal).first()
+                                       account__role__in=(["university", "department"] if self.portal == "university" else [self.portal])).first()
             if user is None or not TOTPDevice.objects.filter(user=user, confirmed_at__isnull=False).exists():
                 raise TokenError('Session is no longer valid')
         except (TokenError, KeyError):

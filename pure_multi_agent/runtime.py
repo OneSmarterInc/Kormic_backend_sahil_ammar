@@ -269,19 +269,25 @@ class TurnResult(tuple):
 
 from pure_multi_agent.activity import track_activity
 
+from pure_multi_agent.model_router import student_model_policy
+
+@student_model_policy
 @track_activity("student")
 def run_turn(
     student_id: str, message: str, image_blocks: Optional[List[Dict[str, Any]]] = None, *, raise_errors=False, resume_state=None, message_id=None
 ) -> tuple[str, str]:
     ctx = _load_context(student_id)
     ctx['current_message'] = message
+    ctx['current_message_id'] = message_id
+    from pure_multi_agent.advice_policy import load_budget_clarifications
+    load_budget_clarifications(ctx)
     from pure_multi_agent.document_evidence import unfinished_documents
     ctx['documents_read'] = unfinished_documents(student_id)
     ctx['turn_id'] = str(uuid.uuid4())
     from pure_multi_agent.document_evidence import manifest
     ctx['chat_attachments'] = manifest(student_id, message_id) if message_id else []
-    resume_keys = ('turn_id', 'documents_read', 'chat_attachments', 'change_proposals', 'university_references', 'university_candidates', 'university_resolution_turn', 'university_lookup_required', 'university_discovery_pending', 'university_evidence_required', 'university_answer_evidence', 'university_source_search_required', 'university_pages_pending', 'university_fetch_failures', 'university_identity_attempts', 'university_fallback_domains', 'university_discovery_blocked', 'last_provider', 'last_model', 'known_web_urls', 'read_web_pages',
-        'research_after_reply', 'university_cache_after_reply', 'university_missing_fields', 'completion_reviews', 'model_steps', 'tool_errors', 'web_search_count', 'pages_read', 'university_reads', 'document_availability')
+    resume_keys = ('new_university_domains', 'research_university_name', 'collection_attempted', 'turn_id', 'turn_intent', 'question_sources', 'documents_read', 'chat_attachments', 'change_proposals', 'university_references', 'university_candidates', 'university_question', 'clarification_checked', 'university_search_id', 'university_resolution_turn', 'university_lookup_required', 'university_discovery_pending', 'university_evidence_required', 'university_answer_evidence', 'university_source_search_required', 'university_pages_pending', 'university_fetch_failures', 'university_identity_attempts', 'university_fallback_domains', 'university_discovery_blocked', 'last_provider', 'last_model', 'known_web_urls', 'read_web_pages',
+        'research_after_reply', 'university_cache_after_reply', 'university_missing_fields', 'completion_reviews', 'model_steps', 'tool_errors', 'web_search_count', 'pages_read', 'university_reads', 'document_availability', 'profile_action_checked', 'profile_write_receipt', 'completed_tool_calls', 'repeated_tool_calls', 'completed_evidence_answer', 'initial_evidence_requested')
     if resume_state is not None:
         ctx.update({key: value for key, value in resume_state.items() if key in resume_keys})
         for key in ('known_web_urls', 'research_after_reply'):
@@ -350,6 +356,10 @@ def run_turn(
             "Please try again. Any previously saved university queries are still available in Queries."
         )
 
+    from pure_multi_agent.response_contract import problems
+    if problems(reply, saved=bool(ctx.get('profile_write_receipt'))):
+        from pure_multi_agent.answer_context import partial_answer
+        reply = partial_answer(message, ctx.get('university_answer_evidence', {}))
     # Missing-value storage tokens are not student-facing prose.
     import re
     reply = re.sub(r'(?<![\w/])N/A(?![\w/])', 'not available', reply)

@@ -409,12 +409,13 @@ _COMPLETION_STEPS = [
 ]
 
 
-def university_setup_status(university_id: str) -> Dict[str, Any]:
+def university_setup_status(university_id: str, *, university=None, has_knowledge_facts=None) -> Dict[str, Any]:
     """Derived fresh from real data every call, never a stored flag --
     mirrors accounts.serializers.student_onboarding_status."""
     from django_api.models import UniversityKnowledgeEntry
 
-    university = University.objects.filter(uuid=university_id).first()
+    if university is None:
+        university = University.objects.filter(uuid=university_id).first()
 
     if university is None:
         return {
@@ -437,7 +438,8 @@ def university_setup_status(university_id: str) -> Dict[str, Any]:
     )
     has_eligibility_criteria = bool(university.eligibility_criteria)
     has_scrape_urls = bool(university.scrape_urls)
-    has_knowledge_facts = UniversityKnowledgeEntry.objects.filter(university_id=university_id).exists()
+    if has_knowledge_facts is None:
+        has_knowledge_facts = UniversityKnowledgeEntry.objects.filter(university_id=university_id).exists()
     has_description = bool(university.description)
 
     flags = {

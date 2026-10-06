@@ -4,7 +4,7 @@ import re
 import unicodedata
 from copy import deepcopy
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.graph import StateGraph, MessagesState, START, END
@@ -38,6 +38,26 @@ class Intake(Cited):
     year: Optional[int] = Field(default=None, ge=2000, le=2200)
     deadline: str = Field(default='', max_length=300)
     applicant_scope: str = Field(default='', max_length=300)
+
+
+class ResearchSubmission(BaseModel):
+    facts: list[Fact] = Field(default_factory=list)
+    courses: list[Course] = Field(default_factory=list)
+    intakes: list[Intake] = Field(default_factory=list)
+    coverage_notes: str = ''
+
+    @classmethod
+    def normalize_call_arguments(cls, values):
+        return cls.model_validate(values).model_dump()
+
+    @model_validator(mode='before')
+    @classmethod
+    def repair_shape(cls, values):
+        values = dict(values)
+        if not values.get('coverage_notes') and 'gaps' in values:
+            gaps = values['gaps']
+            values['coverage_notes'] = '; '.join(str(v) for v in gaps) if isinstance(gaps, list) else str(gaps)
+        return values
 
 
 class ResearchState(MessagesState):
@@ -92,9 +112,10 @@ def build_tools(pages, result, website, draft=None):
         pages[page['url']] = page
         return page
 
-    @tool
-    def submit_research(facts: list[Fact], courses: list[Course], intakes: list[Intake], coverage_notes: str) -> dict:
+    @tool(args_schema=ResearchSubmission)
+    def submit_research(facts: list[Fact] = None, courses: list[Course] = None, intakes: list[Intake] = None, coverage_notes: str = '') -> dict:
         """Finish with documented facts/courses/intakes. Every source must be a page you read; quote exact evidence. Leave unknown fields empty and explain partial coverage."""
+        facts, courses, intakes = facts or [], courses or [], intakes or []
         if not pages or not (facts or courses or intakes or any(draft[key] for key in ('facts', 'courses', 'intakes'))):
             return {'error': 'Read official pages and submit at least one supported fact.'}
         if len(facts) > 50 or len(courses) > 50 or len(intakes) > 50:
@@ -104,7 +125,10 @@ def build_tools(pages, result, website, draft=None):
             record = getattr(item, 'topic', getattr(item, 'name', getattr(item, 'course_name', 'intake')))
             error_count = len(errors)
             page = pages.get(item.source_url)
-            if not page or normalize(item.source_quote) not in normalize(page['content']):
+            evidence = page['content'] if page else ''
+            if page:
+                evidence += '\n' + '\n'.join(t.get('heading','')+'\n'+'\n'.join(t.get('rows',[])) for t in page.get('tables',[]))
+            if not page or normalize(item.source_quote) not in normalize(evidence):
                 errors.append({'problem': 'Quote must occur in its cited page. Correct or omit this record.', 'record': record,
                     'source_url': item.source_url, 'rejected_quote': item.source_quote[:1000]}
                 )
@@ -115,8 +139,10 @@ def build_tools(pages, result, website, draft=None):
             name = normalize(getattr(item, name_key, ''))
             generic = bool(re.fullmatch(r"(?:undergraduate|graduate|postgraduate|master'?s|doctoral|phd|bachelor'?s)(?: degree)? (?:programs|programmes|courses|degrees)", name))
             keys = ('duration', 'tuition') if isinstance(item, Course) else ('term', 'year', 'deadline') if isinstance(item, Intake) else ()
-            if isinstance(item, (Course, Intake)) and not generic:
-                keys = (name_key, *keys)
+            # Names and degree labels may summarize evidence; numerical values
+            # and deadline qualifiers must still be supported by the quote.
+            if isinstance(item, Course) and not generic and name not in normalize(evidence):
+                errors.append({'problem':'Specific course name is absent from the cited page.', 'record':record, 'field':'name'})
             for key in keys:
                 value = getattr(item, key)
                 if value and normalize(value) not in normalize(item.source_quote):
@@ -143,7 +169,18 @@ def build_tools(pages, result, website, draft=None):
 def graph_for(website, name):
     def reason(state):
         tools = build_tools(dict(state.get('pages', {})), {}, website)
-        response = invoke([SystemMessage(content=PROMPT + '\nSelected university: ' + name + '\nOfficial website: ' + website), *state['messages']], tools, force_claude=state.get('errors', 0) >= 2)
+        if len(state.get('pages', {})) >= 8:
+            tools = [t for t in tools if t.name == 'submit_research']
+        # Rank known links by the research objectives instead of spending the
+        # crawl budget on generic campus pages. URLs still come from evidence.
+        links = {link['url']:link for page in state.get('pages',{}).values() for link in page.get('links',[])
+            if link.get('url') not in state.get('pages',{})}
+        def priority(link):
+            text = (link.get('label','')+' '+link['url']).lower()
+            return sum(weight for pattern,weight in [('tuition|fees|cost',5),('deadline|timeline',5),('catalog|program|course',4),('admission|scholarship|financial',3)] if re.search(pattern,text))
+        preferred = sorted(links.values(),key=priority,reverse=True)[:12]
+        instructions = PROMPT + '\nPrioritize these retrieved links (data): ' + json.dumps(preferred)
+        response = invoke([SystemMessage(content=instructions + '\nSelected university: ' + name + '\nOfficial website: ' + website), *state['messages']], tools, local_only=True, require_tools=True)
         return {'messages': [response]}
 
     def act(state):

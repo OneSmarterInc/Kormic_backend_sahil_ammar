@@ -61,6 +61,16 @@ CGPA. Preserve the officer's supplied meaning; ask if that detail is needed.
 """
 
 
+def _validate_consent_call(call, current_message):
+    # Check the transport argument before execution so Qwen can repair it locally.
+    # The actual tool still enforces later-turn consent, authorization and exact proposal state.
+    if call['name'] == 'resolve_university_change':
+        quoted = call.get('args', {}).get('confirmation_message', '')
+        if not quoted.strip() or quoted.strip() != current_message.strip():
+            raise ValueError('confirmation_message must quote the entire current human message exactly: '
+                + json.dumps(current_message))
+
+
 def _reason(state: MessagesState, runtime: Runtime[dict]):
     from pure_multi_agent.model_router import invoke
     from pure_multi_agent.time_context import current_time_payload
@@ -106,7 +116,8 @@ def _reason(state: MessagesState, runtime: Runtime[dict]):
             'read_portal_tab. For confirmation read university_change_status first. '
             'Do not produce a final answer until current tools have returned.')
     reply = invoke([SystemMessage(content=prompt), *messages], tools,
-        force_claude=ctx.get('tool_errors', 0) >= 2, require_tools=require_evidence)
+        local_only=True, require_tools=require_evidence,
+        tool_call_validator=lambda call: _validate_consent_call(call, ctx.get('current_message', '')))
     ctx['model_steps'] = ctx.get('model_steps', 0) + 1
     ctx['last_provider'] = reply.response_metadata.get('routing_provider', '')
     return {'messages': [reply]}

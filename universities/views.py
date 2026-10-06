@@ -861,7 +861,13 @@ class KnowledgeGroupDetailAPIView(APIView):
         if group is None:
             return _error("Knowledge group not found.", status.HTTP_404_NOT_FOUND)
 
-        data = request.data or {}
+        from rest_framework import serializers
+        class ContactInput(serializers.Serializer):
+            escalation_contact_name = serializers.CharField(max_length=255, allow_blank=True, required=False)
+            escalation_contact_email = serializers.EmailField(max_length=255, allow_blank=True, required=False)
+        form = ContactInput(data=request.data)
+        form.is_valid(raise_exception=True)
+        data = form.validated_data
         update_fields = []
 
         if "escalation_contact_name" in data:

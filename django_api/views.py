@@ -1,4 +1,5 @@
 from __future__ import annotations
+from accounts.permissions import IsUniversityQueryUser
 
 import io
 import logging
@@ -1409,7 +1410,10 @@ def _get_scoped_pending_query(request, query_id):
     if error:
         return None, error
 
-    query = PendingQuery.objects.filter(id=query_id, university_id=own_university_id).first()
+    rows = PendingQuery.objects.filter(id=query_id, university_id=own_university_id)
+    if request.user.account.role == "department":
+        rows = rows.filter(group__in=request.user.account.departments.filter(university_id=request.user.account.university_id))
+    query = rows.first()
     if query is None:
         return None, Response(
             {"status": "failed", "message": f"Pending query not found for query_id: {query_id}"},
@@ -1456,12 +1460,12 @@ class PendingQueriesView(APIView):
 # ---------------------------------------------------------------------
 
 class AnswerPendingQueryView(APIView):
-    permission_classes = [IsAuthenticated, IsTOTPEnrolled, IsUniversityRole]
+    permission_classes = [IsAuthenticated, IsTOTPEnrolled, IsUniversityQueryUser]
 
     def post(self, request):
         query_id = request.data.get("query_id")
         answer = request.data.get("answer")
-        answered_by = request.data.get("answered_by", "Admin")
+        answered_by = (request.user.get_full_name().strip() or request.user.email)
 
         if query_id is None:
             return Response({"status": "failed", "message": "query_id is required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -2003,10 +2007,12 @@ class UniversityQuestionsView(APIView):
 class UniversityQueriesView(APIView):
     """GET /api/university/<university_id>/queries/ — all escalated queries for one university."""
 
-    permission_classes = UNIVERSITY_OWNER_PERMISSIONS
+    permission_classes = [IsAuthenticated, IsTOTPEnrolled, IsUniversityQueryUser, ScopedToOwnUniversityId]
 
     def get(self, request, university_id: str):
         rows = PendingQuery.objects.filter(university_id=university_id)
+        if request.user.account.role == "department":
+            rows = rows.filter(group__in=request.user.account.departments.filter(university_id=request.user.account.university_id))
         matched = [serialize_pending_query(r) for r in rows]
         return Response({"university_id": university_id, "queries": matched})
 
@@ -2014,12 +2020,14 @@ class UniversityQueriesView(APIView):
 class UniversityActiveQueriesView(APIView):
     """GET /api/university/<university_id>/queries/active/ — pending + urgent only."""
 
-    permission_classes = UNIVERSITY_OWNER_PERMISSIONS
+    permission_classes = [IsAuthenticated, IsTOTPEnrolled, IsUniversityQueryUser, ScopedToOwnUniversityId]
 
     def get(self, request, university_id: str):
         rows = PendingQuery.objects.filter(university_id=university_id).exclude(
             status__in=[PendingQuery.Status.RESOLVED, PendingQuery.Status.IGNORED]
         )
+        if request.user.account.role == "department":
+            rows = rows.filter(group__in=request.user.account.departments.filter(university_id=request.user.account.university_id))
         active = [serialize_pending_query(r) for r in rows]
         return Response({"university_id": university_id, "queries": active})
 
@@ -2027,13 +2035,15 @@ class UniversityActiveQueriesView(APIView):
 class UniversityArchiveQueriesView(APIView):
     """GET /api/university/<university_id>/queries/archive/ — resolved or ignored (i.e. no longer active)."""
 
-    permission_classes = UNIVERSITY_OWNER_PERMISSIONS
+    permission_classes = [IsAuthenticated, IsTOTPEnrolled, IsUniversityQueryUser, ScopedToOwnUniversityId]
 
     def get(self, request, university_id: str):
         rows = PendingQuery.objects.filter(
             university_id=university_id,
             status__in=[PendingQuery.Status.RESOLVED, PendingQuery.Status.IGNORED],
         )
+        if request.user.account.role == "department":
+            rows = rows.filter(group__in=request.user.account.departments.filter(university_id=request.user.account.university_id))
         archive = [serialize_pending_query(r) for r in rows]
         return Response({"university_id": university_id, "queries": archive})
 
@@ -2070,11 +2080,11 @@ class EditPendingQueryView(APIView):
     unlike /api/queries/answer/, which refuses to touch an already-resolved query.
     """
 
-    permission_classes = [IsAuthenticated, IsTOTPEnrolled, IsUniversityRole]
+    permission_classes = [IsAuthenticated, IsTOTPEnrolled, IsUniversityQueryUser]
 
     def post(self, request, query_id: int):
         answer = request.data.get("answer")
-        answered_by = request.data.get("answered_by", "Admin")
+        answered_by = (request.user.get_full_name().strip() or request.user.email)
 
         if not answer:
             return Response({"status": "failed", "message": "answer is required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -2112,13 +2122,13 @@ class IgnorePendingQueryView(APIView):
     way any other status transition would.
     """
 
-    permission_classes = [IsAuthenticated, IsTOTPEnrolled, IsUniversityRole]
+    permission_classes = [IsAuthenticated, IsTOTPEnrolled, IsUniversityQueryUser]
 
     def post(self, request, query_id: int):
         from django.utils import timezone
 
         reason = request.data.get("reason", "")
-        ignored_by = request.data.get("ignored_by", "Admin")
+        ignored_by = (request.user.get_full_name().strip() or request.user.email)
 
         selected_query, error = _get_scoped_pending_query(request, query_id)
         if error:

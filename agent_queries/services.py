@@ -20,8 +20,11 @@ def conversation_for(student_id, university_id, *, require_interest=False):
 
 
 def names(conversation):
+    from university_research.services import registered
+    common = (conversation.university.record_origin == 'researched'
+              and not registered().filter(pk=conversation.university_id).exists())
     return {"student_agent": conversation.student.agent_name or (conversation.student.name or "Student") + "'s agent",
-            "university_agent": conversation.university.agent_name or conversation.university.name + " agent",
+            "university_agent": "Common University Agent" if common else (conversation.university.agent_name or conversation.university.name + " agent"),
             "student": conversation.student.name or "Student", "university": conversation.university.name}
 
 
@@ -86,32 +89,36 @@ def raise_query(conversation, direction, question):
     question = question.strip()
     if not question or len(question) > 2000:
         raise ValueError("A specific question of 1â€“2000 characters is required.")
+    from universities.knowledge_groups import resolve_group_for_question
+    group = resolve_group_for_question(str(conversation.university.uuid), question)
     actor = "student_agent" if direction == AgentQuery.Direction.STUDENT else "university_agent"
     target = "university_agent" if actor == "student_agent" else "student_agent"
     # Serialize the pair so concurrent model retries cannot create duplicate notifications.
     AgentConversation.objects.select_for_update().get(pk=conversation.pk)
     fingerprint = hashlib.sha256(" ".join(question.casefold().split()).encode()).hexdigest()
     row, created = AgentQuery.objects.get_or_create(conversation=conversation, direction=direction,
-        question_hash=fingerprint, status="unanswered", defaults={"question": question,
+        question_hash=fingerprint, status="unanswered", defaults={"question": question, "group": group,
         "raised_by_agent": names(conversation)[actor], "recipient_agent": names(conversation)[target]})
     if created:
         message(conversation, target, "This information is missing. I have asked my user to answer: " + question, kind="escalation", query=row)
         notify_query(row)
     return {"pending": True, "query_id": row.pk, "status": row.status,
-        "instruction": "The responsible user has been notified. Do not ask the requesting user to supply the other party's facts or invent an answer."}
+        "department_email": group.escalation_contact_email if group else "",
+          "university_name": conversation.university.name,
+          "instruction": ((f"Tell the student their query has been raised to {conversation.university.name} for further details. Department contact: {group.escalation_contact_email if group else 'not configured'}. " if direction == AgentQuery.Direction.STUDENT else "The student has been notified of the university's question. ") + "Do not ask the requesting user to supply the other party's facts or invent an answer.")}
 
 
 @transaction.atomic
 def answer_query(query_id, account, answer, scope="private"):
     row = AgentQuery.objects.select_for_update().select_related("conversation__student", "conversation__university").get(pk=query_id)
     conv = row.conversation
-    allowed = ((row.direction == AgentQuery.Direction.STUDENT and account.role == "university" and account.university_id == conv.university_id)
+    allowed = ((row.direction == AgentQuery.Direction.STUDENT and account.role in ("university", "department") and account.university_id == conv.university_id and (account.role == "university" or account.departments.filter(pk=row.group_id, university_id=conv.university_id).exists()))
         or (row.direction == AgentQuery.Direction.UNIVERSITY and account.role == "student" and account.student_profile_id == conv.student_id))
     if not allowed:
         raise PermissionDenied("Only the requested party can answer this query.")
     if row.status == "answered":
         raise ValidationError("This query has already been answered.")
-    if scope not in ("private", "university") or (scope == "university" and account.role != "university"):
+    if scope not in ("private", "university") or (scope == "university" and account.role not in ("university", "department")):
         raise ValidationError("Invalid answer scope.")
     answer = answer.strip()
     if not answer or len(answer) > 12000:
@@ -124,7 +131,7 @@ def answer_query(query_id, account, answer, scope="private"):
             topic=row.question[:500], content=answer, source_type="human_verified", confidence=1,
             details={"agent_query_id": row.pk, "answered_by": str(account.user_id), "question": row.question})
     row.save()
-    actor = "university" if account.role == "university" else "student"
+    actor = "university" if account.role in ("university", "department") else "student"
     message(conv, actor, answer, kind="human_answer", query=row)
     # This is the exact human answer relayed by the receiving agent, never a fabricated model response.
     message(conv, actor + "_agent", answer, kind="reply", query=row, metadata={"source": "human_answer", "answer_scope": scope})

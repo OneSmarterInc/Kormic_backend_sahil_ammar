@@ -15,8 +15,7 @@ class ConsultationTests(TestCase):
         self.ctx = {'canonical_student_id': str(self.student.uuid), 'student_profile': {}}
 
     def test_agent_exchange_is_durable_and_followup_reads_answer(self):
-        replies = [AIMessage(content='', tool_calls=[{'id':'read', 'name':'retrieve_official_information',
-                    'args':{'query':'GPA'}}]), AIMessage(content='Minimum GPA is 3.5 on a 4.0 scale.')]
+        replies = [AIMessage(content='Minimum GPA is 3.5 on a 4.0 scale.')]
         with patch('pure_multi_agent.registered_adviser.invoke', side_effect=replies), \
              patch('pure_multi_agent.tools.university_tools._university_evidence', return_value={'requirements':'3.5/4.0'}):
             result = consult(self.ctx, self.uni, 'What GPA is required?')
@@ -38,3 +37,21 @@ class ConsultationTests(TestCase):
         self.assertEqual(error.metadata['error_type'], 'ValueError')
         self.assertNotIn('private error', error.content)
         self.assertFalse(conv.messages.filter(kind='reply').exists())
+
+
+    def test_registered_agent_reads_manual_knowledge_and_full_profile(self):
+        from django.contrib.auth.models import User
+        from accounts.models import Account
+        from django_api.models import UniversityKnowledgeEntry
+        from pure_multi_agent.tools.university_tools import _university_evidence
+        Account.objects.create(user=User.objects.create_user('registered-owner'), role='university', university=self.uni)
+        self.uni.location, self.uni.best_fit_notes = 'Campus location', 'Research applicants'
+        self.uni.save()
+        entry = UniversityKnowledgeEntry.objects.create(university_id=str(self.uni.uuid), topic='Fees', content='Annual tuition 12000 USD', source_type='manual')
+        from types import SimpleNamespace
+        with patch('knowledge.university_kb.UniversityKnowledgeBase') as kb, patch('agents.commons.record_university_interest'):
+            kb.return_value.search.return_value = [SimpleNamespace(source_type='manual', source_url=None, to_dict=lambda: {'topic':entry.topic, 'content':entry.content})]
+            result = _university_evidence(self.ctx, str(self.uni.uuid), 'fees')
+        self.assertEqual(result['facts'][0]['content'], 'Annual tuition 12000 USD')
+        self.assertEqual(result['profile']['location'], 'Campus location')
+        self.assertEqual(result['profile']['best_fit_notes'], 'Research applicants')

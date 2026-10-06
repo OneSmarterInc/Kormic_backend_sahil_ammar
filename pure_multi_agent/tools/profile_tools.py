@@ -23,6 +23,7 @@ def build_tools(ctx):
         toefl: Optional[float] = None,
         ielts: Optional[float] = None,
         budget: Optional[float] = None,
+        budget_text: Optional[str] = None,
         graduation_year: Optional[int] = None,
         work_months: Optional[int] = None,
         research: Optional[str] = None,
@@ -41,7 +42,11 @@ def build_tools(ctx):
         Only pass stated fields; ask for GPA scale if unclear. List fields replace
         the list, so preserve existing items when the user asks to add an item.
         If the student declined a replacement, use the conversation assumption
-        without proposing the same edit again unless they ask to save it."""
+        without proposing the same edit again unless they ask to save it.
+        For budget, also quote budget_text with the student's currency, period
+        and whether living costs are included. Never assume USD or annual units."""
+        if budget_text is not None and (len(budget_text) > 100 or budget_text not in ctx.get('current_message', '')):
+            return {'error': 'budget_text must be a verbatim excerpt of at most 100 characters from the current student message.'}
         updates = {
             "name": name,
             "institution": institution,
@@ -54,6 +59,7 @@ def build_tools(ctx):
             "toefl": toefl,
             "ielts": ielts,
             "budget": budget,
+            "budget_text": budget_text,
             "graduation_year": graduation_year,
             "work_months": work_months,
             "research": research,

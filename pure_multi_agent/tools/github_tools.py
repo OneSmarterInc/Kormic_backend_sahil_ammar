@@ -9,7 +9,7 @@ def github_evidence(student_id):
     from django_api.models import GitHubProfileSnapshot
     connection = get_connection_for_student_id(student_id)
     if not connection:
-        return {'status': 'not_connected', 'action': 'Connect GitHub in your profile'}
+        return {'status': 'not_connected', 'action': 'Open Profile, select Connect GitHub, and authorize the GitHub OAuth connection. Return to Kormic after authorization.'}
     row = GitHubProfileSnapshot.objects.filter(student__uuid=student_id, connection=connection, github_user_id=connection.github_user_id).first()
     if not row:
         return {'status': 'not_synced', 'username': connection.github_username}
