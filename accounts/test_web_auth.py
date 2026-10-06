@@ -21,6 +21,21 @@ from accounts.web_auth import cookie_name
     CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}},
 )
 class WebAuthTests(TestCase):
+    @override_settings(WEB_COOKIE_SAMESITE='None', CSRF_COOKIE_SAMESITE='None')
+    def test_cross_site_cookie_login_and_clear_keep_security_flags(self):
+        bootstrap = self.client.get('/api/auth/web/csrf/', secure=True)
+        self.assertEqual(bootstrap.cookies['csrftoken']['samesite'], 'None')
+        response = self.login()
+        self.assertEqual(response.status_code, 200)
+        cookie = response.cookies[cookie_name('university')]
+        self.assertEqual(cookie['samesite'], 'None')
+        self.assertTrue(cookie['secure'])
+        self.assertTrue(cookie['httponly'])
+        cleared = self.post('logout').cookies[cookie_name('university')]
+        self.assertEqual(cleared['samesite'], 'None')
+        self.assertTrue(cleared['secure'])
+        self.assertEqual(cleared['max-age'], 0)
+
     def setUp(self):
         cache.clear()
         self.client = APIClient(enforce_csrf_checks=True)

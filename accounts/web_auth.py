@@ -24,7 +24,7 @@ def cookie_name(portal):
 
 def clear_cookie(response, portal):
     response.set_cookie(cookie_name(portal), '', max_age=0, path='/',
-                        secure=not settings.DEBUG, httponly=True, samesite='Lax')
+                        secure=not settings.DEBUG, httponly=True, samesite=settings.WEB_COOKIE_SAMESITE)
 
 
 def portal_for(request):
@@ -80,7 +80,7 @@ class WebTOTPLoginVerifyView(WebCSRF, TOTPLoginVerifyView):
             response.set_cookie(
                 cookie_name(self.portal), str(token),
                 max_age=max(0, token['exp'] - int(timezone.now().timestamp())),
-                secure=not settings.DEBUG, httponly=True, samesite='Lax', path='/',
+                secure=not settings.DEBUG, httponly=True, samesite=settings.WEB_COOKIE_SAMESITE, path='/',
             )
         return response
 
@@ -107,6 +107,9 @@ class WebRefreshView(APIView):
                 raise TokenError('Wrong portal')
             user = User.objects.filter(pk=token['user_id'], is_active=True,
                                        account__role__in=(["university", "department"] if self.portal == "university" else [self.portal])).first()
+            from accounts.face_auth import required
+            if user is not None and required(user) and token.get('face_verified') is not True:
+                raise TokenError('Face verification required')
             if user is None or not TOTPDevice.objects.filter(user=user, confirmed_at__isnull=False).exists():
                 raise TokenError('Session is no longer valid')
         except (TokenError, KeyError):
@@ -143,7 +146,12 @@ class NativeTokenRefreshView(TokenRefreshView):
         raw = request.data.get('refresh')
         if raw:
             try:
-                if RefreshToken(raw).get('web_portal'):
+                token = RefreshToken(raw)
+                from accounts.face_auth import required
+                user = User.objects.filter(pk=token.get('user_id')).first()
+                if user and required(user) and token.get('face_verified') is not True:
+                    raise AuthenticationFailed('Face verification required. Sign in again.')
+                if token.get('web_portal'):
                     raise AuthenticationFailed('Browser sessions require the cookie refresh endpoint.')
             except TokenError as exc:
                 raise InvalidToken() from exc

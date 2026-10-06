@@ -1,0 +1,193 @@
+# Standalone file: do NOT merge with docker-compose.yml. See deploy/AWS.md.
+name: kormic-v2
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-env: &environment
+  DJANGO_DEBUG: "false"
+  DB_ENGINE: postgresql
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: ${POSTGRES_DB:-kormic}
+  POSTGRES_USER: ${POSTGRES_USER:-kormic}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.aws}
+  CELERY_BROKER_URL: redis://redis:6379/0
+  CELERY_RESULT_BACKEND: redis://redis:6379/1
+  DJANGO_CACHE_URL: redis://redis:6379/2
+  AGENT_REDIS_URL: redis://redis:6379/3
+  AGENT_CONFIG_CACHE_URL: redis://redis_cache:6379/0
+  CELERY_TASK_ALWAYS_EAGER: "false"
+  AGENT_QUEUE_ENABLED: "true"
+  AGENT_QUEUE_BACKEND: celery
+  AGENT_CAPACITY_BACKEND: redis
+  AGENT_DISTRIBUTED_LIMITS: "true"
+  GITHUB_OLLAMA_BASE_URL: http://ollama:11434
+  STUDENT_OLLAMA_BASE_URL: http://ollama:11434
+  GITHUB_OLLAMA_ALLOWED_HOSTS: ollama,localhost,127.0.0.1
+  GITHUB_OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:1.7b}
+  STUDENT_OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:1.7b}
+  GITHUB_QWEN_CONCURRENCY: "1"
+  GITHUB_WORKER_CONCURRENCY: "1"
+  UNIVERSITY_RESEARCH_CONCURRENCY: "1"
+  AGENT_CHECKPOINTER_POOL_SIZE: "2"
+  UNIVERSITY_EMBEDDING_CACHE_DIR: /home/app/.cache/kormic-embeddings
+  OMP_NUM_THREADS: "1"
+  OPENBLAS_NUM_THREADS: "1"
+
+x-app: &app
+  image: kormic-backend:${KORMIC_IMAGE_TAG:-local}
+  build: .
+  env_file: [.env.aws]
+  environment: *environment
+  volumes:
+    - ./face_models:/app/face_models:ro
+    - uploads_data:/app/uploads
+    - embedding_data:/home/app/.cache/kormic-embeddings
+  restart: unless-stopped
+  logging: *logging
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    redis_cache:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+    model_init:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-kormic}
+      POSTGRES_USER: ${POSTGRES_USER:-kormic}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.aws}
+    command: postgres -c max_connections=60 -c shared_buffers=128MB
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+    logging: *logging
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy noeviction
+    volumes: [redis_data:/data]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    logging: *logging
+
+  redis_cache:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    logging: *logging
+
+  ollama:
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    environment:
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_MAX_QUEUE: "16"
+      OLLAMA_KEEP_ALIVE: "2m"
+    volumes: [ollama_data:/root/.ollama]
+    cpus: ${OLLAMA_CPUS:-1.0}
+    mem_limit: ${OLLAMA_MEMORY_LIMIT:-2g}
+    memswap_limit: ${OLLAMA_MEMORY_SWAP_LIMIT:-3g}
+    healthcheck:
+      test: [CMD, ollama, list]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+    logging: *logging
+
+  model_init:
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: [/bin/ollama]
+    command: [pull, '${OLLAMA_MODEL:-qwen3:1.7b}']
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+    logging: *logging
+
+  migrate:
+    <<: *app
+    command: python manage.py migrate --noinput
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    <<: *app
+    command: sh -c "python manage.py collectstatic --noinput && exec gunicorn kormic_backend.wsgi:application --bind 0.0.0.0:8000 --workers ${GUNICORN_WORKERS:-1} --threads 2 --timeout 120 --access-logfile - --error-logfile -"
+    ports: ['127.0.0.1:${KORMIC_HTTP_PORT:-8030}:8000']
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request as u; u.urlopen(u.Request('http://127.0.0.1:8000/api/health/', headers={'X-Forwarded-Proto':'https'}), timeout=5)"]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 60s
+
+  celery_worker:
+    <<: *app
+    # Short tasks remain separate from long-running agents/documents.
+    command: celery -A kormic_backend worker -l info -Q celery --concurrency=1 --hostname=general@%h
+    stop_grace_period: 60s
+
+  agent_worker:
+    <<: *app
+    command: celery -A kormic_backend worker -l info -Q agent_chat --concurrency=1 --hostname=agent@%h
+    stop_grace_period: 620s
+
+  background_worker:
+    <<: *app
+    command: celery -A kormic_backend worker -l info -Q agent_documents,knowledge_index --concurrency=1 --hostname=background@%h
+    stop_grace_period: 620s
+
+  celery_beat:
+    <<: *app
+    command: celery -A kormic_backend beat -l info --schedule /home/app/beat/celerybeat-schedule
+    volumes:
+      - beat_data:/home/app/beat
+
+  university_worker:
+    <<: *app
+    command: python manage.py university_worker --concurrency=1
+    stop_grace_period: 620s
+
+  github_worker:
+    <<: *app
+    command: python manage.py github_worker --concurrency=1
+    stop_grace_period: 620s
+
+volumes:
+  postgres_data:
+  redis_data:
+  uploads_data:
+  embedding_data:
+  ollama_data:
+  beat_data:

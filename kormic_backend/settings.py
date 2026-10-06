@@ -349,7 +349,15 @@ CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS
 CSRF_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_HTTPONLY = True
-CSRF_COOKIE_SAMESITE = 'Lax'
+# Keep same-site custom domains on Vercel as the preferred deployment. An
+# explicit None supports cross-site hosts where the browser permits cookies.
+WEB_COOKIE_SAMESITE = os.getenv('WEB_COOKIE_SAMESITE', 'Lax')
+if WEB_COOKIE_SAMESITE not in {'Lax', 'Strict', 'None'}:
+    raise ImproperlyConfigured('WEB_COOKIE_SAMESITE must be Lax, Strict, or None.')
+if WEB_COOKIE_SAMESITE == 'None' and DEBUG:
+    raise ImproperlyConfigured('Cross-site cookies require HTTPS and DJANGO_DEBUG=false.')
+CSRF_COOKIE_SAMESITE = WEB_COOKIE_SAMESITE
+SESSION_COOKIE_SAMESITE = WEB_COOKIE_SAMESITE
 
 REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "accounts.exceptions.auth_exception_handler",
@@ -363,7 +371,7 @@ REST_FRAMEWORK = {
         "rest_framework.parsers.MultiPartParser",
     ],
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "accounts.authentication.FaceGatedAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
@@ -374,6 +382,7 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_THROTTLE_RATES": {
         "auth": "60/min",
+        "face": "30/min",
         "password_reset": "10/min",
         # claim/start and claim/verify are public by design (the OTP is
         # the auth), so both get an independent per-IP and per-email budget.
@@ -488,6 +497,7 @@ PROACTIVE_CHECKIN_COOLDOWN_DAYS = int(os.environ.get("PROACTIVE_CHECKIN_COOLDOWN
 PROACTIVE_CHECKIN_BATCH_SIZE = int(os.environ.get("PROACTIVE_CHECKIN_BATCH_SIZE", "50"))
 
 CELERY_BEAT_SCHEDULE = {
+    "cleanup-expired-face-challenges": {"task": "accounts.tasks.cleanup_face_challenges", "schedule": 3600.0},
     "dispatch-agent-outbox": {"task": "pure_multi_agent.tasks.dispatch_agent_work", "schedule": 30.0},
     "purge-expired-institute-roster-files": {
         "task": "institutes_list.tasks.purge_expired_source_files",
@@ -669,3 +679,11 @@ LOGGING = {
         },
     },
 }
+
+# Enable only after deploying models, a persistent encryption key and the updated app.
+STUDENT_FACE_AUTH_REQUIRED = os.getenv("STUDENT_FACE_AUTH_REQUIRED", "false").lower() == "true"
+STUDENT_FACE_ENCRYPTION_KEY = os.getenv("STUDENT_FACE_ENCRYPTION_KEY", "")
+FACE_MODEL_DIRECTORY = os.getenv("FACE_MODEL_DIRECTORY", str(BASE_DIR / "face_models"))
+STUDENT_FACE_MATCH_THRESHOLD = float(os.getenv("STUDENT_FACE_MATCH_THRESHOLD", "0.42"))
+if not 0 < STUDENT_FACE_MATCH_THRESHOLD < 1:
+    raise ValueError("STUDENT_FACE_MATCH_THRESHOLD must be between 0 and 1")

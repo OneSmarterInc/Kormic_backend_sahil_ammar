@@ -235,10 +235,10 @@ class LoginView(APIView):
                 status=status.HTTP_200_OK,
             )
 
-        # No TOTP enrolled yet, so there's no second factor to wait on --
-        # this token issuance is the whole login.
-        log_activity(ActivityLog.Action.LOGIN_SUCCEEDED, actor=user, target_user=user)
-
+        # This access token permits TOTP enrollment only while face gating is enabled.
+        from accounts.face_auth import required
+        if not required(user):
+            log_activity(ActivityLog.Action.LOGIN_SUCCEEDED, actor=user, target_user=user)
         refresh = RefreshToken.for_user(user)
         return Response(
             {
@@ -332,7 +332,11 @@ class TOTPVerifyEnrollmentView(APIView):
 
         run_with_retry(_confirm)
 
-        return Response({"backup_codes": backup_codes}, status=status.HTTP_200_OK)
+        from accounts.face_auth import required, pending_response
+        data = {"backup_codes": backup_codes}
+        if required(request.user):
+            data.update(pending_response(request.user, 'student' if request.data.get('portal') == 'student' else None))
+        return Response(data, status=status.HTTP_200_OK)
 
 
 class TOTPLoginVerifyView(APIView):
@@ -413,6 +417,9 @@ class TOTPLoginVerifyView(APIView):
 
         clear_totp_failures(user_id)
         invalidate_mfa_session(mfa_token)
+        from accounts.face_auth import required, pending_response
+        if required(user):
+            return Response(pending_response(user, getattr(self, 'portal', None)))
         log_activity(ActivityLog.Action.LOGIN_SUCCEEDED, actor=user, target_user=user)
 
         refresh = RefreshToken.for_user(user)
@@ -450,6 +457,12 @@ class CurrentUserView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        from accounts.face_auth import required
+        from accounts.models import StudentFaceCredential
+        if required(request.user) and request.auth.get('face_pending'):
+            data = serialize_user(request.user)
+            data.update(face_verification_required=True, face_enrolled=StudentFaceCredential.objects.filter(user=request.user).exists())
+            return Response(data)
         return Response(_serialize_user_with_verification(request.user), status=status.HTTP_200_OK)
 
 

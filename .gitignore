@@ -39,4 +39,6 @@ staticfiles/
 university-agent-tests.log
 embedding-setup.log
 .env.prod
+.env.aws
+face_models/
 backups/

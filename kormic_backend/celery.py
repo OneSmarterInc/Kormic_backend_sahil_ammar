@@ -12,6 +12,12 @@ app.autodiscover_tasks()
 app.autodiscover_tasks(["pure_multi_agent"])
 
 
+@app.task(name='kormic.deployment_probe')
+def deployment_probe(nonce):
+    """Side-effect-free broker/worker/result-backend round trip for operators."""
+    return nonce
+
+
 # Celery never fires Django's request_finished signal (that's HTTP-cycle
 # only), so nothing normally closes a worker's DB connection once it's
 # past DATABASES['default']['CONN_MAX_AGE'] or gone stale (Postgres

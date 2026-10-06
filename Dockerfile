@@ -5,6 +5,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -16,7 +20,7 @@ COPY . .
 # fails with Permission denied. /home/app lives outside the bind-mounted
 # /app, so it stays valid regardless of the host directory's ownership.
 RUN addgroup --system app && adduser --system --home /home/app --ingroup app app \
-    && mkdir -p /home/app/.cache/kormic-embeddings /app/uploads /app/staticfiles \
+    && mkdir -p /home/app/beat /home/app/.cache/kormic-embeddings /app/uploads /app/staticfiles \
     && chown -R app:app /home/app /app
 ENV HOME=/home/app
 USER app

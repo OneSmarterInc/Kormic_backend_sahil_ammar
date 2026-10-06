@@ -2,8 +2,11 @@ from django.urls import path
 from accounts import web_auth
 
 from accounts import views
+from accounts.face_auth import FaceStartView, FaceStepView
 
 urlpatterns = [
+    path("face/start/", FaceStartView.as_view()),
+    path("face/<uuid:challenge_id>/step/", FaceStepView.as_view()),
     path("web/csrf/", web_auth.WebCSRFView.as_view()),
     path("web/login/", web_auth.WebLoginView.as_view()),
     path("web/register/", web_auth.WebRegisterView.as_view()),

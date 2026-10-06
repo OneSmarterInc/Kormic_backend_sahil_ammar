@@ -3,6 +3,42 @@ from django.contrib.auth.models import User
 from django.db import models
 
 
+class StudentFaceCredential(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='face_credential')
+    encrypted_template = models.BinaryField()
+    model_sha256 = models.CharField(max_length=64)
+    created_at = models.DateTimeField(auto_now_add=True)
+    consent_at = models.DateTimeField()
+
+
+class StudentFaceChallenge(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    login_jti = models.CharField(max_length=64, db_index=True)
+    sequence = models.JSONField(default=list)
+    step = models.PositiveSmallIntegerField(default=0)
+    encrypted_reference = models.BinaryField(default=bytes)
+    capture_hashes = models.JSONField(default=list)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    step_started_at = models.DateTimeField()
+    expires_at = models.DateTimeField()
+    finished_at = models.DateTimeField(null=True)
+    passed = models.BooleanField(default=False)
+
+
+
+class StudentFaceCapture(models.Model):
+    """Capture fingerprints only, used to reject byte-identical replay."""
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    digest = models.CharField(max_length=64)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['user', 'digest'], name='unique_student_face_capture')]
+
+
+
 class Account(models.Model):
     """
     Role + ownership record linking a stock auth.User to this project's

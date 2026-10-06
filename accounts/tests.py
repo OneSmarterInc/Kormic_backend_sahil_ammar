@@ -255,11 +255,13 @@ class AuthFlowTests(TestCase):
         refresh_resp = self.client.post("/api/auth/refresh/", {"refresh": tokens["refresh"]}, format="json")
         self.assertEqual(refresh_resp.status_code, status.HTTP_200_OK)
 
+        # Rotation revokes the original refresh token. Log out the current session.
+        current_refresh = refresh_resp.data.get("refresh", tokens["refresh"])
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens['access']}")
-        logout_resp = self.client.post("/api/auth/logout/", {"refresh": tokens["refresh"]}, format="json")
+        logout_resp = self.client.post("/api/auth/logout/", {"refresh": current_refresh}, format="json")
         self.assertEqual(logout_resp.status_code, status.HTTP_205_RESET_CONTENT)
 
-        refresh_after_logout = self.client.post("/api/auth/refresh/", {"refresh": tokens["refresh"]}, format="json")
+        refresh_after_logout = self.client.post("/api/auth/refresh/", {"refresh": current_refresh}, format="json")
         self.assertEqual(refresh_after_logout.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_logout_allowed_while_restricted(self):
