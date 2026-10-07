@@ -24,6 +24,9 @@ class Command(BaseCommand):
         timeout = options['timeout']
         if timeout < 1:
             raise CommandError('timeout must be positive')
+        from .check_backend_ready import check_backend_ready
+        check_backend_ready()
+        self.stdout.write('PASS database schema and signing-key checks')
         with connection.cursor() as cursor:
             cursor.execute('SELECT 1')
             assert cursor.fetchone()[0] == 1

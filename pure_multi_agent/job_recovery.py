@@ -5,6 +5,7 @@ from datetime import timedelta
 import threading
 import json
 from django.core.serializers.json import DjangoJSONEncoder
+from django.conf import settings
 from django.db import close_old_connections
 from django.db.models import Q, F
 from django.utils import timezone
@@ -61,7 +62,7 @@ def track(job_id, token):
 def recover():
     now = timezone.now()
     # Wait beyond the conversation lease: a replacement cannot overlap its predecessor.
-    stale = AgentJob.objects.filter(status='processing', started_at__lt=now-timedelta(seconds=960)).filter(
+    stale = AgentJob.objects.filter(status='processing', started_at__lt=now-timedelta(seconds=settings.AGENT_JOB_TIMEOUT + 120)).filter(
         Q(heartbeat_at__isnull=True) | Q(heartbeat_at__lt=now-timedelta(seconds=90)))
     safe = stale.filter(recovery_phase='model', recovery_attempts__lt=3)
     safe.update(status='queued', execution_token=None, dispatched_at=None,

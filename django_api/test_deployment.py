@@ -46,7 +46,8 @@ class DeploymentTests(SimpleTestCase):
         with patch(module + '.connection') as db, patch('redis.Redis.from_url'), \
                 patch(module + '.caches', {'default': cache, 'agent_config': cache}), \
                 patch(module + '.app.send_task', side_effect=send_task), \
-                patch(module + '.urlopen') as http:
+                patch(module + '.urlopen') as http, \
+                patch('django_api.management.commands.check_backend_ready.check_backend_ready'):
             db.cursor.return_value.__enter__.return_value.fetchone.return_value = (1,)
             http.return_value.__enter__.return_value = io.BytesIO(json.dumps({
                 'models': [{'name': settings.GITHUB_OLLAMA_MODEL}]}).encode())

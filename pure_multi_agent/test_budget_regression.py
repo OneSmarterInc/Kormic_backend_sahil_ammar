@@ -24,7 +24,7 @@ class BudgetRegressionTests(SimpleTestCase):
         self.assertEqual(budget_context(profile)['currency'], 'USD')
 
     def test_auto_small_model_is_local_only_for_advice(self):
-        with patch.dict(os.environ, {'STUDENT_REASONING_PROVIDER': 'auto', 'STUDENT_OLLAMA_MODEL': 'qwen3:1.7b'}):
+        with patch.dict(os.environ, {'STUDENT_REASONING_PROVIDER': 'auto', 'STUDENT_OLLAMA_MODEL': 'qwen3:0.6b'}):
             self.assertEqual(advice_options(), {'local_only': True})
 
     def test_clarification_uses_one_local_answer_without_reviews_or_tools(self):

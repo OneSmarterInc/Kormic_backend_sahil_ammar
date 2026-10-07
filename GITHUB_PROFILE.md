@@ -89,7 +89,7 @@ production web service, not Django's development server, for production traffic.
 
 ```dotenv
 GITHUB_OLLAMA_BASE_URL=http://127.0.0.1:11434
-GITHUB_OLLAMA_MODEL=qwen3:1.7b
+GITHUB_OLLAMA_MODEL=qwen3:0.6b
 GITHUB_OLLAMA_TIMEOUT=180
 ```
 

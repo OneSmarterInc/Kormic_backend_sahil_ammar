@@ -10,7 +10,7 @@ from anthropic.types import Message
 from django.conf import settings
 from jsonschema import validate
 from github_profiles.scheduling import model_slot
-from kormic_backend.ollama_config import qwen_keep_alive
+from kormic_backend.ollama_config import qwen_keep_alive, QWEN_REQUEST_TIMEOUT_SECONDS
 from pure_multi_agent.qwen_context import select_context, needs_expansion
 
 logger = logging.getLogger(__name__)
@@ -70,7 +70,7 @@ def create(**kwargs):
         body['options']['num_ctx'] = budget.num_ctx
         with model_slot('qwen', None, budget.input_estimate + budget.num_predict):
             response = httpx.post(base + '/api/chat', json=body, trust_env=False,
-                                  timeout=httpx.Timeout(120, connect=2))
+                                  timeout=httpx.Timeout(QWEN_REQUEST_TIMEOUT_SECONDS, connect=2))
             response.raise_for_status()
         payload = response.json()
         if payload.get('done_reason') == 'length':

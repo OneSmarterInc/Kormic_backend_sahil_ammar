@@ -8,11 +8,14 @@ import logging
 from typing import Optional
 
 from celery import shared_task
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
 
-@shared_task(bind=True, acks_late=True, reject_on_worker_lost=True, soft_time_limit=570, time_limit=600, max_retries=3)
+@shared_task(bind=True, acks_late=True, reject_on_worker_lost=True,
+             soft_time_limit=settings.AGENT_JOB_TIMEOUT - 30,
+             time_limit=settings.AGENT_JOB_TIMEOUT, max_retries=3)
 def execute_agent_job(self, job_id):
     import uuid
     from pure_multi_agent.job_recovery import track, recover
@@ -27,7 +30,7 @@ def execute_agent_job(self, job_id):
         return
     try:
         from pure_multi_agent.inference_admission import tenant_key
-        with lease('workflow:' + tenant_key(job.owner_key), limit=2, ttl=900), lease("thread:" + job.owner_key, ttl=900):
+        with lease('workflow:' + tenant_key(job.owner_key), limit=2, ttl=settings.AGENT_JOB_TIMEOUT + 60), lease("thread:" + job.owner_key, ttl=settings.AGENT_JOB_TIMEOUT + 60):
             token = uuid.uuid4()
             if not AgentJob.objects.filter(pk=job_id, status="queued").update(status="processing", started_at=timezone.now(), heartbeat_at=timezone.now(), execution_token=token):
                 return
@@ -63,14 +66,13 @@ def execute_agent_job(self, job_id):
                             (current.completed_at - current.started_at).total_seconds())
             except ResumeTurnLater as exc:
                 from datetime import timedelta
-                from django.conf import settings
                 available = timezone.now() + timedelta(seconds=exc.delay if settings.AGENT_QUEUE_BACKEND == 'database' else 0)
                 with transaction.atomic():
                     current = AgentJob.objects.select_for_update().filter(pk=job_id, status='processing', execution_token=token).first()
                     if current is None:
                         return
                     attempts = int(current.payload.get('capacity_resume_attempts', 0)) + 1
-                    if attempts > 20 or (timezone.now() - current.created_at).total_seconds() > 600:
+                    if attempts > 20 or (timezone.now() - current.created_at).total_seconds() > settings.AGENT_JOB_TIMEOUT:
                         current.status = 'failed'
                         current.completed_at = timezone.now()
                         current.execution_token = None
@@ -95,7 +97,6 @@ def execute_agent_job(self, job_id):
     except AgentBusy as exc:
         # No execution started; redelivery is safe here. Mid-turn failures are
         # never auto-replayed because tools may already have written profile data.
-        from django.conf import settings
         if settings.AGENT_QUEUE_BACKEND != 'database':
             raise self.retry(exc=exc, countdown=5)
 

@@ -305,11 +305,13 @@ class OfficerTests(TestCase):
         def model(messages, tools, **kwargs):
             calls.append([t.name for t in tools])
             last = messages[-1]
-            if last.type == 'tool':
+            if last.type == 'tool' and last.name != 'enable_officer_tool':
                 return AIMessage(content='Please confirm.' if 'pending' in last.content else 'Saved.')
             if last.content == 'yes':
                 proposal = AgentChangeProposal.objects.get(status='pending')
                 name, args = 'resolve_university_change', {'proposal_id': str(proposal.pk), 'decision': 'approve', 'confirmation_message': 'yes'}
+            elif 'propose_knowledge_change' not in {t.name for t in tools}:
+                name, args = 'enable_officer_tool', {'name': 'propose_knowledge_change'}
             else:
                 name, args = 'propose_knowledge_change', {'topic': 'Merit', 'content': 'Applicants may request advice', 'group': 'money', 'details': {'category': 'general', 'applies_to': 'all applicants', 'effective_period': 'ongoing'}}
             return AIMessage(content='', tool_calls=[{'name': name, 'args': args, 'id': str(uuid.uuid4())}])
@@ -327,7 +329,9 @@ class OfficerTests(TestCase):
         from github_profiles.scheduling import CapacityBusy
         saver = InMemorySaver()
         proposal_call = AIMessage(content='', tool_calls=[{'name': 'propose_knowledge_change', 'args': {'topic': 'Merit', 'content': 'Applicants may request advice', 'group': 'money', 'details': {'category': 'general', 'applies_to': 'all applicants', 'effective_period': 'ongoing'}}, 'id': 'call'}])
-        with mock.patch('pure_multi_agent.model_router.invoke', side_effect=[proposal_call, CapacityBusy('busy', 5)]):
+        load_call = AIMessage(content='', tool_calls=[{'name': 'enable_officer_tool',
+            'args': {'name': 'propose_knowledge_change'}, 'id': 'load'}])
+        with mock.patch('pure_multi_agent.model_router.invoke', side_effect=[load_call, proposal_call, CapacityBusy('busy', 5)]):
             with self.assertRaises(ResumeTurnLater) as raised:
                 run_turn(str(self.uni.uuid), self.actor.pk, 'Add award', checkpointer=saver)
         with mock.patch('pure_multi_agent.model_router.invoke', return_value=AIMessage(content='Confirm?')):

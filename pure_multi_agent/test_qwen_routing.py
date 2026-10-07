@@ -2,6 +2,7 @@ from contextlib import nullcontext
 import os
 from unittest.mock import Mock, patch
 from django.test import SimpleTestCase
+from django.conf import settings
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from pure_multi_agent.capacity import LimitedMessages
@@ -29,6 +30,9 @@ class QwenRoutingTests(SimpleTestCase):
                 self.assertEqual(client.call_args.kwargs['keep_alive'], '2m')
                 self.assertEqual(client.call_args.kwargs['num_ctx'], 16384)
                 self.assertEqual(client.call_args.kwargs['num_predict'], 2400)
+                timeout = client.call_args.kwargs['client_kwargs']['timeout']
+                self.assertEqual(timeout.read, 900)
+                self.assertEqual(timeout.connect, 2)
             finally:
                 model_router.qwen.cache_clear()
 
@@ -39,6 +43,8 @@ class QwenRoutingTests(SimpleTestCase):
                 legacy_qwen.create(messages=[{'role': 'user', 'content': 'Hello'}])
             self.assertEqual(post.call_args.kwargs['json']['keep_alive'], '2m')
             self.assertEqual(post.call_args.kwargs['json']['options']['num_ctx'], 8192)
+            self.assertEqual(post.call_args.kwargs['timeout'].read, 900)
+            self.assertEqual(post.call_args.kwargs['timeout'].connect, 2)
 
     def test_backup_repairs_unavailable_tool_without_executing_it(self):
         model = Mock()
@@ -201,7 +207,7 @@ class QwenRoutingTests(SimpleTestCase):
              patch.object(legacy_qwen.httpx, 'post', return_value=response) as post:
             result = legacy_qwen.create(messages=[{'role': 'user', 'content': 'Read requirements'}],
                 tools=[{'name': 'read_requirements', 'input_schema': {'type': 'object', 'properties': {}}}])
-        self.assertEqual(post.call_args.kwargs['json']['model'], 'qwen3:1.7b')
+        self.assertEqual(post.call_args.kwargs['json']['model'], settings.GITHUB_OLLAMA_MODEL)
         self.assertEqual(result.content[0].name, 'read_requirements')
         self.assertEqual(result.stop_reason, 'tool_use')
 

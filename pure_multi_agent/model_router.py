@@ -18,7 +18,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_ollama import ChatOllama
 from django.conf import settings
 from github_profiles.scheduling import model_slot, provider_blocked, block_provider, CapacityBusy
-from kormic_backend.ollama_config import qwen_keep_alive
+from kormic_backend.ollama_config import qwen_keep_alive, QWEN_REQUEST_TIMEOUT_SECONDS
 from pure_multi_agent.qwen_context import select_context, needs_expansion, ContextBudgetExceeded
 from pure_multi_agent.reservations import reservation_estimate, claude_output_allowance
 
@@ -113,7 +113,7 @@ def qwen(num_ctx=16384, num_predict=2400):
     return ChatOllama(model=os.getenv('STUDENT_OLLAMA_MODEL', settings.GITHUB_OLLAMA_MODEL),
         base_url=base, temperature=0, reasoning=False, num_ctx=num_ctx, num_predict=num_predict,
         keep_alive=qwen_keep_alive(),
-        client_kwargs={'timeout': httpx.Timeout(90, connect=2), 'trust_env': False})
+        client_kwargs={'timeout': httpx.Timeout(QWEN_REQUEST_TIMEOUT_SECONDS, connect=2), 'trust_env': False})
 
 
 @lru_cache(maxsize=4)

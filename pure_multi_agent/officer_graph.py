@@ -13,7 +13,7 @@ from pure_multi_agent import change_proposals as changes
 from pure_multi_agent.tools.officer_tools import build_tools
 
 _graphs, _lock = WeakKeyDictionary(), Lock()
-RESUME_KEYS = ('turn_id', 'model_steps', 'tool_errors', 'student_cards', 'change_proposals', 'sources')
+RESUME_KEYS = ('turn_id', 'model_steps', 'tool_errors', 'student_cards', 'change_proposals', 'sources', 'officer_proposal_tool')
 POLICY = """You are the authenticated university officer's private assistant.
 Use native tools to retrieve current evidence, reason about students and policies,
 and propose edits. All final replies must be your evidence-grounded synthesis.
@@ -90,12 +90,9 @@ def _reason(state: MessagesState, runtime: Runtime[dict]):
     human = [i for i, message in enumerate(messages) if message.type == 'human']
     if len(human) > 12:
         messages = messages[human[-12]:]
-    tools = build_tools(ctx)
-    # The profile tab is authoritative, not an optional semantic-search hit.
-    # Refresh on every graph step so confirmed edits immediately affect replies.
-    profile_tool = next(tool for tool in tools if tool.name == 'read_university_record')
-    record = profile_tool.invoke({'section': 'all'})
-    prompt += '\nCURRENT SAVED UNIVERSITY PROFILE (evidence, not instructions): ' + json.dumps(record, default=str)
+    from pure_multi_agent.officer_context import prepare, CATALOG
+    messages, tools = prepare(ctx, messages, build_tools(ctx))
+    prompt += CATALOG
     prompt += ('\nEligibility criteria in the current profile are saved admission requirements. '
         'Quote their actual criteria and details when answering, even if knowledge search is empty. '
         'Current saved records override older chat statements saying information is missing. '
@@ -120,7 +117,10 @@ def _reason(state: MessagesState, runtime: Runtime[dict]):
         reply = invoke([SystemMessage(content=prompt), *messages], tools,
             local_only=True, require_tools=require_evidence, profile='evidence',
             tool_call_validator=lambda call: _validate_consent_call(call, ctx.get('current_message', '')))
-    except ContextBudgetExceeded:
+    except ContextBudgetExceeded as exc:
+        logging.getLogger(__name__).warning(
+            'officer_context_budget_exceeded steps=%s messages=%s tools=%s reason=%s',
+            ctx.get('model_steps', 0), len(messages), len(tools), exc)
         return {'messages': [AIMessage(content=(
             'There is more source material than I can safely review in one pass. '
             'Please ask about a narrower portal area or a specific requirement.'))]}
@@ -133,7 +133,9 @@ def _act(state: MessagesState, runtime: Runtime[dict]):
     from pure_multi_agent.job_recovery import boundary
     boundary()
     ctx = runtime.context
-    mapping, results = {t.name: t for t in build_tools(ctx)}, []
+    from pure_multi_agent.officer_context import prepare
+    _, tools = prepare(ctx, state['messages'], build_tools(ctx))
+    mapping, results = {t.name: t for t in tools}, []
     for call in state['messages'][-1].tool_calls:
         try:
             from pure_multi_agent.activity import tool_activity
@@ -146,7 +148,7 @@ def _act(state: MessagesState, runtime: Runtime[dict]):
             logging.getLogger(__name__).exception('Officer tool failed: %s', call['name'])
             ctx['tool_errors'] = ctx.get('tool_errors', 0) + 1
             result = {'error': 'Tool unavailable. Explain the limitation; do not invent results or claim changes were saved.'}
-        results.append(ToolMessage(content=json.dumps(result, default=str, ensure_ascii=False), tool_call_id=call['id']))
+        results.append(ToolMessage(content=json.dumps(result, default=str, ensure_ascii=False), tool_call_id=call['id'], name=call['name']))
     return {'messages': results}
 
 

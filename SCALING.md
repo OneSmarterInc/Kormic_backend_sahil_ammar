@@ -223,7 +223,7 @@ not caps on the student's message. The request sizer includes messages, tool
 schemas and output space, then expands to the next available window. The
 default maximum is `KORMIC_QWEN_MAX_CONTEXT=16384`. Increase it only after
 checking the installed model's context capacity and measuring host RAM and
-latency; the [Qwen3:1.7b model listing](https://ollama.com/library/qwen3%3A1.7b)
+latency; the [Qwen3:0.6b model listing](https://ollama.com/library/qwen3%3A0.6b)
 currently advertises a 40K context window.
 
 Ollama's `prompt_eval_count` is checked after each local response. If the prompt

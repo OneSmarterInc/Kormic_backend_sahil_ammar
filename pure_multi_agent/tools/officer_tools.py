@@ -62,6 +62,8 @@ def build_tools(ctx):
         row = changes.officer_university(ctx)
         if page < 1:
             raise ValueError('Page must be positive.')
+        if section == 'requirements':
+            return {'requirements': row.eligibility_criteria, 'instruction': 'Indices are zero-based. New/changed requirements require structured complete details.'}
         profile = {key: getattr(row, key) for key in changes.UNIVERSITY_FIELDS}
         profile.update(university_id=str(row.uuid), country=row.country, updated_at=row.updated_at.isoformat())
         groups = list(row.knowledge_groups.values('slug', 'escalation_contact_name', 'escalation_contact_email'))
@@ -79,8 +81,6 @@ def build_tools(ctx):
             return {'section': section, 'total': rows.count(), 'page': page, 'page_size': 10,
                 'records': list(rows.order_by('pk').values(*fields, 'page__url', 'source_quote', 'fetched_at')[(page - 1) * 10:page * 10]),
                 'correction_instruction': 'For officer corrections, propose a complete knowledge entry. Scraped source evidence remains attributed to its website.'}
-        if section == 'requirements':
-            return {'requirements': row.eligibility_criteria, 'instruction': 'Indices are zero-based. New/changed requirements require structured complete details.'}
         if section == 'contacts':
             return {'departments': groups, 'contacts': {key: profile[key] for key in ('contact_email', 'contact_phone', 'admissions_office_address')}}
         if section == 'agent':

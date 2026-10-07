@@ -65,7 +65,7 @@ dc logs --tail=80 migrate model_init web
 ```
 
 `migrate` and `model_init` must finish with exit code 0; they are intentionally
-one-shot containers. Model initialization pulls qwen3:1.7b into a persistent volume.
+one-shot containers. Model initialization pulls qwen3:0.6b into a persistent volume.
 All application workers wait for database migrations and model initialization.
 Do not share `dc config` without `--quiet`: it expands secrets.
 

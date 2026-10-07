@@ -42,11 +42,12 @@ class WorkspaceToolsTests(TestCase):
     def test_graph_supplies_saved_requirements_and_existing_action_tools_to_ai(self):
         calls = []
         def model(messages, tools, **kwargs):
+            from pure_multi_agent.qwen_context import select_context
+            select_context(messages, tools, profile='evidence', max_context=16384)
             calls.append(kwargs.get('require_tools'))
-            self.assertIn('3.5 to 4.0 scale', messages[0].content)
+            self.assertNotIn('3.5 to 4.0 scale', messages[0].content)
             names = {tool.name for tool in tools}
-            self.assertTrue({'read_portal_tab', 'propose_admission_requirement',
-                'propose_university_information', 'propose_knowledge_change',
+            self.assertTrue({'read_portal_tab', 'enable_officer_tool',
                 'resolve_university_change', 'ask_student_agent'}.issubset(names))
             if len(calls) == 1:
                 self.assertTrue(kwargs['require_tools'])

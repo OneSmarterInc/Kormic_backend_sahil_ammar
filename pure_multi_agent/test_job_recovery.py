@@ -1,6 +1,7 @@
 import uuid
 from datetime import timedelta
 from django.test import TestCase
+from django.conf import settings
 from django.utils import timezone
 from django_api.models import AgentJob, InferenceWaiter, InferenceTenant
 from pure_multi_agent.job_recovery import recover, boundary, execution, ExecutionLost
@@ -46,7 +47,7 @@ class RecoveryTests(TestCase):
 
     def job(self, phase, key='a'):
         return AgentJob.objects.create(owner_key=key, idempotency_key=key, kind='student', status='processing',
-            execution_token=uuid.uuid4(), started_at=timezone.now()-timedelta(seconds=1000),
+            execution_token=uuid.uuid4(), started_at=timezone.now()-timedelta(seconds=settings.AGENT_JOB_TIMEOUT + 160),
             heartbeat_at=timezone.now()-timedelta(seconds=100), recovery_phase=phase,
             payload={'resume_state':{'turn_id':'stable-turn'}})
 
@@ -96,6 +97,18 @@ class RecoveryTests(TestCase):
         AgentJob.objects.filter(pk=job.pk).update(heartbeat_at=timezone.now())
         recover(); job.refresh_from_db()
         self.assertEqual(job.status, 'processing')
+
+    def test_recovery_waits_for_extended_workflow_lease(self):
+        job = self.job('model')
+        AgentJob.objects.filter(pk=job.pk).update(started_at=timezone.now()-timedelta(seconds=1000))
+        recover()
+        job.refresh_from_db()
+        self.assertEqual(job.status, 'processing')
+
+    def test_agent_task_allows_fifteen_minute_inference(self):
+        from pure_multi_agent.tasks import execute_agent_job
+        self.assertGreater(execute_agent_job.soft_time_limit, 900)
+        self.assertGreater(execute_agent_job.time_limit, execute_agent_job.soft_time_limit)
 
     def test_tenant_with_many_conversations_cannot_jump_other_tenant(self):
         now = timezone.now()

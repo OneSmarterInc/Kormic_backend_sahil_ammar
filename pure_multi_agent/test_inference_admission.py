@@ -9,6 +9,24 @@ from pure_multi_agent.tasks import execute_agent_job
 
 
 class AdmissionTests(TestCase):
+    @override_settings(GITHUB_QWEN_CONCURRENCY=1)
+    def test_long_qwen_call_retains_provider_and_tenant_reservations(self):
+        from agent_queries.models import AgentCapacitySlot
+        from django_api.models import GitHubModelSlot
+        from github_profiles.scheduling import model_slot, _provider_slot, CapacityBusy
+        start = timezone.now()
+        with chat_workload('student:slow'), model_slot('qwen', None, 100):
+            for expiry in AgentCapacitySlot.objects.filter(token__isnull=False).values_list('expires_at', flat=True):
+                self.assertGreater(expiry, start + timedelta(seconds=900))
+            slot = GitHubModelSlot.objects.get(provider='qwen', number=0)
+            self.assertGreater(slot.expires_at, start + timedelta(seconds=900))
+            with patch('github_profiles.scheduling.timezone.now', return_value=start + timedelta(seconds=700)):
+                with self.assertRaises(CapacityBusy), _provider_slot('qwen', None, 100):
+                    self.fail('A still-running call must retain its slot after ten minutes')
+        self.assertFalse(AgentCapacitySlot.objects.filter(token__isnull=False).exists())
+        slot.refresh_from_db()
+        self.assertIsNone(slot.token)
+
     def test_presenter_conversations_have_separate_locks(self):
         from pure_multi_agent.jobs import owner_key
         self.assertNotEqual(owner_key(None, 'uni', 'student1'), owner_key(None, 'uni', 'student2'))

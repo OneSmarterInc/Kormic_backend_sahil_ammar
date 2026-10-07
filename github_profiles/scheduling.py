@@ -7,6 +7,7 @@ from contextlib import contextmanager, nullcontext
 from datetime import timedelta
 
 from django.conf import settings
+from kormic_backend.ollama_config import QWEN_SLOT_TTL_SECONDS
 from django.db import transaction, OperationalError, connection
 from django.db.models import Q, F
 from django.utils import timezone
@@ -129,7 +130,7 @@ def _provider_slot(provider, run, estimated_tokens):
     for number in range(limit):
         GitHubModelSlot.objects.get_or_create(provider=provider, number=number)
         slot = GitHubModelSlot.objects.filter(provider=provider, number=number).filter(Q(token__isnull=True) | Q(expires_at__lte=now))
-        if slot.update(token=token, expires_at=now+timedelta(seconds=600)):
+        if slot.update(token=token, expires_at=now+timedelta(seconds=QWEN_SLOT_TTL_SECONDS if provider == 'qwen' else 600)):
             selected = number
             break
     if selected is None:

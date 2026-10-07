@@ -23,8 +23,8 @@ ollama serve
 In another terminal:
 
 ```powershell
-ollama pull qwen3:1.7b
-ollama run qwen3:1.7b
+ollama pull qwen3:0.6b
+ollama run qwen3:0.6b
 ```
 
 If the Ollama Windows service is already running, skip `ollama serve`. The model

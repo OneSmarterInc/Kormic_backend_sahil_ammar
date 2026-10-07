@@ -28,8 +28,8 @@ x-env: &environment
   GITHUB_OLLAMA_BASE_URL: http://ollama:11434
   STUDENT_OLLAMA_BASE_URL: http://ollama:11434
   GITHUB_OLLAMA_ALLOWED_HOSTS: ollama,localhost,127.0.0.1
-  GITHUB_OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:1.7b}
-  STUDENT_OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:1.7b}
+  GITHUB_OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:0.6b}
+  STUDENT_OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:0.6b}
   GITHUB_QWEN_CONCURRENCY: "1"
   GITHUB_WORKER_CONCURRENCY: "1"
   UNIVERSITY_RESEARCH_CONCURRENCY: "1"
@@ -126,7 +126,7 @@ services:
     environment:
       OLLAMA_HOST: http://ollama:11434
     entrypoint: [/bin/ollama]
-    command: [pull, '${OLLAMA_MODEL:-qwen3:1.7b}']
+    command: [pull, '${OLLAMA_MODEL:-qwen3:0.6b}']
     depends_on:
       ollama:
         condition: service_healthy

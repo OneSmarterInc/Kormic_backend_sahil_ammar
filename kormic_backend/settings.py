@@ -40,7 +40,7 @@ if KORMIC_PUBLIC_URL:
 
 # GitHub source analysis uses local Qwen first, then the existing Claude key.
 GITHUB_OLLAMA_BASE_URL = os.getenv("GITHUB_OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-GITHUB_OLLAMA_MODEL = os.getenv("GITHUB_OLLAMA_MODEL", "qwen3:1.7b")
+GITHUB_OLLAMA_MODEL = os.getenv("GITHUB_OLLAMA_MODEL", "qwen3:0.6b")
 GITHUB_OLLAMA_TIMEOUT = float(os.getenv("GITHUB_OLLAMA_TIMEOUT", "180"))
 GITHUB_OLLAMA_ALLOWED_HOSTS = [h.strip() for h in os.getenv("GITHUB_OLLAMA_ALLOWED_HOSTS", "localhost,127.0.0.1,::1").split(",") if h.strip()]
 GITHUB_WORKER_CONCURRENCY = int(os.getenv("GITHUB_WORKER_CONCURRENCY", "4"))
@@ -208,7 +208,9 @@ AGENT_QUEUE_CAPACITY = max(1, int(os.getenv("AGENT_QUEUE_CAPACITY", "1000")))
 AGENT_QUEUE_BACKEND = os.getenv('AGENT_QUEUE_BACKEND', 'celery').lower()
 if AGENT_QUEUE_BACKEND not in {'celery', 'database'}:
     raise ImproperlyConfigured('AGENT_QUEUE_BACKEND must be celery or database.')
-AGENT_JOB_TIMEOUT = 600
+# An agent turn can include multiple 15-minute Qwen requests; keep a bounded
+# 30-minute task budget and release its leases only after this deadline.
+AGENT_JOB_TIMEOUT = 1800
 AGENT_QUEUE_TIMEOUT = 900
 if not DEBUG and not TESTING and (not AGENT_QUEUE_ENABLED or not AGENT_DISTRIBUTED_LIMITS):
     raise ImproperlyConfigured("Production requires queued chat and distributed agent limits.")
