@@ -5,6 +5,8 @@ from . import claim_views, views
 urlpatterns = [
     path("institute-lists/upload/", views.upload_list, name="institute-list-upload"),
     path("institute-lists/lists/", views.list_lists, name="institute-list-lists"),
+    path("institute-lists/summary/", views.list_summary, name="institute-list-summary"),
+    path("institute-lists/lists/<int:list_id>/", views.list_detail, name="institute-list-detail"),
     path("institute-lists/lists/<int:list_id>/file/", views.download_source_file, name="institute-list-source-file"),
     path("institute-lists/lists/<int:list_id>/students/", views.list_students, name="institute-list-students"),
     path("institute-lists/lists/<int:list_id>/send-invites/", views.send_invites, name="institute-list-send-invites"),

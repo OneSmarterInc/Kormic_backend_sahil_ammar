@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from django.conf import settings
+from django.db.models import Exists, F, OuterRef, Subquery
+from django.db.models.functions import JSONObject
 
 from django_api.models import (
     ChatAttachment,
@@ -1156,7 +1158,6 @@ def record_chat_university_interests(student_id: str, message: str) -> List[str]
         return []
 
     from django_api.models import UniversityInterestEvent
-    from pure_multi_agent.preprocessing import UNIVERSITY_ALIASES
     from universities.models import University
 
     profile = StudentProfile.objects.filter(uuid=student_id).first()
@@ -1167,15 +1168,7 @@ def record_chat_university_interests(student_id: str, message: str) -> List[str]
     for row in University.objects.values("uuid", "name"):
         university_id = str(row["uuid"])
         name = str(row["name"] or "").strip().lower()
-        aliases = {name}
-        for alias, canonical in UNIVERSITY_ALIASES.items():
-            if canonical.lower() in name:
-                aliases.add(alias.lower())
-
-        matched = any(
-            alias and re.search(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", text)
-            for alias in aliases
-        )
+        matched = bool(name and re.search(rf"(?<![a-z0-9]){re.escape(name)}(?![a-z0-9])", text))
         if matched:
             UniversityInterestEvent.objects.get_or_create(
                 student=profile,
@@ -1359,24 +1352,17 @@ def compute_priority_tier(match_score: int, bounds: Dict[str, int]) -> str:
     return "unranked"
 
 
-def get_shortlisted_profiles(
+def _shortlist_candidates(
     university_id: str,
     min_score: Optional[int] = None,
     priority_tiers: Optional[List[str]] = None,
-) -> List[Dict[str, Any]]:
-    """
-    Return students who have explicitly engaged with this university.
-
-    Interest is the primary visibility rule. A fit assessment is optional:
-    students who have expressed interest but do not have a fit score yet are
-    returned as unassessed/unranked so the university can see the lead and
-    evaluate it later.
-    """
+) -> tuple[Any, Dict[str, int], List[Dict[str, Any]], Dict[str, int]]:
+    """Find interested students and their latest assessments without N+1 queries."""
     from django_api.models import FitAssessment, UniversityInterestEvent
     from universities.models import University
 
-    bounds = get_priority_tier_bounds(university_id)
     university = University.objects.filter(uuid=university_id).first()
+    bounds = {**DEFAULT_PRIORITY_TIER_BOUNDS, **((university.priority_tier_bounds if university else None) or {})}
     qualification_threshold = university.min_fit_score_threshold if university else 40
 
     if min_score is None:
@@ -1386,107 +1372,119 @@ def get_shortlisted_profiles(
         else:
             min_score = qualification_threshold
 
-    interested_student_pks = (
-        UniversityInterestEvent.objects.filter(university_id=university_id)
-        .order_by()
-        .values_list("student_id", flat=True)
-        .distinct()
+    interest = UniversityInterestEvent.objects.filter(
+        university_id=university_id, student_id=OuterRef("pk")
     )
+    latest_assessment = FitAssessment.objects.filter(
+        student_id=OuterRef("pk"), university_id=university_id
+    ).order_by("-created_at", "-pk")
+    score_payload = latest_assessment.annotate(
+        _score_payload=JSONObject(score=F("assessment__match_score"), assessment_id=F("pk"))
+    )
+    candidates = StudentProfile.objects.filter(Exists(interest)).annotate(
+        _latest_score_payload=Subquery(score_payload.values("_score_payload")[:1])
+    ).order_by("pk").values("pk", "uuid", "_latest_score_payload")
 
     shortlisted: List[Dict[str, Any]] = []
-
-    student_rows = {
-        row.pk: row
-        for row in StudentProfile.objects.filter(pk__in=interested_student_pks)
-    }
-
-    for student_pk in interested_student_pks:
-        student_row = student_rows.get(student_pk)
-        if student_row is None:
-            continue
-
-        assessment_row = (
-            FitAssessment.objects.filter(student_id=student_pk, university_id=university_id)
-            .order_by("-created_at")
-            .first()
-        )
-
-        if assessment_row is None:
-            if priority_tiers and "unranked" not in priority_tiers:
-                continue
-            eligibility = evaluate_university_eligibility(profile_row_to_dict(student_row), university)
-            shortlisted.append({
-                "student_id": str(student_row.uuid),
-                "assessment": {},
-                "match_score": None,
-                "priority_tier": "unranked",
-                "interested": True,
-                "qualified": eligibility["qualified"],
-                "qualification_status": eligibility["status"],
-                "qualification_threshold": qualification_threshold,
-                "eligibility": eligibility,
-            })
-            continue
-
-        assessment = assessment_row.assessment or {}
+    tier_counts = {"high": 0, "medium": 0, "low": 0, "unranked": 0}
+    for candidate in candidates:
+        latest = candidate["_latest_score_payload"] or {}
         try:
-            match_score = int(assessment.get("match_score"))
+            match_score = int(latest.get("score"))
         except (TypeError, ValueError):
             match_score = None
-
-        # Explicit score filters apply only to students who have a score.
-        if match_score is None:
-            if priority_tiers and "unranked" not in priority_tiers:
-                continue
-            eligibility = evaluate_university_eligibility(profile_row_to_dict(student_row), university)
-            shortlisted.append({
-                "student_id": str(assessment_row.student.uuid),
-                "assessment": assessment,
-                "match_score": None,
-                "priority_tier": "unranked",
-                "interested": True,
-                "qualified": eligibility["qualified"],
-                "qualification_status": eligibility["status"],
-                "qualification_threshold": qualification_threshold,
-                "eligibility": eligibility,
-            })
+        # An absent/invalid score remains visible as unranked even when the
+        # university's score threshold is higher than zero.
+        tier = compute_priority_tier(match_score, bounds) if match_score is not None else "unranked"
+        if match_score is None or match_score >= 0:
+            tier_counts[tier] += 1
+        if match_score is not None and match_score < min_score:
             continue
-
-        if match_score < min_score:
-            continue
-
-        tier = compute_priority_tier(match_score, bounds)
         if priority_tiers and tier not in priority_tiers:
             continue
-
-        eligibility = evaluate_university_eligibility(profile_row_to_dict(student_row), university)
         shortlisted.append({
-            "student_id": str(assessment_row.student.uuid),
-            "assessment": assessment,
+            "pk": candidate["pk"],
+            "_assessment_id": latest.get("assessment_id"),
+            "student_id": str(candidate["uuid"]),
             "match_score": match_score,
             "priority_tier": tier,
             "interested": True,
-            "qualified": eligibility["qualified"],
-            "qualification_status": eligibility["status"],
             "qualification_threshold": qualification_threshold,
-            "eligibility": eligibility,
         })
 
     shortlisted.sort(
         key=lambda item: (item["match_score"] is not None, item["match_score"] or -1),
         reverse=True,
     )
-    return shortlisted
+    return university, bounds, shortlisted, tier_counts
+
+
+def _qualify_shortlist(
+    university_id: str, university: Any, candidates: List[Dict[str, Any]]
+) -> tuple[List[Dict[str, Any]], Dict[str, StudentProfile]]:
+    """Load full profiles and evaluate eligibility only for returned rows."""
+    from django_api.models import FitAssessment
+
+    profiles = StudentProfile.objects.in_bulk(candidate["pk"] for candidate in candidates)
+    assessments = FitAssessment.objects.in_bulk(
+        candidate["_assessment_id"] for candidate in candidates if candidate["_assessment_id"] is not None
+    )
+    result = []
+    for candidate in candidates:
+        student = profiles[candidate["pk"]]
+        eligibility = evaluate_university_eligibility(profile_row_to_dict(student), university)
+        result.append({
+            key: value for key, value in {
+                **candidate,
+                "assessment": (assessments[candidate["_assessment_id"]].assessment or {})
+                    if candidate["_assessment_id"] in assessments else {},
+                "qualified": eligibility["qualified"],
+                "qualification_status": eligibility["status"],
+                "eligibility": eligibility,
+            }.items() if key not in ("pk", "_assessment_id")
+        })
+    return result, {str(profile.uuid): profile for profile in profiles.values()}
+
+
+def get_shortlisted_profiles(
+    university_id: str,
+    min_score: Optional[int] = None,
+    priority_tiers: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Return all interested students passing the requested score/tier filters."""
+    university, _bounds, candidates, _counts = _shortlist_candidates(
+        university_id, min_score=min_score, priority_tiers=priority_tiers
+    )
+    return _qualify_shortlist(university_id, university, candidates)[0]
+
+
+def get_shortlisted_profiles_page(
+    university_id: str,
+    *,
+    page: int,
+    page_size: int,
+    min_score: Optional[int] = None,
+    priority_tiers: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Return a page and global tier counts from the same candidate pass."""
+    university, bounds, candidates, tier_counts = _shortlist_candidates(
+        university_id, min_score=min_score, priority_tiers=priority_tiers
+    )
+    start = (page - 1) * page_size
+    profiles, profile_rows = _qualify_shortlist(
+        university_id, university, candidates[start:start + page_size]
+    )
+    return {
+        "profiles": profiles,
+        "profile_rows": profile_rows,
+        "total": len(candidates),
+        "tier_counts": tier_counts,
+        "priority_tier_bounds": bounds,
+    }
 
 def get_priority_tier_counts(university_id: str) -> Dict[str, int]:
-    """Tally of every interested-and-scored student for this university by
-    priority tier, ignoring any score gate (min_score=0) -- lets the officer
-    dashboard show tier filter buttons with counts regardless of which
-    tier(s) are currently selected."""
-    counts = {"high": 0, "medium": 0, "low": 0, "unranked": 0}
-    for entry in get_shortlisted_profiles(university_id, min_score=0):
-        counts[entry["priority_tier"]] += 1
-    return counts
+    """Tally all interested students, including unassessed, by priority tier."""
+    return _shortlist_candidates(university_id, min_score=0)[3]
 
 
 @traced_operation('LinkedIn Agent')

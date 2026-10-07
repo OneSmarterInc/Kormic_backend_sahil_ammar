@@ -44,6 +44,7 @@ urlpatterns = [
     path("chat/jobs/active/", job_status, name="agent-job-active"),
     path("chat/jobs/<uuid:job_id>/", job_status, name="agent-job-status"),
     path("chat/agent/history/", views.agent_chat_history, name="agent-chat-history"),
+    path("chat/agent/updates/", views.agent_chat_updates, name="agent-chat-updates"),
     # "New chat" and "clear chat" are the same action here -- there's no
     # multi-thread concept per student, so starting fresh always means
     # wiping the one conversation there is. Kept as a single canonical
@@ -76,6 +77,7 @@ urlpatterns = [
     path("exports/pdf/<str:student_id>/", views.ExportProfilePDFView.as_view(), name="export-profile-pdf"),
 
     # University Dashboard APIs
+    path("university/<str:university_id>/dashboard-summary/", views.UniversityDashboardSummaryView.as_view(), name="university-dashboard-summary"),
     path("university/<str:university_id>/profiles/", views.UniversityProfilesListView.as_view(), name="university-profiles"),
     path(
         "university/<str:university_id>/profile/<str:student_id>/",

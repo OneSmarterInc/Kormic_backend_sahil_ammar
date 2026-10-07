@@ -1,9 +1,7 @@
 import logging
-from datetime import timedelta
 from typing import Any, Dict
 
 from celery import shared_task
-from django.utils import timezone
 
 from django_api.models import AgentAuditLog
 
@@ -40,13 +38,6 @@ def save_audit_log_task(
 
 @shared_task
 def cleanup_old_audit_logs_task():
-    """
-    Runs nightly via Celery beat to delete AgentAuditLog entries older than 90 days,
-    keeping the PostgreSQL table size bounded without requiring cold storage.
-    """
-    try:
-        cutoff_date = timezone.now() - timedelta(days=90)
-        deleted_count, _ = AgentAuditLog.objects.filter(timestamp__lt=cutoff_date).delete()
-        logger.info(f"Cleaned up {deleted_count} old agent audit logs.")
-    except Exception as e:
-        logger.error(f"Failed to clean up old audit logs: {e}")
+    """Legacy task name retained for queued messages; audit purge is disabled."""
+    logger.warning("Agent audit deletion is disabled pending an approved audit/legal retention policy.")
+    return 0

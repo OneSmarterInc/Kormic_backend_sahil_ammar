@@ -18,6 +18,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_ollama import ChatOllama
 from django.conf import settings
 from github_profiles.scheduling import model_slot, provider_blocked, block_provider, CapacityBusy
+from kormic_backend.ollama_config import qwen_keep_alive
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,8 @@ def qwen():
     if urlsplit(base).hostname not in settings.GITHUB_OLLAMA_ALLOWED_HOSTS:
         raise ValueError('Ollama host is not in the configured allowlist')
     return ChatOllama(model=os.getenv('STUDENT_OLLAMA_MODEL', settings.GITHUB_OLLAMA_MODEL),
-        base_url=base, temperature=0, reasoning=False, num_ctx=16384, num_predict=2400, keep_alive=-1,
+        base_url=base, temperature=0, reasoning=False, num_ctx=16384, num_predict=2400,
+        keep_alive=qwen_keep_alive(),
         client_kwargs={'timeout': httpx.Timeout(90, connect=2), 'trust_env': False})
 
 

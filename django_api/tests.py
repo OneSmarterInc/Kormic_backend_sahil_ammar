@@ -1,9 +1,12 @@
 from unittest import mock
+from uuid import uuid4
 
 import pyotp
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -24,6 +27,11 @@ def _reset_inprocess_agent_caches():
 
 
 def _enroll_totp_and_get_tokens(client, *, email, password="S3curePassw0rd!"):
+    # Business-flow fixtures create many accounts from one process. Give each
+    # client its own source IP so the production auth throttle does not make
+    # unrelated test cases depend on their execution order.
+    address = uuid4().bytes
+    client.defaults.setdefault("REMOTE_ADDR", f"10.{address[0]}.{address[1]}.{address[2]}")
     access = client.post("/api/auth/login/", {"email": email, "password": password}, format="json").data["access"]
     client.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
     secret = client.post("/api/auth/totp/enroll/").data["secret"]
@@ -235,6 +243,92 @@ class UniversityInterestTests(TestCase):
         self.assertEqual(matching[0]["qualification_status"], "qualified")
         self.assertEqual(matching[0]["eligibility"]["details"][0]["actual"], 3.7)
         self.assertEqual(matching[0]["eligibility"]["details"][0]["required"], 3.5)
+
+    def test_shortlist_page_uses_latest_assessment_and_global_tier_counts(self):
+        from django_api.models import UniversityInterestEvent
+        from django_api.services import (
+            get_priority_tier_counts, get_shortlisted_profiles, get_shortlisted_profiles_page,
+        )
+
+        university_id = self.university_id
+        unassessed = StudentProfile.objects.get(uuid=self.student_id)
+        high = StudentProfile.objects.create(name="High", gpa=3.8, gpa_scale="4.0")
+        medium = StudentProfile.objects.create(name="Medium", gpa=3.2, gpa_scale="4.0")
+        invalid = StudentProfile.objects.create(name="Invalid score")
+        outsider = StudentProfile.objects.create(name="Not interested")
+        for student in (unassessed, high, medium, invalid):
+            UniversityInterestEvent.objects.create(student=student, university_id=university_id, source="searched")
+        UniversityInterestEvent.objects.create(student=high, university_id=university_id, source="fit_check")
+        FitAssessment.objects.create(student=high, university_id=university_id, assessment={"match_score": 5})
+        FitAssessment.objects.create(student=high, university_id=university_id, assessment={"match_score": 90})
+        FitAssessment.objects.create(student=medium, university_id=university_id, assessment={"match_score": 65})
+        FitAssessment.objects.create(student=invalid, university_id=university_id, assessment={"match_score": "unknown"})
+        FitAssessment.objects.create(student=outsider, university_id=university_id, assessment={"match_score": 100})
+
+        first = get_shortlisted_profiles_page(university_id, page=1, page_size=2, min_score=0)
+        second = get_shortlisted_profiles_page(university_id, page=2, page_size=2, min_score=0)
+        self.assertEqual(first["total"], 4)
+        self.assertEqual(first["tier_counts"], {"high": 1, "medium": 1, "low": 0, "unranked": 2}, first["profiles"])
+        self.assertEqual(second["tier_counts"], first["tier_counts"])
+        self.assertEqual([row["student_id"] for row in first["profiles"]], [str(high.uuid), str(medium.uuid)])
+        self.assertEqual({row["student_id"] for row in second["profiles"]}, {str(unassessed.uuid), str(invalid.uuid)})
+        self.assertEqual(first["profiles"][0]["qualification_status"], "qualified")
+        self.assertEqual(first["profiles"][1]["qualification_status"], "not_qualified")
+        filtered = get_shortlisted_profiles_page(
+            university_id, page=1, page_size=2, min_score=80, priority_tiers={"high"}
+        )
+        self.assertEqual(filtered["total"], 1)
+        self.assertEqual(filtered["tier_counts"], first["tier_counts"])
+        self.assertEqual(get_priority_tier_counts(university_id), first["tier_counts"])
+        self.assertEqual(len(get_shortlisted_profiles(university_id, min_score=0)), 4)
+
+        response = self.officer.get(
+            f"/api/university/{university_id}/profiles/?page=1&page_size=2&include_all_interested=true"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["pagination"]["total"], 4)
+        self.assertEqual(response.data["tier_counts"], first["tier_counts"])
+        self.assertEqual([row["profile_id"] for row in response.data["profiles"]], [str(high.uuid), str(medium.uuid)])
+
+    def test_shortlist_page_query_count_does_not_grow_per_interested_student(self):
+        from django_api.models import UniversityInterestEvent
+        from django_api.services import get_shortlisted_profiles_page
+
+        for index in range(18):
+            student = StudentProfile.objects.create(name=f"Student {index}")
+            UniversityInterestEvent.objects.create(
+                student=student, university_id=self.university_id, source="searched"
+            )
+            FitAssessment.objects.create(
+                student=student, university_id=self.university_id,
+                assessment={"match_score": 40 + index},
+            )
+
+        with CaptureQueriesContext(connection) as one_page:
+            get_shortlisted_profiles_page(self.university_id, page=1, page_size=1, min_score=0)
+        with CaptureQueriesContext(connection) as many_profiles:
+            get_shortlisted_profiles_page(self.university_id, page=1, page_size=18, min_score=0)
+        self.assertEqual(len(many_profiles), len(one_page))
+        self.assertLessEqual(len(many_profiles), 4)
+
+    def test_shortlist_preserves_numeric_and_text_score_casting(self):
+        from django_api.models import UniversityInterestEvent
+        from django_api.services import get_shortlisted_profiles_page
+
+        for name, score in (("Numeric", 80.9), ("Text", "80.9")):
+            student = StudentProfile.objects.create(name=name)
+            UniversityInterestEvent.objects.create(
+                student=student, university_id=self.university_id, source="searched"
+            )
+            FitAssessment.objects.create(
+                student=student, university_id=self.university_id,
+                assessment={"match_score": score},
+            )
+
+        page = get_shortlisted_profiles_page(self.university_id, page=1, page_size=2, min_score=0)
+        self.assertEqual([row["match_score"] for row in page["profiles"]], [80, None])
+        self.assertEqual(page["tier_counts"], {"high": 1, "medium": 0, "low": 0, "unranked": 1})
+        self.assertEqual(page["profiles"][0]["assessment"]["match_score"], 80.9)
 
 
 class ChatHistoryTests(TestCase):

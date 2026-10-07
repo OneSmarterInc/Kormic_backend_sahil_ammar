@@ -139,9 +139,76 @@ Completion logs include queue and execution duration. Increase load progressivel
 through 100/250/500/1000 conversations; do not treat configured queue capacity as
 proven simultaneous response capacity.
 
-Completed job/result retention is currently explicit (no automatic deletion).
-Set an operational retention policy before large-scale deployment; messages and
-LangGraph checkpoints also accumulate even though model prompt history is bounded.
+## Agent data retention
+
+Retention is disabled by default. After an operator restores a PostgreSQL backup
+to an isolated staging database, validates it, and approves the policy, a nightly
+Celery task applies one bounded pass (up to 500 rows per class). The management
+command is a dry run unless `--apply` is explicitly supplied. This is an
+operational policy, not a claim that a particular legal retention period is
+universally required; the data owner must review local audit/privacy duties.
+
+| Data class | Policy | Why |
+| --- | --- | --- |
+| Completed student chat job execution payload/result | After 90 days, compact only when the exact assistant reply is proven present in the student's visible chat history. Keep job ID, status, idempotency key, message IDs, minimal reply metadata and any single-university follow-up candidate. Do not compact a pending escalation or unpublished university evidence. Legacy jobs without a verified assistant-message link are skipped. | Removes duplicate tool state while retaining polling, retry deduplication and follow-up semantics. Old job status can reconstruct its reply from chat history. |
+| GitHub agent checkpoints and pending writes | Delete after the parent sync run has been terminal and unchanged for 30 days. | Recovery uses these only while queued/running. GitHub reports, profile snapshots and run result/status remain available. |
+| University chat jobs, CV/LinkedIn upload jobs and GitHub sync run results | Keep the job/result records until their delivery, provenance and notification semantics are separately reviewed. | A blind age-based deletion could break a late result fetch or evidence publication. Their durable profile/chat artefacts are preserved regardless. |
+| Chat messages/attachments, CV/LinkedIn analyses, GitHub reports, profile data | No scheduled purge. | Student-visible history and source-backed profile evidence require a separate product/account-deletion policy. |
+| Student/university LangGraph conversational checkpoints | No scheduled purge. | The latest state contains turn-to-turn context and institution follow-up state; deleting by age would silently change the next answer. Measure growth and design a checkpoint compactor that retains a restorable latest state before enabling cleanup. |
+| Pending or unresolved queries and face enrollment/verification records | No retention job touches these. | Query workflow and biometric/account recovery need separate approved policies. |
+| Agent audit logs | Previous 90-day automatic purge is disabled. Keep until audit/legal owners define an export, hold and deletion period. | Logs may be needed to investigate changes or incidents. |
+
+An active `DataRetentionHold` with `subject_key="student:<student UUID>"` blocks
+both managed classes for that student; `subject_key="*"` stops all retention.
+Set a reason and leave `released_at` null. Release only after review by setting
+`released_at`. Holds live in PostgreSQL and are included in backups. Never use
+the retention command to bypass a hold.
+
+For example, from `manage.py shell` an operator can create a hold with
+`DataRetentionHold.objects.get_or_create(subject_key="student:<UUID>",
+defaults={"reason": "Incident review <ticket>"})` after importing
+`DataRetentionHold` from `django_api.models`. Use `subject_key="*"` for a
+global hold. Do not include personal details in the reason; store a case ID.
+
+Before enabling a production purge:
+
+1. Take a PostgreSQL backup including `django_api_agentjob`,
+   `django_api_githubagentcheckpoint`, `django_api_githubagentwrite`,
+   `django_api_chatmessage`, `django_api_dataretentionhold`, audit records,
+   LangGraph checkpoint tables, and associated schema. Record the backup ID.
+2. Restore that backup into an **isolated staging database**. Verify the restore
+   exits successfully, compare counts and representative rows for each class,
+   check an old job/status response, a student transcript, an active GitHub run,
+   an unresolved query and a face enrollment record. Record the restore date,
+   operator and backup ID. Retain this evidence outside the database.
+3. Review legal holds and data-class windows with the data owner. Apply any
+   `DataRetentionHold` rows before cleanup. Run a dry run:
+
+   ```sh
+   python manage.py prune_agent_retention --max-rows 500
+   ```
+
+4. For a manual bounded pass, use the actual restore-tested backup ID:
+
+   ```sh
+   python manage.py prune_agent_retention --apply --policy-approved \
+     --restore-tested-backup-id=BACKUP_ID --restore-tested-at=YYYY-MM-DD \
+     --max-rows 500
+   ```
+
+5. Only after that review, set `AGENT_RETENTION_ENABLED=true`,
+   `AGENT_RETENTION_POLICY_APPROVED=true`, and
+   `AGENT_RETENTION_RESTORE_TESTED_BACKUP_ID=BACKUP_ID`, and
+   `AGENT_RETENTION_RESTORE_TESTED_AT=YYYY-MM-DD` in the worker/beat
+   environment. The task stops when the restore test is over 30 days old;
+   repeat the restore check and update both values before resuming. Monitor PostgreSQL table/index sizes and
+   `pg_stat_user_tables` vacuum statistics; deletion does not immediately shrink
+   an on-disk PostgreSQL data file.
+
+Rows that cannot be proved to have a matching visible reply are marked checked
+and left intact, so they do not block later batches. They can be reviewed and
+rechecked manually after correcting the underlying evidence. The 500-row cap
+means a large backlog drains over successive nights.
 
 Implementation references: [LangGraph Runtime](https://reference.langchain.com/python/langgraph/runtime/Runtime),
 [Celery task delivery](https://docs.celeryq.dev/en/stable/userguide/tasks.html),

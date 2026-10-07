@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 import httpx
 from django.conf import settings
 from jsonschema import validate, ValidationError
+from kormic_backend.ollama_config import qwen_keep_alive
 
 from .errors import ServiceError
 from .scheduling import CapacityBusy, model_slot, provider_blocked, block_provider
@@ -44,7 +45,7 @@ class Inference:
                     response = httpx.post(base + '/api/chat', trust_env=False,
                         timeout=httpx.Timeout(min(settings.GITHUB_OLLAMA_TIMEOUT, 240), connect=2),
                         json={'model': settings.GITHUB_OLLAMA_MODEL, 'messages': messages,
-                              'stream': False, 'think': False, 'keep_alive': '10m', 'format': schema,
+                              'stream': False, 'think': False, 'keep_alive': qwen_keep_alive(), 'format': schema,
                               'options': {'num_ctx': 16384, 'num_predict': 1800, 'temperature': 0.2}})
                 if response.status_code in (429, 503):
                     raise CapacityBusy('Qwen is busy; queued for another attempt', 15)

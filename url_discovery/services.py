@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 
 from url_discovery.domain_policy import validate_public_base_url
@@ -300,7 +301,19 @@ def serialize_discovered_url(record: DiscoveredUrl, already_saved: set) -> Dict[
 CLUSTER_STATUSES = ["relevant", "review"]
 
 
+class ScrapeAlreadyRunning(ValueError):
+    """A second scrape must wait for the university's active scrape job."""
+
+
 def serialize_cluster_approval(approval: DiscoveryClusterApproval) -> Dict[str, Any]:
+    from universities.models import ScrapeJob
+    from universities.services import _reap_stale_scrape_job, serialize_scrape_job
+
+    # Prefetched on the cluster map; also works for the fresh POST response.
+    jobs = approval.scrape_jobs.all()
+    latest_job = next(iter(jobs), None)
+    if latest_job and latest_job.status in ScrapeJob.ACTIVE_STATUSES:
+        _reap_stale_scrape_job(latest_job)
     return {
         "category": approval.category,
         "knowledge_group": approval.knowledge_group.slug if approval.knowledge_group_id else None,
@@ -308,14 +321,15 @@ def serialize_cluster_approval(approval: DiscoveryClusterApproval) -> Dict[str, 
         "urls": approval.urls,
         "approved_by": approval.approved_by,
         "approved_at": approval.approved_at,
+        "scrape_job": serialize_scrape_job(latest_job) if latest_job else None,
     }
 
 
 def proposed_department_map(job: DiscoveryJob) -> List[Dict[str, Any]]:
     """The 'proposed URL/department map' an officer reviews: this job's
-    candidate pages grouped by classifier category, each tagged with the
-    KnowledgeGroup it would feed once approved, and the approval record if
-    that cluster has already been approved."""
+    candidate pages grouped by classifier category, each showing its
+    review/routing KnowledgeGroup and approval status. Scraped facts remain
+    ungrouped."""
     from url_discovery.classifier import category_config
     from url_discovery.group_mapping import group_slug_for_category
 
@@ -325,7 +339,7 @@ def proposed_department_map(job: DiscoveryJob) -> List[Dict[str, Any]]:
 
     approvals = {
         approval.category: approval
-        for approval in DiscoveryClusterApproval.objects.filter(job=job)
+        for approval in DiscoveryClusterApproval.objects.filter(job=job).prefetch_related("scrape_jobs")
     }
 
     records = list(job.urls.filter(decision_status__in=CLUSTER_STATUSES).order_by("-relevance_score"))
@@ -350,19 +364,17 @@ def proposed_department_map(job: DiscoveryJob) -> List[Dict[str, Any]]:
 
 
 def approve_cluster(job: DiscoveryJob, category: str, approved_by: str) -> Dict[str, Any]:
-    """Approve one category cluster: apply its URLs to
-    University.scrape_urls, scrape just those URLs, and record who/when
-    (plus the category's mapped KnowledgeGroup, for the officer-facing
-    department map) as provenance. Re-approving the same cluster updates
-    the existing row (fresh provenance, not a duplicate).
+    """Persist the approval and queue a selected-URL scrape without network
+    work in the HTTP request. Repeated POSTs during an active scrape return
+    its existing job rather than enqueueing duplicate extraction.
 
     The scraped facts themselves are NOT tagged with the mapped group: a
     knowledge group collects escalations, not auto-scraped knowledge. Only
     a manual fact add routes into a group. The category->group mapping is
     kept purely as review metadata on the approval / department map."""
     from universities.knowledge_groups import ensure_default_groups
-    from universities.models import KnowledgeGroup
-    from universities.services import scrape_selected_urls
+    from universities.models import KnowledgeGroup, ScrapeJob, University
+    from universities.services import _reap_stale_scrape_job, serialize_scrape_job
     from url_discovery.group_mapping import group_slug_for_category
 
     records = list(
@@ -371,34 +383,54 @@ def approve_cluster(job: DiscoveryJob, category: str, approved_by: str) -> Dict[
     if not records:
         raise ValueError(f"No candidate URLs found for category '{category}' on this job.")
 
-    university = job.university
     urls = [record.final_url or record.normalized_url for record in records]
     urls = list(dict.fromkeys(u for u in urls if u))
+    with transaction.atomic():
+        # Serialize competing approvals for this university on one row. The
+        # queue dispatch happens only after this transaction commits.
+        university = University.objects.select_for_update().get(pk=job.university_id)
+        active = ScrapeJob.objects.filter(
+            university=university, status__in=ScrapeJob.ACTIVE_STATUSES
+        ).select_related("cluster_approval").first()
+        if active and _reap_stale_scrape_job(active):
+            active = None
+        if active:
+            if active.cluster_approval and active.cluster_approval.job_id == job.id and active.cluster_approval.category == category:
+                return {"approval": serialize_cluster_approval(active.cluster_approval), "scrape_job": serialize_scrape_job(active)}
+            raise ScrapeAlreadyRunning(f"A scrape is already in progress for this university (job {active.id}).")
 
-    ensure_default_groups(university)
-    group_slug = group_slug_for_category(category)
-    knowledge_group = KnowledgeGroup.objects.filter(university=university, slug=group_slug).first()
+        ensure_default_groups(university)
+        group_slug = group_slug_for_category(category)
+        knowledge_group = KnowledgeGroup.objects.filter(university=university, slug=group_slug).first()
+        apply_selected_urls(university, job, urls, replace=False)
+        approval, _created = DiscoveryClusterApproval.objects.update_or_create(
+            job=job, category=category,
+            defaults={
+                "knowledge_group": knowledge_group, "url_count": len(urls),
+                "urls": urls, "approved_by": approved_by, "approved_at": timezone.now(),
+            },
+        )
+        scrape_job = ScrapeJob.objects.create(
+            university=university, scope=ScrapeJob.Scope.SELECTED,
+            cluster_approval=approval, selected_urls=urls,
+            progress_total=len(urls),
+        )
 
-    apply_selected_urls(university, job, urls, replace=False)
+    try:
+        # Reuse the existing scrape worker, with an immutable selection on
+        # the job. In local DEBUG runs it uses that service's thread fallback.
+        from universities.services import _run_scrape_job_in_local_thread
+        from celery import current_app
 
-    approved_at = timezone.now()
-    approval, _created = DiscoveryClusterApproval.objects.update_or_create(
-        job=job,
-        category=category,
-        defaults={
-            "knowledge_group": knowledge_group,
-            "url_count": len(urls),
-            "urls": urls,
-            "approved_by": approved_by,
-            "approved_at": approved_at,
-        },
-    )
+        if settings.DEBUG and not getattr(settings, "TESTING", False):
+            _run_scrape_job_in_local_thread(scrape_job.id)
+        else:
+            current_app.send_task("universities.tasks.run_scrape_now_job", args=[scrape_job.id], retry=False)
+    except Exception:
+        logger.exception("Could not enqueue cluster scrape job %s", scrape_job.id)
+        scrape_job.status = ScrapeJob.Status.FAILED
+        scrape_job.error_message = "Could not enqueue the scrape. Check Redis and the Celery worker, then retry."
+        scrape_job.completed_at = timezone.now()
+        scrape_job.save(update_fields=["status", "error_message", "completed_at"])
 
-    # Intentionally no group_id: auto-scraped facts are never routed into a
-    # knowledge group (that's escalation-only) -- see docstring.
-    scrape_result = scrape_selected_urls(university, urls)
-
-    return {
-        "approval": serialize_cluster_approval(approval),
-        "scrape_result": scrape_result,
-    }
+    return {"approval": serialize_cluster_approval(approval), "scrape_job": serialize_scrape_job(scrape_job)}

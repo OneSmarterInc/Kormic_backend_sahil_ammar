@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 import threading
 
 from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 from celery import current_app
 
@@ -244,11 +245,14 @@ def _run_scrape_job_in_local_thread(job_id: int) -> None:
 def start_scrape_job(university: University) -> "ScrapeJob":
     """Queue scrape_now() and recover stale jobs so one lost Celery message
     cannot permanently block the university's knowledge refresh button."""
-    active = university.scrape_jobs.filter(status__in=ScrapeJob.ACTIVE_STATUSES).first()
-    if active and not _reap_stale_scrape_job(active):
-        raise ValueError(f"A scrape is already in progress for this university (job {active.id}).")
-
-    job = ScrapeJob.objects.create(university=university)
+    with transaction.atomic():
+        # Share the university row lock with cluster approval so the two
+        # endpoints cannot enqueue overlapping scrapes at the same time.
+        University.objects.select_for_update().get(pk=university.pk)
+        active = university.scrape_jobs.filter(status__in=ScrapeJob.ACTIVE_STATUSES).first()
+        if active and not _reap_stale_scrape_job(active):
+            raise ValueError(f"A scrape is already in progress for this university (job {active.id}).")
+        job = ScrapeJob.objects.create(university=university)
 
     # Scraping must never block the HTTP request. In direct local
     # development, run the Celery task body in a daemon thread so Redis is
@@ -275,9 +279,13 @@ def start_scrape_job(university: University) -> "ScrapeJob":
 def serialize_scrape_job(job: "ScrapeJob") -> Dict[str, Any]:
     return {
         "id": job.id,
+        "scope": job.scope,
         "status": job.status,
         "result": job.result,
         "error_message": job.error_message,
+        "progress_completed": job.progress_completed,
+        "progress_total": job.progress_total,
+        "current_url": job.current_url,
         "started_at": job.started_at,
         "completed_at": job.completed_at,
         "created_at": job.created_at,
@@ -329,7 +337,7 @@ def scrape_now(university: University) -> Dict[str, Any]:
     }
 
 
-def scrape_selected_urls(university: University, urls: List[str], group_id: Optional[int] = None) -> Dict[str, Any]:
+def scrape_selected_urls(university: University, urls: List[str], group_id: Optional[int] = None, on_progress=None) -> Dict[str, Any]:
     """Same one-URL-at-a-time loop as scrape_now(), but for an explicit URL
     subset instead of every saved scrape_url.
 
@@ -340,7 +348,7 @@ def scrape_selected_urls(university: University, urls: List[str], group_id: Opti
     into one.
 
     Same already-scraped skip as scrape_now() -- this is also the path
-    approve_cluster() calls, so re-approving a cluster (or a cluster whose
+    the cluster approval's background job calls, so re-approving a cluster (or a cluster whose
     URLs overlap one already scraped) doesn't re-ingest the same content."""
     from knowledge.scraper import scrape_university
 
@@ -350,9 +358,13 @@ def scrape_selected_urls(university: University, urls: List[str], group_id: Opti
     already_scraped = _already_scraped_urls(university_id)
 
     results: List[Dict[str, Any]] = []
-    for url in urls:
+    for index, url in enumerate(urls):
+        if on_progress:
+            on_progress(index, url)
         if url in already_scraped:
             results.append({"url": url, "status": "skipped", "facts_stored": 0, "reason": _ALREADY_SCRAPED_REASON})
+            if on_progress:
+                on_progress(index + 1, "")
             continue
         try:
             count = scrape_university(university_id, [url], university.name, kb, group_id=group_id)
@@ -361,6 +373,8 @@ def scrape_selected_urls(university: University, urls: List[str], group_id: Opti
                 already_scraped.add(url)
         except Exception as exc:
             results.append({"url": url, "status": "failed", "facts_stored": 0, "error": str(exc)})
+        if on_progress:
+            on_progress(index + 1, "")
 
     return {
         "total_facts_stored": sum(r["facts_stored"] for r in results),

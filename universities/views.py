@@ -425,8 +425,8 @@ class AutoDiscoverClusterMapAPIView(APIView):
     """
     GET /api/university-admin/scrape-urls/auto-discover/<job_id>/clusters/
     B2: the proposed URL/department map for review -- this job's candidate
-    pages grouped by classifier category, each showing which KnowledgeGroup
-    it would feed and whether that cluster has already been approved.
+    pages grouped by classifier category, with review/routing department
+    mapping and any existing approval and scrape-job status.
     """
 
     permission_classes = UNIVERSITY_ADMIN_PERMISSIONS
@@ -451,10 +451,9 @@ class AutoDiscoverClusterMapAPIView(APIView):
 class AutoDiscoverClusterApproveAPIView(APIView):
     """
     POST /api/university-admin/scrape-urls/auto-discover/<job_id>/clusters/<category>/approve/
-    B2: approves one category cluster -- applies its URLs to
-    University.scrape_urls, scrapes them, tags the resulting facts with the
-    mapped KnowledgeGroup, and records who/when as provenance. Re-approving
-    the same cluster refreshes that provenance rather than duplicating it.
+    Persists the approved URLs and their review provenance, then queues a
+    selected-URL ScrapeJob. The browser polls the cluster map for progress.
+    The group mapping is review metadata; scraped facts stay ungrouped.
     """
 
     permission_classes = UNIVERSITY_ADMIN_PERMISSIONS
@@ -474,9 +473,16 @@ class AutoDiscoverClusterApproveAPIView(APIView):
 
         try:
             result = discovery_services.approve_cluster(job, category, approved_by=approved_by)
+        except discovery_services.ScrapeAlreadyRunning as exc:
+            return _error(str(exc), status.HTTP_409_CONFLICT)
         except ValueError as exc:
             return _error(str(exc), status.HTTP_404_NOT_FOUND)
-        return Response(result)
+        response_status = (
+            status.HTTP_503_SERVICE_UNAVAILABLE
+            if result["scrape_job"]["status"] == "failed"
+            else status.HTTP_202_ACCEPTED
+        )
+        return Response(result, status=response_status)
 
 
 class ScrapeUrlsAPIView(APIView):
@@ -546,7 +552,7 @@ class ScrapeNowAPIView(APIView):
         if university is None:
             return _error("No university profile found for this account.", status.HTTP_404_NOT_FOUND)
 
-        job = university.scrape_jobs.first()
+        job = university.scrape_jobs.filter(scope=services.ScrapeJob.Scope.ALL).first()
         if job is None:
             return _error("No scrape job has been run yet.", status.HTTP_404_NOT_FOUND)
 
@@ -573,7 +579,7 @@ class ScrapeNowJobDetailAPIView(APIView):
         if university is None:
             return _error("No university profile found for this account.", status.HTTP_404_NOT_FOUND)
 
-        job = university.scrape_jobs.filter(id=job_id).first()
+        job = university.scrape_jobs.filter(id=job_id, scope=services.ScrapeJob.Scope.ALL).first()
         if job is None:
             return _error("Scrape job not found.", status.HTTP_404_NOT_FOUND)
 

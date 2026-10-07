@@ -283,6 +283,7 @@ class GitHubSyncRun(models.Model):
     class Meta:
         ordering = ["-created_at"]
         constraints = [models.UniqueConstraint(fields=["profile"], condition=models.Q(status__in=["queued", "running"]), name="one_active_github_sync")]
+        indexes = [models.Index(fields=["status", "updated_at"], name="github_run_retention")]
 
 
 class GitHubRepository(models.Model):
@@ -399,6 +400,12 @@ class FitAssessment(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["student", "university_id", "-created_at", "-id"],
+                name="fit_assessment_latest_idx",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"FitAssessment({self.student.uuid}, {self.university_id})"
@@ -488,6 +495,8 @@ class AgentJob(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     started_at = models.DateTimeField(null=True)
     completed_at = models.DateTimeField(null=True)
+    retention_checked_at = models.DateTimeField(null=True, blank=True)
+    retention_compacted_at = models.DateTimeField(null=True, blank=True)
     dispatched_at = models.DateTimeField(null=True)
     execution_token = models.UUIDField(null=True)
     heartbeat_at = models.DateTimeField(null=True)
@@ -499,7 +508,25 @@ class AgentJob(models.Model):
             models.UniqueConstraint(fields=["owner_key", "idempotency_key"], name="agent_job_idempotency"),
             models.UniqueConstraint(fields=["owner_key"], condition=models.Q(status__in=["queued", "processing"]), name="agent_one_active_turn"),
         ]
-        indexes = [models.Index(fields=["status", "created_at"], name="agent_job_dispatch")]
+        indexes = [
+            models.Index(fields=["status", "created_at"], name="agent_job_dispatch"),
+            models.Index(fields=["status", "completed_at"], name="agent_job_retention"),
+        ]
+
+
+class DataRetentionHold(models.Model):
+    """An active legal/support hold blocks maintenance for one student or all students."""
+
+    subject_key = models.CharField(max_length=300)
+    reason = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    released_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=["subject_key"], condition=models.Q(released_at__isnull=True),
+            name="one_active_retention_hold_per_subject",
+        )]
 
 
 class AgentQueueGate(models.Model):
@@ -820,7 +847,8 @@ class AgentAuditLog(models.Model):
     """
     System-level observability record capturing the internal "thought process" and tool
     usage of agents (like Aria and University agents), including reasoning, tool calls,
-    and agent-to-agent communication triggers. Automatically purged after 90 days.
+    and agent-to-agent communication triggers. Retained pending a separate
+    audit/legal review; see SCALING.md.
     """
     run_id = models.CharField(max_length=255, db_index=True)
     student_id = models.CharField(max_length=255, db_index=True, blank=True, default="")

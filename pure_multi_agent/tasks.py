@@ -40,11 +40,16 @@ def execute_agent_job(self, job_id):
                     if current.status != "processing" or current.execution_token != token:
                         return
                     if scope is not None:
-                        ChatMessage.objects.create(**scope, sender="assistant", content=result.get("reply", ""), meta=metadata)
+                        assistant_message = ChatMessage.objects.create(
+                            **scope, sender="assistant", content=result.get("reply", ""), meta=metadata,
+                        )
+                        # Retention may compact duplicate execution data only when it
+                        # can prove the answer is still present in visible history.
+                        current.payload = {**current.payload, "assistant_message_id": assistant_message.pk}
                     current.status = "completed"
                     current.result = result
                     current.completed_at = timezone.now()
-                    current.save(update_fields=["status", "result", "completed_at"])
+                    current.save(update_fields=["status", "result", "completed_at", "payload"])
                     if job.kind in ('resume', 'linkedin'):
                         from notifications.services import notify_profile_processed
                         notify_profile_processed(job.student_id, job.kind, job.pk)
@@ -182,3 +187,18 @@ def check_agent_recovery_task() -> None:
 def queue_healthcheck(marker):
     """Side-effect-free probe for queue delivery and result retrieval."""
     return {'marker': str(marker), 'status':'ok'}
+
+
+@shared_task(soft_time_limit=240, time_limit=300)
+def apply_agent_retention():
+    """Nightly bounded pass; stays inert until operations enables the policy."""
+    from django.conf import settings
+    from django_api.retention import restore_test_is_recent, run_retention
+
+    if not (settings.AGENT_RETENTION_ENABLED and settings.AGENT_RETENTION_POLICY_APPROVED
+            and restore_test_is_recent(settings.AGENT_RETENTION_RESTORE_TESTED_BACKUP_ID,
+                                       settings.AGENT_RETENTION_RESTORE_TESTED_AT)):
+        return {"skipped": "retention approval or recent restore-tested backup is missing"}
+    counts = run_retention(apply=True, max_rows=500)
+    logger.info("agent retention backup=%s counts=%s", settings.AGENT_RETENTION_RESTORE_TESTED_BACKUP_ID, counts)
+    return counts

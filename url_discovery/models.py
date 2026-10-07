@@ -113,8 +113,8 @@ class DiscoveryClusterApproval(models.Model):
     (job, category) cluster -- who approved it and when, plus a snapshot of
     the URLs that were applied at that moment. `category` is the
     DiscoveredUrl.primary_category value the cluster was grouped by;
-    `knowledge_group` is the resolved mapping (url_discovery.group_mapping)
-    the cluster's scraped facts were tagged with."""
+    `knowledge_group` is the resolved review/routing mapping
+    (url_discovery.group_mapping). Scraped facts remain ungrouped."""
 
     job = models.ForeignKey(DiscoveryJob, on_delete=models.CASCADE, related_name="cluster_approvals")
     category = models.CharField(max_length=255)

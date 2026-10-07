@@ -496,6 +496,16 @@ PROACTIVE_CHECKIN_COOLDOWN_DAYS = int(os.environ.get("PROACTIVE_CHECKIN_COOLDOWN
 # Expo call instead of 1-per-student.
 PROACTIVE_CHECKIN_BATCH_SIZE = int(os.environ.get("PROACTIVE_CHECKIN_BATCH_SIZE", "50"))
 
+# Destructive retention is gated behind an operator-approved policy and a
+# database backup that has actually been restored and checked on staging.
+# See SCALING.md; never apply these windows to visible history or face data.
+AGENT_RESULT_RETENTION_DAYS = int(os.environ.get("AGENT_RESULT_RETENTION_DAYS", "90"))
+GITHUB_CHECKPOINT_RETENTION_DAYS = int(os.environ.get("GITHUB_CHECKPOINT_RETENTION_DAYS", "30"))
+AGENT_RETENTION_ENABLED = os.environ.get("AGENT_RETENTION_ENABLED", "false").lower() == "true"
+AGENT_RETENTION_POLICY_APPROVED = os.environ.get("AGENT_RETENTION_POLICY_APPROVED", "false").lower() == "true"
+AGENT_RETENTION_RESTORE_TESTED_BACKUP_ID = os.environ.get("AGENT_RETENTION_RESTORE_TESTED_BACKUP_ID", "").strip()
+AGENT_RETENTION_RESTORE_TESTED_AT = os.environ.get("AGENT_RETENTION_RESTORE_TESTED_AT", "").strip()
+
 CELERY_BEAT_SCHEDULE = {
     "cleanup-expired-face-challenges": {"task": "accounts.tasks.cleanup_face_challenges", "schedule": 3600.0},
     "dispatch-agent-outbox": {"task": "pure_multi_agent.tasks.dispatch_agent_work", "schedule": 30.0},
@@ -514,9 +524,9 @@ CELERY_BEAT_SCHEDULE = {
         "task": "pure_multi_agent.tasks.check_agent_recovery_task",
         "schedule": crontab(minute="*/5"),
     },
-    "cleanup-old-audit-logs": {
-        "task": "django_api.tasks.cleanup_old_audit_logs_task",
-        "schedule": crontab(hour=2, minute=0),  # Run nightly at 2:00 AM
+    "apply-agent-retention": {
+        "task": "pure_multi_agent.tasks.apply_agent_retention",
+        "schedule": crontab(hour=2, minute=0),
     },
 }
 

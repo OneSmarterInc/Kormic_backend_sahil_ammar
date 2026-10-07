@@ -39,22 +39,31 @@ def run_scrape_now_job(self, job_id: int) -> None:
 
     # A stale queued message may arrive after the API has reaped its
     # database row. Only a genuinely queued job may transition to running.
-    if job.status != ScrapeJob.Status.QUEUED:
+    if not ScrapeJob.objects.filter(id=job_id, status=ScrapeJob.Status.QUEUED).update(
+        status=ScrapeJob.Status.RUNNING, started_at=timezone.now()
+    ):
         logger.info("Ignoring stale scrape task for job %s in status %s", job_id, job.status)
         return
 
-    job.status = ScrapeJob.Status.RUNNING
-    job.started_at = timezone.now()
-    job.save(update_fields=["status", "started_at"])
-
     try:
-        result = services.scrape_now(job.university)
+        def report_progress(completed: int, current_url: str) -> None:
+            ScrapeJob.objects.filter(id=job_id, status=ScrapeJob.Status.RUNNING).update(
+                progress_completed=completed, current_url=current_url,
+            )
+
+        if job.scope == ScrapeJob.Scope.SELECTED:
+            if not job.selected_urls:
+                raise ValueError("The approved URL snapshot is empty.")
+            result = services.scrape_selected_urls(job.university, job.selected_urls, on_progress=report_progress)
+        else:
+            result = services.scrape_now(job.university)
     except Exception as exc:
         logger.exception("Scrape job %s failed", job_id)
-        job.status = ScrapeJob.Status.FAILED
-        job.error_message = str(exc)[:1000]
-        job.completed_at = timezone.now()
-        job.save(update_fields=["status", "error_message", "completed_at"])
+        if not ScrapeJob.objects.filter(id=job_id, status=ScrapeJob.Status.RUNNING).update(
+            status=ScrapeJob.Status.FAILED,
+            error_message=str(exc)[:1000], completed_at=timezone.now(),
+        ):
+            return
 
         from notifications.models import NotificationLog
         from notifications.services import notify_superusers, notify_university
@@ -83,10 +92,10 @@ def run_scrape_now_job(self, job_id: int) -> None:
         )
         return
 
-    job.status = ScrapeJob.Status.COMPLETED
-    job.result = result
-    job.completed_at = timezone.now()
-    job.save(update_fields=["status", "result", "completed_at"])
+    if not ScrapeJob.objects.filter(id=job_id, status=ScrapeJob.Status.RUNNING).update(
+        status=ScrapeJob.Status.COMPLETED, result=result, completed_at=timezone.now(), current_url="",
+    ):
+        return
 
     from notifications.models import NotificationLog
     from notifications.services import notify_university

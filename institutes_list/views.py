@@ -10,7 +10,7 @@ from urllib.parse import urlencode
 
 from django.conf import settings
 from django.core import signing
-from django.db.models import Count, F, Q
+from django.db.models import Count, F, Q, Sum
 from django.http import FileResponse
 from django.utils import timezone
 from django.utils.crypto import constant_time_compare, salted_hmac
@@ -323,6 +323,75 @@ def _get_owned_list(account, list_id):
     return lst, None
 
 
+def _scoped_lists(account, request):
+    qs = InstituteStudentList.objects.select_related("institute")
+    if account.role == Account.Role.INSTITUTE:
+        return qs.filter(institute_id=account.institute_id)
+    institute_id = request.query_params.get("institute_id")
+    return qs.filter(institute__uuid=institute_id) if institute_id else qs
+
+
+def _page_params(request):
+    try:
+        page = int(request.query_params.get("page", "1"))
+        page_size = int(request.query_params.get("page_size", "25"))
+        if page < 1 or page_size < 1:
+            raise ValueError
+    except (TypeError, ValueError):
+        return None
+    return page, min(page_size, 100)
+
+
+def _page_metadata(page, page_size, total):
+    return {"page": page, "page_size": page_size, "total": total, "has_next": page * page_size < total}
+
+
+def _list_status_counts(lists):
+    # Keep one grouped aggregate, but run it only for the visible page/recent rows.
+    return {
+        row["source_list_id"]: row
+        for row in ListedStudent.objects.filter(source_list__in=lists)
+        .values("source_list_id")
+        .annotate(
+            claimed=Count("id", filter=Q(status=ListedStudent.Status.CLAIMED)),
+            unclaimed=Count("id", filter=Q(status=ListedStudent.Status.UNCLAIMED)),
+            expired=Count("id", filter=Q(status=ListedStudent.Status.EXPIRED)),
+            revoked=Count("id", filter=Q(status=ListedStudent.Status.REVOKED)),
+        )
+    }
+
+
+def _serialize_list(request, lst, counts):
+    counts = counts.get(lst.id, {})
+    return {
+        "list_id": lst.id,
+        "institute_id": str(lst.institute.uuid),
+        "institute_name": lst.institute.name,
+        "contact_name": lst.contact_name,
+        "contact_email": lst.contact_email,
+        "status": lst.status,
+        "row_count": lst.row_count,
+        "claimed_count": counts.get("claimed", 0),
+        "unclaimed_count": counts.get("unclaimed", 0),
+        "expired_count": counts.get("expired", 0),
+        "revoked_count": counts.get("revoked", 0),
+        "source_file_url": _source_file_url(request, lst),
+        "source_file_name": lst.source_file_name or None,
+        "source_file_size": lst.source_file_size or None,
+        "created_at": lst.created_at,
+    }
+
+
+def _invite_counts(lst):
+    return lst.students.aggregate(
+        send_eligible=Count("id", filter=Q(status=ListedStudent.Status.UNCLAIMED)
+                            & ~Q(invite_delivery_status__in=["queued", "sent"])),
+        resend_eligible=Count("id", filter=Q(status=ListedStudent.Status.UNCLAIMED)
+                              & ~Q(invite_delivery_status="queued")),
+        queued=Count("id", filter=Q(invite_delivery_status="queued")),
+    )
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated, IsTOTPEnrolled])
 def list_lists(request):
@@ -340,54 +409,69 @@ def list_lists(request):
     if error:
         return error
 
-    qs = InstituteStudentList.objects.select_related("institute")
-    if account.role == Account.Role.INSTITUTE:
-        qs = qs.filter(institute=account.institute_id)
-    else:
-        institute_id = request.query_params.get("institute_id")
-        if institute_id:
-            qs = qs.filter(institute__uuid=institute_id)
+    pagination = _page_params(request)
+    if pagination is None:
+        return Response({"error": "page and page_size must be positive integers"}, status=400)
+    page, page_size = pagination
+    qs = _scoped_lists(account, request)
+    search = request.query_params.get("search", "").strip()[:200]
+    if search:
+        query = Q(contact_name__icontains=search) | Q(contact_email__icontains=search) | Q(source_file_name__icontains=search)
+        if search.isdecimal() and len(search) <= 18:
+            query |= Q(id=int(search))
+        qs = qs.filter(query)
+    total = qs.count()
+    start = (page - 1) * page_size
+    rows = list(qs.order_by("-created_at", "-id")[start:start + page_size])
+    counts = _list_status_counts(rows) if rows else {}
+    return Response({
+        "lists": [_serialize_list(request, row, counts) for row in rows],
+        "pagination": _page_metadata(page, page_size, total),
+    })
 
-    status_counts_by_list = {
-        row["source_list_id"]: row
-        for row in (
-            ListedStudent.objects.filter(source_list__in=qs)
-            .values("source_list_id")
-            .annotate(
-                claimed=Count("id", filter=Q(status=ListedStudent.Status.CLAIMED)),
-                unclaimed=Count("id", filter=Q(status=ListedStudent.Status.UNCLAIMED)),
-                expired=Count("id", filter=Q(status=ListedStudent.Status.EXPIRED)),
-                revoked=Count("id", filter=Q(status=ListedStudent.Status.REVOKED)),
-            )
-        )
-    }
 
-    lists = []
-    for lst in qs:
-        counts = status_counts_by_list.get(
-            lst.id, {"claimed": 0, "unclaimed": 0, "expired": 0, "revoked": 0}
-        )
-        claimed_count = counts.get("claimed", 0)
-        lists.append(
-            {
-                "list_id": lst.id,
-                "institute_id": str(lst.institute.uuid),
-                "institute_name": lst.institute.name,
-                "contact_name": lst.contact_name,
-                "contact_email": lst.contact_email,
-                "status": lst.status,
-                "row_count": lst.row_count,
-                "claimed_count": claimed_count,
-                "unclaimed_count": counts.get("unclaimed", 0),
-                "expired_count": counts.get("expired", 0),
-                "revoked_count": counts.get("revoked", 0),
-                "source_file_url": _source_file_url(request, lst),
-                "source_file_name": lst.source_file_name or None,
-                "source_file_size": lst.source_file_size or None,
-                "created_at": lst.created_at,
-            }
-        )
-    return Response({"lists": lists})
+@api_view(["GET"])
+@permission_classes([IsAuthenticated, IsTOTPEnrolled])
+def list_summary(request):
+    """Institute-wide totals and five recent lists, without a full directory fetch."""
+    account, error = _require_institute_or_superuser(request)
+    if error:
+        return error
+    qs = _scoped_lists(account, request)
+    list_totals = qs.aggregate(list_count=Count("id"), total_rows=Sum("row_count"))
+    row_totals = ListedStudent.objects.filter(source_list__in=qs).aggregate(
+        claimed=Count("id", filter=Q(status=ListedStudent.Status.CLAIMED)),
+        unclaimed=Count("id", filter=Q(status=ListedStudent.Status.UNCLAIMED)),
+        expired=Count("id", filter=Q(status=ListedStudent.Status.EXPIRED)),
+        revoked=Count("id", filter=Q(status=ListedStudent.Status.REVOKED)),
+    )
+    recent = list(qs.order_by("-created_at", "-id")[:5])
+    recent_counts = _list_status_counts(recent) if recent else {}
+    return Response({
+        "list_count": list_totals["list_count"],
+        "total_rows": list_totals["total_rows"] or 0,
+        "claimed_count": row_totals["claimed"],
+        "unclaimed_count": row_totals["unclaimed"],
+        "expired_count": row_totals["expired"],
+        "revoked_count": row_totals["revoked"],
+        "recent_lists": [_serialize_list(request, row, recent_counts) for row in recent],
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated, IsTOTPEnrolled])
+def list_detail(request, list_id):
+    """One list's metadata and whole-list invite counts for its roster screen."""
+    account, error = _require_institute_or_superuser(request)
+    if error:
+        return error
+    lst, error = _get_owned_list(account, list_id)
+    if error:
+        return error
+    return Response({
+        "list": _serialize_list(request, lst, _list_status_counts([lst])),
+        "invite_counts": _invite_counts(lst),
+    })
 
 
 @api_view(["GET"])
@@ -408,6 +492,22 @@ def list_students(request, list_id):
     if error:
         return error
 
+    pagination = _page_params(request)
+    if pagination is None:
+        return Response({"error": "page and page_size must be positive integers"}, status=400)
+    page, page_size = pagination
+    rows = lst.students.all()
+    search = request.query_params.get("search", "").strip()[:200]
+    if search:
+        rows = rows.filter(Q(full_name__icontains=search) | Q(email__icontains=search)
+                           | Q(field_of_study__icontains=search))
+    row_status = request.query_params.get("status", "").strip()
+    if row_status:
+        if row_status not in ListedStudent.Status.values:
+            return Response({"error": "invalid status"}, status=400)
+        rows = rows.filter(status=row_status)
+    total = rows.count()
+    start = (page - 1) * page_size
     students = [
         {
             "id": row.id,
@@ -423,7 +523,7 @@ def list_students(request, list_id):
             "invite_delivery_error": row.invite_delivery_error,
             "invite_delivered_at": row.invite_delivered_at,
         }
-        for row in lst.students.all()
+        for row in rows.order_by("-created_at", "-id")[start:start + page_size]
     ]
     return Response(
         {
@@ -431,6 +531,7 @@ def list_students(request, list_id):
             "source_file_url": _source_file_url(request, lst),
             "source_file_name": lst.source_file_name or None,
             "students": students,
+            "pagination": _page_metadata(page, page_size, total),
         }
     )
 

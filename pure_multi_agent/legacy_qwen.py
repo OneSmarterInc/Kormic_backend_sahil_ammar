@@ -10,6 +10,7 @@ from anthropic.types import Message
 from django.conf import settings
 from jsonschema import validate
 from github_profiles.scheduling import model_slot
+from kormic_backend.ollama_config import qwen_keep_alive
 
 
 def create(**kwargs):
@@ -48,7 +49,7 @@ def create(**kwargs):
             messages.append(row)
     tools = kwargs.get('tools', []) if kwargs.get('tool_choice', {}).get('type') != 'none' else []
     body = {'model': settings.GITHUB_OLLAMA_MODEL, 'messages': messages,
-            'stream': False, 'think': False, 'keep_alive': -1,
+            'stream': False, 'think': False, 'keep_alive': qwen_keep_alive(),
             'options': {'num_ctx': 16384, 'num_predict': kwargs.get('max_tokens', 2400), 'temperature': 0}}
     if tools:
         body['tools'] = [{'type': 'function', 'function': {'name': t['name'],

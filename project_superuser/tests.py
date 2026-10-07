@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from datetime import timezone as dt_timezone
 
 import pyotp
+from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.core.management import call_command
 from django.test import TestCase
@@ -265,6 +266,45 @@ class SuperuserInstituteAPITests(TestCase):
         cache.clear()
         _reset_inprocess_agent_caches()
         self.admin = make_superuser_client()
+
+    def test_institute_directory_is_paginated_and_searchable(self):
+        for name in ("Alpha One", "Alpha Two", "Alpha Three", "Beta One", "Beta Two"):
+            Institute.objects.create(name=name, country="IN")
+
+        first = self.admin.get("/api/superuser/institutes/?page=1&page_size=2")
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual([row["name"] for row in first.data["institutes"]], ["Alpha One", "Alpha Three"])
+        self.assertEqual(first.data["pagination"]["total"], 5)
+        self.assertEqual(first.data["pagination"]["page"], 1)
+        self.assertTrue(first.data["pagination"]["has_next"])
+
+        second = self.admin.get("/api/superuser/institutes/?page=2&page_size=2")
+        self.assertEqual([row["name"] for row in second.data["institutes"]], ["Alpha Two", "Beta One"])
+        self.assertEqual(second.data["pagination"]["page"], 2)
+
+        filtered = self.admin.get("/api/superuser/institutes/?search=alpha&page=1&page_size=2")
+        self.assertEqual(filtered.data["pagination"]["total"], 3)
+        self.assertEqual(len(filtered.data["institutes"]), 2)
+        self.assertEqual(self.admin.get("/api/superuser/institutes/?page=0").status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self.admin.get("/api/superuser/institutes/?page_size=101").status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_institute_page_serialization_batches_admin_and_totp_lookup(self):
+        from project_superuser.views import _institute_admins_for_page, _serialize_institute
+
+        for index in range(6):
+            institute = Institute.objects.create(name=f"Batch {index}", country="IN")
+            user = User.objects.create(username=f"batch_admin_{index}", email=f"batch{index}@example.com")
+            Account.objects.create(user=user, role=Account.Role.INSTITUTE, institute=institute)
+            if index % 2 == 0:
+                TOTPDevice.objects.create(user=user, secret_encrypted="test", confirmed_at=timezone.now())
+
+        rows = list(Institute.objects.filter(name__startswith="Batch").order_by("name", "pk"))
+        with self.assertNumQueries(1):
+            admins = _institute_admins_for_page(rows)
+            serialized = [_serialize_institute(row, admins.get(row.pk)) for row in rows]
+
+        self.assertEqual([row["admin_totp_enrolled"] for row in serialized], [True, False, True, False, True, False])
+        self.assertEqual(serialized[0]["admin_email"], "batch0@example.com")
 
     def test_admin_can_enroll_institute_with_admin_account(self):
         resp = self.admin.post(

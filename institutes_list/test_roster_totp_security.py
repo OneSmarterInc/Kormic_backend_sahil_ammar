@@ -28,6 +28,8 @@ class InstituteRosterTOTPTests(TestCase):
         probes = (
             ("post", "/api/institute-lists/upload/", {}),
             ("get", "/api/institute-lists/lists/", None),
+            ("get", "/api/institute-lists/summary/", None),
+            ("get", "/api/institute-lists/lists/999999/", None),
             ("get", "/api/institute-lists/lists/999999/students/", None),
             ("get", "/api/institute-lists/lists/999999/file/", None),
             ("post", "/api/institute-lists/lists/999999/send-invites/", {}),

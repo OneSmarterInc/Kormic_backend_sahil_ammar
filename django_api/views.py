@@ -56,8 +56,7 @@ from django_api.services import (
     get_profile_image_path,
     get_safe_profile_image_content_type,
     get_priority_tier_bounds,
-    get_priority_tier_counts,
-    get_shortlisted_profiles,
+    get_shortlisted_profiles_page,
     parse_resume,
     profile_row_to_dict,
     analyze_github,
@@ -1092,6 +1091,44 @@ class ChatAttachmentDetailAPIView(APIView):
         )
 
 
+def _agent_chat_query_statuses(student_id, query_ids):
+    if not query_ids:
+        return {}
+    return dict(PendingQuery.objects.filter(
+        student_id=student_id, id__in=query_ids
+    ).values_list("id", "status"))
+
+
+def _serialize_agent_chat_messages(request, messages, status_by_id):
+    result = []
+    for message in messages:
+        meta = message.meta if isinstance(message.meta, dict) else {}
+        query_id = meta.get("query_id")
+        result.append({
+            "id": message.id,
+            "sender": message.sender,
+            "content": message.content,
+            "created_at": message.created_at,
+            "edited_at": message.edited_at,
+            "meta": message.meta,
+            "escalation": {"query_id": query_id, "status": status_by_id.get(query_id, "unknown")}
+            if query_id is not None else None,
+            "attachments": [_serialize_attachment(request, attachment) for attachment in message.attachments.all()],
+        })
+    return result
+
+
+def _refresh_agent_chat_messages(messages, student_id):
+    from pure_multi_agent.change_proposals import refresh_message_metadata
+
+    refresh_message_metadata(messages, student_id=student_id)
+    return {
+        message.meta.get("query_id")
+        for message in messages
+        if isinstance(message.meta, dict) and message.meta.get("query_id") is not None
+    }
+
+
 @api_view(["GET"])
 @permission_classes(STUDENT_PERMISSIONS)
 def agent_chat_history(request):
@@ -1099,50 +1136,49 @@ def agent_chat_history(request):
     limit = chat_history_limit(request)
     base_qs = ChatMessage.objects.filter(channel=ChatMessage.Channel.AGENT, student_id=student_id)
     total = base_qs.count()
-    # Take the most recent `limit` turns, then flip back to chronological
-    # order for the client.
-    messages = base_qs.prefetch_related("attachments").order_by("-created_at", "-id")[:limit]
-    # Escalation state, computed at read time: collect every query_id any
-    # message's meta references, fetch their current status in one query, and
-    # annotate. A message tagged escalation_pending whose query has since been
-    # answered will therefore read status "resolved" -- the app can flip the
-    # old "checking..." bubble without waiting for a new message.
-    _msgs = list(messages)[::-1]
-    from pure_multi_agent.change_proposals import refresh_message_metadata
-    refresh_message_metadata(_msgs, student_id=student_id)
-    _qids = {
-        m.meta.get("query_id")
-        for m in _msgs
-        if isinstance(m.meta, dict) and m.meta.get("query_id") is not None
-    }
-    _status_by_id = {
-        pq.id: pq.status
-        for pq in PendingQuery.objects.filter(id__in=_qids)
-    } if _qids else {}
-
-    def _escalation(m):
-        if not (isinstance(m.meta, dict) and m.meta.get("query_id") is not None):
-            return None
-        qid = m.meta.get("query_id")
-        return {"query_id": qid, "status": _status_by_id.get(qid, "unknown")}
-
+    # Full history is for initial load and explicit refresh. Polling uses
+    # agent_chat_updates, which reads only new rows and requested query states.
+    messages = list(base_qs.prefetch_related("attachments").order_by("-created_at", "-id")[:limit])[::-1]
+    query_ids = _refresh_agent_chat_messages(messages, student_id)
+    status_by_id = _agent_chat_query_statuses(student_id, query_ids)
     return Response({
-        "count": len(_msgs),
+        "count": len(messages),
         "total": total,
-        "truncated": total > len(_msgs),
-        "messages": [
-            {
-                "id": m.id,
-                "sender": m.sender,
-                "content": m.content,
-                "created_at": m.created_at,
-                "edited_at": m.edited_at,
-                "meta": m.meta,
-                "escalation": _escalation(m),
-                "attachments": [_serialize_attachment(request, a) for a in m.attachments.all()],
-            }
-            for m in _msgs
-        ],
+        "truncated": total > len(messages),
+        "messages": _serialize_agent_chat_messages(request, messages, status_by_id),
+    })
+
+
+@api_view(["GET"])
+@permission_classes(STUDENT_PERMISSIONS)
+def agent_chat_updates(request):
+    """Small poll: new chat rows plus current status of the student's pending query IDs."""
+    try:
+        after_id = int(request.query_params.get("after_id", "0"))
+        raw_ids = request.query_params.get("query_ids", "")
+        id_parts = raw_ids.split(",") if raw_ids else []
+        if (after_id < 0 or after_id > 2**63 - 1 or len(raw_ids) > 4096 or
+                len(id_parts) > 200 or any(not part.isdecimal() for part in id_parts)):
+            raise ValueError
+        query_ids = {int(part) for part in id_parts}
+        if any(query_id < 1 or query_id > 2**63 - 1 for query_id in query_ids):
+            raise ValueError
+    except (TypeError, ValueError):
+        return Response({"error": "Invalid after_id or query_ids."}, status=status.HTTP_400_BAD_REQUEST)
+
+    student_id = request.user.account.student_uuid
+    rows = list(ChatMessage.objects.filter(
+        channel=ChatMessage.Channel.AGENT, student_id=student_id, id__gt=after_id
+    ).prefetch_related("attachments").order_by("id")[:51])
+    has_more = len(rows) > 50
+    messages = rows[:50]
+    query_ids_in_messages = _refresh_agent_chat_messages(messages, student_id) if messages else set()
+    status_by_id = _agent_chat_query_statuses(student_id, query_ids | query_ids_in_messages)
+    return Response({
+        "messages": _serialize_agent_chat_messages(request, messages, status_by_id),
+        "escalations": {str(query_id): status_by_id.get(query_id, "unknown") for query_id in query_ids},
+        "last_id": messages[-1].id if messages else after_id,
+        "has_more": has_more,
     })
 
 
@@ -1627,6 +1663,63 @@ def serialize_pending_query(query: "PendingQuery") -> Dict[str, Any]:
     }
 
 
+def serialize_pending_query_list(query: "PendingQuery") -> Dict[str, Any]:
+    """Fields needed by the legacy queue cards, without the full escalation trace."""
+    return {
+        "query_id": query.id,
+        "student_name": query.student_name,
+        "program": query.program,
+        "question": query.question,
+        "status": query.status,
+        "priority": query.priority,
+        "urgency_reason": query.urgency_reason,
+        "display_status": query.display_status,
+        "group": query.group.slug if query.group_id else None,
+        "routed_to_name": query.routed_to_name,
+        "routed_to_email": query.routed_to_email,
+        "answer": query.answer,
+        "answered_by": query.answered_by,
+        "timestamp": query.created_at,
+    }
+
+
+class UniversityDashboardSummaryView(APIView):
+    """Small dashboard counters, scoped to the signed-in university account."""
+
+    permission_classes = [IsAuthenticated, IsTOTPEnrolled, IsUniversityQueryUser, ScopedToOwnUniversityId]
+
+    def get(self, request, university_id: str):
+        from django.db.models import Count
+
+        from agent_queries.models import AgentQuery
+        from agent_queries.views import scoped_queries
+        from django_api.models import UniversityInterestEvent, UniversityKnowledgeEntry
+
+        account = get_account(request)
+        legacy = PendingQuery.objects.filter(university_id=university_id).exclude(
+            status__in=[PendingQuery.Status.RESOLVED, PendingQuery.Status.IGNORED]
+        )
+        if account.role == Account.Role.DEPARTMENT:
+            legacy = legacy.filter(
+                group__in=account.departments.filter(university_id=account.university_id)
+            )
+        agent_count = scoped_queries(account).filter(
+            direction=AgentQuery.Direction.STUDENT, status="unanswered"
+        ).count()
+        result = {
+            "university_id": university_id,
+            "pending_tasks": agent_count + legacy.count(),
+        }
+        if account.role == Account.Role.UNIVERSITY:
+            result["knowledge_facts"] = UniversityKnowledgeEntry.objects.filter(
+                university_id=university_id
+            ).count()
+            result["student_profiles"] = UniversityInterestEvent.objects.filter(
+                university_id=university_id
+            ).aggregate(total=Count("student_id", distinct=True))["total"]
+        return Response(result)
+
+
 class UniversityProfilesListView(APIView):
     """
     GET /api/university/<university_id>/profiles/
@@ -1634,15 +1727,15 @@ class UniversityProfilesListView(APIView):
     have shown real interest in this university (searched it or run a fit
     check via their own agent -- see django_api.models.UniversityInterestEvent)
     AND whose latest fit score clears the university's configured
-    min_fit_score_threshold. See django_api.services.get_shortlisted_profiles.
-    Sorted by match_score descending.
+    min_fit_score_threshold, or who has no valid score yet. See
+    django_api.services.get_shortlisted_profiles_page. Sorted by match score.
 
     Every returned profile carries a "priority_tier" (high/medium/low/
     unranked), computed against the university's configured
     priority_tier_bounds (default high>=80, medium>=60, low>=40) -- see
-    django_api.services.compute_priority_tier. "tier_counts" in the response
-    tallies every interested+scored student by tier regardless of any tier
-    filter applied, so a dashboard can render filter buttons with counts.
+    django_api.services.compute_priority_tier. "tier_counts" tallies all
+    interested students by tier, including unassessed students, regardless
+    of the current score/tier filters.
 
     Optional query params:
       min_score=<0-100>            Override the university's saved threshold for this request only.
@@ -1692,10 +1785,6 @@ class UniversityProfilesListView(APIView):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
-        shortlist = get_shortlisted_profiles(
-            university_id, min_score=min_score, priority_tiers=priority_tiers
-        )
-
         try:
             page = max(1, int(request.query_params.get("page", "1")))
             page_size = min(100, max(1, int(request.query_params.get("page_size", "50"))))
@@ -1705,13 +1794,15 @@ class UniversityProfilesListView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        total = len(shortlist)
+        shortlist = get_shortlisted_profiles_page(
+            university_id, page=page, page_size=page_size,
+            min_score=min_score, priority_tiers=priority_tiers,
+        )
+        total = shortlist["total"]
         start = (page - 1) * page_size
-        page_entries = shortlist[start : start + page_size]
+        page_entries = shortlist["profiles"]
         student_ids = [entry["student_id"] for entry in page_entries]
-
-        rows = list(StudentProfile.objects.filter(uuid__in=student_ids))
-        rows_by_uuid = {str(row.uuid): row for row in rows}
+        rows_by_uuid = shortlist["profile_rows"]
 
         accounts = (
             Account.objects.filter(student_profile__uuid__in=student_ids)
@@ -1781,8 +1872,8 @@ class UniversityProfilesListView(APIView):
 
         return Response({
             "university_id": university_id,
-            "priority_tier_bounds": get_priority_tier_bounds(university_id),
-            "tier_counts": get_priority_tier_counts(university_id),
+            "priority_tier_bounds": shortlist["priority_tier_bounds"],
+            "tier_counts": shortlist["tier_counts"],
             "pagination": {
                 "page": page,
                 "page_size": page_size,
@@ -2004,17 +2095,49 @@ class UniversityQuestionsView(APIView):
         return Response({"university_id": university_id, "questions": questions})
 
 
+def _legacy_university_query_page(request, university_id, rows):
+    """Paginate after applying university and department access restrictions."""
+    account = get_account(request)
+    rows = rows.filter(university_id=university_id).select_related("group")
+    if account.role == Account.Role.DEPARTMENT:
+        rows = rows.filter(
+            group__in=account.departments.filter(university_id=account.university_id)
+        )
+    try:
+        page = int(request.query_params.get("page", "1"))
+        page_size = int(request.query_params.get("page_size", "20"))
+        if page < 1 or not 1 <= page_size <= 100:
+            raise ValueError
+    except (TypeError, ValueError):
+        return Response(
+            {"error": "page must be positive and page_size must be between 1 and 100."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    total = rows.count()
+    start = (page - 1) * page_size
+    rows = rows.only(
+        "id", "group_id", "group__slug", "student_name", "program", "question",
+        "status", "priority", "urgency_reason", "routed_to_name", "routed_to_email",
+        "answer", "answered_by", "created_at",
+    ).order_by("-created_at", "-id")[start:start + page_size]
+    return Response({
+        "university_id": university_id,
+        "queries": [serialize_pending_query_list(row) for row in rows],
+        "pagination": {
+            "page": page, "page_size": page_size, "total": total,
+            "has_next": start + page_size < total,
+        },
+    })
+
+
 class UniversityQueriesView(APIView):
     """GET /api/university/<university_id>/queries/ — all escalated queries for one university."""
 
     permission_classes = [IsAuthenticated, IsTOTPEnrolled, IsUniversityQueryUser, ScopedToOwnUniversityId]
 
     def get(self, request, university_id: str):
-        rows = PendingQuery.objects.filter(university_id=university_id)
-        if request.user.account.role == "department":
-            rows = rows.filter(group__in=request.user.account.departments.filter(university_id=request.user.account.university_id))
-        matched = [serialize_pending_query(r) for r in rows]
-        return Response({"university_id": university_id, "queries": matched})
+        return _legacy_university_query_page(request, university_id, PendingQuery.objects.all())
 
 
 class UniversityActiveQueriesView(APIView):
@@ -2023,13 +2146,10 @@ class UniversityActiveQueriesView(APIView):
     permission_classes = [IsAuthenticated, IsTOTPEnrolled, IsUniversityQueryUser, ScopedToOwnUniversityId]
 
     def get(self, request, university_id: str):
-        rows = PendingQuery.objects.filter(university_id=university_id).exclude(
+        rows = PendingQuery.objects.exclude(
             status__in=[PendingQuery.Status.RESOLVED, PendingQuery.Status.IGNORED]
         )
-        if request.user.account.role == "department":
-            rows = rows.filter(group__in=request.user.account.departments.filter(university_id=request.user.account.university_id))
-        active = [serialize_pending_query(r) for r in rows]
-        return Response({"university_id": university_id, "queries": active})
+        return _legacy_university_query_page(request, university_id, rows)
 
 
 class UniversityArchiveQueriesView(APIView):
@@ -2039,13 +2159,9 @@ class UniversityArchiveQueriesView(APIView):
 
     def get(self, request, university_id: str):
         rows = PendingQuery.objects.filter(
-            university_id=university_id,
             status__in=[PendingQuery.Status.RESOLVED, PendingQuery.Status.IGNORED],
         )
-        if request.user.account.role == "department":
-            rows = rows.filter(group__in=request.user.account.departments.filter(university_id=request.user.account.university_id))
-        archive = [serialize_pending_query(r) for r in rows]
-        return Response({"university_id": university_id, "queries": archive})
+        return _legacy_university_query_page(request, university_id, rows)
 
 
 class VerifiedKnowledgeView(APIView):

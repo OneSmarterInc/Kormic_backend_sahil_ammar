@@ -38,6 +38,10 @@ class QueueTests(TestCase):
         execute_agent_job.run(job_id)
         run.assert_called_once()
         self.assertEqual(ChatMessage.objects.filter(student_id=self.sid, sender="assistant").count(), 1)
+        self.assertEqual(
+            AgentJob.objects.get(pk=job_id).payload["assistant_message_id"],
+            ChatMessage.objects.get(student_id=self.sid, sender="assistant").pk,
+        )
         response = self.client.get(f"/api/chat/jobs/{job_id}/")
         self.assertEqual(response.data["result"]["reply"], "Done")
 

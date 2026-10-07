@@ -371,14 +371,33 @@ class AdminUniversityDetailAPIView(APIView):
 # Institutes
 # ---------------------------------------------------------------------
 
-def _serialize_institute(institute: Institute) -> Dict[str, Any]:
-    # Exactly one admin login is created per institute today same pattern as _serialize_university.
-    admin_account = (
-        Account.objects.filter(institute=institute, role=Account.Role.INSTITUTE)
+_ADMIN_NOT_LOADED = object()
+
+
+def _institute_admins_for_page(institutes):
+    """Fetch admin and confirmed-TOTP state in one query for a bounded page."""
+    ids = [institute.pk for institute in institutes]
+    if not ids:
+        return {}
+    accounts = (
+        Account.objects.filter(institute_id__in=ids, role=Account.Role.INSTITUTE)
         .select_related("user")
-        .order_by("created_at")
-        .first()
+        .annotate(_totp_enrolled=Exists(
+            TOTPDevice.objects.filter(user_id=OuterRef("user_id"), confirmed_at__isnull=False)
+        ))
+        .order_by("created_at", "pk")
     )
+    first_admins = {}
+    for account in accounts:
+        first_admins.setdefault(account.institute_id, account)
+    return first_admins
+
+
+def _serialize_institute(institute: Institute, admin_account=_ADMIN_NOT_LOADED) -> Dict[str, Any]:
+    # Detail/create responses still fetch one admin. List responses pass the
+    # page's preloaded account, including an explicit None where absent.
+    if admin_account is _ADMIN_NOT_LOADED:
+        admin_account = _institute_admins_for_page([institute]).get(institute.pk)
 
     return {
         "id": str(institute.uuid),
@@ -391,11 +410,7 @@ def _serialize_institute(institute: Institute) -> Dict[str, Any]:
         "admin_email": admin_account.user.email if admin_account else None,
         "admin_name": admin_account.user.first_name if admin_account else None,
         "admin_is_active": admin_account.user.is_active if admin_account else None,
-        "admin_totp_enrolled": (
-            TOTPDevice.objects.filter(user_id=admin_account.user_id, confirmed_at__isnull=False).exists()
-            if admin_account
-            else None
-        ),
+        "admin_totp_enrolled": admin_account._totp_enrolled if admin_account else None,
         "created_at": institute.created_at,
         "updated_at": institute.updated_at,
     }
@@ -403,7 +418,7 @@ def _serialize_institute(institute: Institute) -> Dict[str, Any]:
 
 class AdminInstituteListCreateAPIView(APIView):
     """
-    GET /api/superuser/institutes/   ?search=<name substring>
+    GET /api/superuser/institutes/   ?search=<name substring>&page=1&page_size=25
     POST /api/superuser/institutes/  Body:
         {
           "institution_name": "...",
@@ -418,13 +433,30 @@ class AdminInstituteListCreateAPIView(APIView):
     permission_classes = SUPERUSER_PERMISSIONS
 
     def get(self, request):
-        institutes = Institute.objects.all()
-
+        query = ListQuery(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        page_number = query.validated_data.get("page", 1)
+        page_size = query.validated_data["page_size"]
         search = request.query_params.get("search", "").strip()
+        if len(search) > 255:
+            return _error("Search must be 255 characters or fewer.")
+        institutes = Institute.objects.all()
         if search:
             institutes = institutes.filter(name__icontains=search)
-
-        return Response({"institutes": [_serialize_institute(i) for i in institutes]})
+        paginator = Paginator(institutes.order_by("name", "pk"), page_size)
+        page = paginator.get_page(page_number)
+        rows = list(page.object_list)
+        admins = _institute_admins_for_page(rows)
+        return Response({
+            "institutes": [_serialize_institute(i, admins.get(i.pk)) for i in rows],
+            "pagination": {
+                "total": paginator.count,
+                "page": page.number,
+                "page_size": page_size,
+                "total_pages": paginator.num_pages,
+                "has_next": page.has_next(),
+            },
+        })
 
     def post(self, request):
         serializer = AdminEnrollInstituteSerializer(data=request.data)

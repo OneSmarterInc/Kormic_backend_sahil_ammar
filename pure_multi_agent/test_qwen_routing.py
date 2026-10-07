@@ -1,10 +1,12 @@
 from contextlib import nullcontext
+import os
 from unittest.mock import Mock, patch
 from django.test import SimpleTestCase
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from pure_multi_agent.capacity import LimitedMessages
 from pure_multi_agent import model_router, legacy_qwen
+from kormic_backend.ollama_config import qwen_keep_alive
 
 
 @tool
@@ -14,6 +16,30 @@ def read_requirements() -> dict:
 
 
 class QwenRoutingTests(SimpleTestCase):
+    def test_qwen_keep_alive_defaults_to_three_minutes(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(qwen_keep_alive(), '3m')
+
+    def test_qwen_keep_alive_is_sent_by_both_student_transports(self):
+        with patch.dict(os.environ, {'KORMIC_QWEN_KEEP_ALIVE': '2m'}):
+            model_router.qwen.cache_clear()
+            try:
+                with patch.object(model_router, 'ChatOllama') as client:
+                    model_router.qwen()
+                self.assertEqual(client.call_args.kwargs['keep_alive'], '2m')
+                self.assertEqual(client.call_args.kwargs['num_ctx'], 16384)
+                self.assertEqual(client.call_args.kwargs['num_predict'], 2400)
+            finally:
+                model_router.qwen.cache_clear()
+
+            response = Mock()
+            response.json.return_value = {'message': {'content': 'Local answer'}}
+            with patch.object(legacy_qwen, 'model_slot', return_value=nullcontext()), \
+                 patch.object(legacy_qwen.httpx, 'post', return_value=response) as post:
+                legacy_qwen.create(messages=[{'role': 'user', 'content': 'Hello'}])
+            self.assertEqual(post.call_args.kwargs['json']['keep_alive'], '2m')
+            self.assertEqual(post.call_args.kwargs['json']['options']['num_ctx'], 16384)
+
     def test_backup_repairs_unavailable_tool_without_executing_it(self):
         model = Mock()
         expected = AIMessage(content='', tool_calls=[{'id':'valid','name':'read_requirements','args':{}}])

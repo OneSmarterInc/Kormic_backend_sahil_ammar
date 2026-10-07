@@ -54,7 +54,18 @@ def serialize(job):
         from pure_multi_agent.document_progress import public_progress
         data['progress'] = public_progress(job)
     if job.status == "completed":
-        data["result"] = job.result
+        result = job.result or {}
+        if result.get("archived_to_history"):
+            # The terminal job ID/idempotency record remains stable; the old
+            # answer body now lives only in the student's visible transcript.
+            assistant_id = (job.payload or {}).get("assistant_message_id")
+            reply = ChatMessage.objects.filter(
+                pk=assistant_id, student_id=job.student_id,
+                channel="agent", sender="assistant",
+            ).values_list("content", flat=True).first()
+            data["result"] = {**result, "reply": reply or ""}
+        else:
+            data["result"] = result
     if job.status == "failed":
         data["error"] = job.error
     return data

@@ -107,9 +107,24 @@ class ScrapeJob(models.Model):
         COMPLETED = "completed", "Completed"
         FAILED = "failed", "Failed"
 
+    class Scope(models.TextChoices):
+        ALL = "all", "All saved URLs"
+        SELECTED = "selected", "Approved URL selection"
+
     ACTIVE_STATUSES = ("queued", "running")
 
     university = models.ForeignKey(University, on_delete=models.CASCADE, related_name="scrape_jobs")
+    scope = models.CharField(max_length=16, choices=Scope.choices, default=Scope.ALL)
+    cluster_approval = models.ForeignKey(
+        "url_discovery.DiscoveryClusterApproval", on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="scrape_jobs",
+    )
+    # Snapshot the approved selection so later edits to scrape_urls or the
+    # discovery job cannot change what an already queued task will scrape.
+    selected_urls = models.JSONField(default=list, blank=True)
+    progress_completed = models.PositiveIntegerField(default=0)
+    progress_total = models.PositiveIntegerField(default=0)
+    current_url = models.TextField(blank=True, default="")
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.QUEUED, db_index=True)
     result = models.JSONField(default=dict, blank=True)
     error_message = models.CharField(max_length=1000, blank=True, default="")

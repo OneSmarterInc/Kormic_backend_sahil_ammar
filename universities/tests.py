@@ -233,7 +233,7 @@ class ScrapeNowJobTests(TestCase):
         self.assertEqual(job.university_id, self.university.id)
         mock_delay.assert_called_once_with("universities.tasks.run_scrape_now_job", args=[job.id], retry=False)
 
-    @mock.patch("universities.tasks.run_scrape_now_job.delay")
+    @mock.patch("universities.services.current_app.send_task")
     def test_post_rejects_second_job_while_one_is_active(self, mock_delay):
         self.client.post("/api/university-admin/scrape-urls/scrape-now/")
 
@@ -250,7 +250,7 @@ class ScrapeNowJobTests(TestCase):
 
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
-    @mock.patch("universities.tasks.run_scrape_now_job.delay")
+    @mock.patch("universities.services.current_app.send_task")
     def test_job_detail_polling_reflects_status(self, mock_delay):
         resp = self.client.post("/api/university-admin/scrape-urls/scrape-now/")
         job_id = resp.data["id"]

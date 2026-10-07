@@ -1,4 +1,5 @@
 import json
+import os
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -28,10 +29,12 @@ class InferenceTests(SimpleTestCase):
     @patch('github_profiles.inference.httpx.post')
     def test_qwen_first_no_claude_when_valid(self, post, claude):
         post.return_value = Mock(json=lambda: {'message': {'content': '{"summary":"Source evidence"}'}})
-        answer = Inference().chat(MESSAGES, SCHEMA)
+        with patch.dict(os.environ, {'KORMIC_QWEN_KEEP_ALIVE': '2m'}):
+            answer = Inference().chat(MESSAGES, SCHEMA)
         self.assertEqual(answer['provider'], 'qwen')
         claude.assert_not_called()
         self.assertEqual(post.call_args.kwargs['json']['format'], SCHEMA)
+        self.assertEqual(post.call_args.kwargs['json']['keep_alive'], '2m')
         self.assertFalse(post.call_args.kwargs['trust_env'])
 
     @patch('agents.github_agent._get_anthropic_client')
