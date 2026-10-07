@@ -66,6 +66,9 @@ configuration is ready. Do not restart Ollama just for a signing-key change.
 
 Only after it passes:
 
+Wait for active jobs to finish before the first restart if the current worker
+configuration has not yet been corrected as described below.
+
 ```bash
 sudo supervisorctl restart 'kormic:*'
 sudo supervisorctl status
@@ -90,3 +93,64 @@ sudo supervisorctl tail -16000 kormic:kormic-agent-worker stderr
 Only fresh timestamps demonstrate the post-deployment outcome. Context errors
 now include `officer_context_budget_exceeded` and the estimator's reason. Do not
 raise context or timeout settings to work around a missing database column.
+
+## Ollama cancellation during a Supervisor restart
+
+The October 7 11:36:17 logs correlate Ollama's cancelled request with SIGTERM
+in both the Celery worker pool and Gunicorn. A backend shutdown interrupted that
+request. The logs do not identify who initiated the shutdown. The subsequent
+`SystemExit` JSON serialization failure occurred in Celery's shutdown handling;
+changing serializers or increasing the Ollama timeout does not prevent the
+process from being terminated.
+
+Find the existing worker configuration (do not create a duplicate program):
+
+```bash
+sudo grep -R -l '^\[program:kormic-agent-worker\]' /etc/supervisor
+```
+
+Edit the returned file. In its existing `[program:kormic-agent-worker]` section,
+replace or add these four settings, retaining the command, queues, paths, user
+and environment. Apply them to `[program:kormic-document-worker]` too if that
+section also runs a Celery worker with the 1800-second agent task limit:
+
+```ini
+stopsignal=TERM
+stopasgroup=false
+killasgroup=true
+stopwaitsecs=2000
+```
+
+The program must launch Celery directly, or use `exec` if a shell wrapper is
+essential, so Supervisor signals the worker parent. Ensure `REMAP_SIGTERM` is
+not set to `SIGQUIT`. Celery's parent handles TERM as a warm shutdown and lets
+active tasks finish. `stopasgroup=true` sends TERM directly to children too,
+which prevents relying on that parent-managed drain. `killasgroup=true` cleans
+up children only if the grace period expires. 2000 seconds exceeds this
+project's 1800-second agent task limit. Other workers need a grace period based
+on their own longest task; do not blindly give every worker the same limit.
+
+The first update uses the old settings to stop the existing process. Wait until
+current requests/jobs have finished, and avoid submitting more work, before:
+
+```bash
+sudo supervisorctl reread
+sudo supervisorctl update kormic
+sudo supervisorctl status
+```
+
+`update kormic` may restart the changed group; do not immediately issue another
+`restart kormic:*`. Let one chat finish without service restarts and compare
+fresh worker/Ollama logs. Graceful shutdown still delays a deployment until the
+active task finishes; it cannot make a forced kill safe.
+
+If you need to restart the Supervisor system service itself, also inspect its
+systemd stop policy (`systemctl show supervisor -p KillMode -p TimeoutStopUSec`).
+A short systemd timeout or a group-wide TERM can bypass the worker's grace
+period. For this deployment, a reviewed service override can use
+`KillMode=mixed` and `TimeoutStopSec=2100s`; allow more time if any supervised
+program has a longer stop grace. Do not restart the Supervisor daemon merely
+to apply a program configuration change.
+
+References: [Celery worker shutdown](https://docs.celeryq.dev/en/stable/userguide/workers.html#worker-shutdown)
+and [Supervisor program settings](https://supervisord.org/configuration.html#program-x-section-settings).
