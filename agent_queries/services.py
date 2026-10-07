@@ -45,8 +45,8 @@ def message(conversation, actor, content, *, kind="message", query=None, metadat
     return row
 
 
-def history(conversation):
-    rows = list(conversation.messages.filter(kind__in=["request", "reply", "human_answer"]).order_by("-id")[:16])
+def history(conversation, *, limit=16):
+    rows = list(conversation.messages.filter(kind__in=["request", "reply", "human_answer"]).order_by("-id")[:min(max(limit, 1), 100)])
     return [{"speaker": r.actor_name, "content": r.content, "timestamp": r.created_at.isoformat()} for r in reversed(rows)]
 
 

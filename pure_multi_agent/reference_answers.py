@@ -56,10 +56,46 @@ ANSWERS = {
 }
 
 
+def standalone_github_connection(text):
+    """Only a complete connection question can use the reviewed help answer."""
+    import re
+    return bool(re.fullmatch(
+        r'\s*(?:(?:how (?:do|can) i|how to|please (?:tell|show) me how to|help me)\s+'
+        r'|(?:what are the steps to)\s+)(?:connect|link)\s+(?:my\s+)?github'
+        r'(?:\s+account)?(?:\s+to\s+kormic)?\s*[?.!]*\s*', text, re.I))
+
+
+def standalone_resume_review(text):
+    """A document-only request; extra questions must reach the agent."""
+    import re
+    text = text.replace('résumé', 'resume').replace('Résumé', 'Resume')
+    document = r'(?:my\s+|the\s+|this\s+)?(?:uploaded\s+|saved\s+)?(?:resume|cv)'
+    request = (r'(?:(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?'
+               r'(?:review|analyse|analyze|critique|check|assess|evaluate)\s+' + document +
+               r'(?:\s+for\s+(?:weaknesses|gaps|improvements))?'
+               r'|what\s+are\s+(?:the|my)\s+(?:weaknesses|gaps)\s+in\s+' + document + r')')
+    return bool(re.fullmatch(r'\s*' + request + r'\s*[?.!]*\s*', text, re.I))
+
+
+def direct_reply(ctx):
+    """Handle complete, state-backed requests before invoking intent classification."""
+    if not ctx.get('canonical_student_id') or ctx.get('chat_attachments') or ctx.get('documents_read'):
+        return None
+    text = ctx.get('current_message', '')
+    if standalone_github_connection(text) and not (ctx.get('student_profile') or {}).get('github'):
+        return ANSWERS['github_connection']
+    if standalone_resume_review(text):
+        return missing_resume_reply(ctx)
+    return None
+
+
 def reference_reply(ctx, intent):
     import re
     topic = intent.get('reference_topic', 'none')
     text = ctx.get('current_message', '')
+    if topic == 'github_connection' and (not standalone_github_connection(text)
+                                         or (ctx.get('student_profile') or {}).get('github')):
+        return None
     if re.search(r'\b(plan|schedule|weeks?|months?|draft|write|prepare|practice)\b', text, re.I):
         return None
     # Compose reviewed concepts when all requested topics are represented.
@@ -94,11 +130,8 @@ def reference_reply(ctx, intent):
 
 def missing_resume_reply(ctx):
     """Do not ask a model to critique a document that does not exist."""
-    import re
     text = ctx.get('current_message', '')
-    if re.search(r'what (?:do )?you know|saved profile|from my profile|using my profile', text, re.I):
-        return None
-    if not re.search(r'\b(resume|cv)\b', text, re.I) or not re.search(r'\b(uploaded|review|weakness\w*|critique|analyse|analyze)\b', text, re.I):
+    if ctx.get('chat_attachments') or ctx.get('documents_read') or not standalone_resume_review(text):
         return None
     from django_api.models import ResumeUpload
     from pure_multi_agent.document_evidence import manifest
@@ -110,12 +143,76 @@ def missing_resume_reply(ctx):
     return None
 
 
+def calculated_cost_reply(result):
+    """Present validated calculator output without a second model response."""
+    from decimal import Decimal
+    if not isinstance(result, dict) or not all(key in result for key in (
+            'currency', 'months', 'tuition_total', 'living_monthly', 'living_total', 'other_total', 'total')):
+        return None
+    currency = result['currency']
+    def money(value):
+        return f'{Decimal(value):,.2f}'
+    lines = [
+        'Using the amounts supplied for this calculation:',
+        f"- Tuition: {currency} {money(result['tuition_total'])}",
+        f"- Living costs: {currency} {money(result['living_monthly'])} × {result['months']} months = {currency} {money(result['living_total'])}",
+        f"- Other costs: {currency} {money(result['other_total'])}",
+        f"- **Whole-degree cost: {currency} {money(result['total'])}**",
+    ]
+    if result.get('remaining') is not None:
+        remaining = Decimal(result['remaining'])
+        label = 'Budget remaining' if remaining >= 0 else 'Budget shortfall'
+        lines.append(f'- **{label}: {currency} {money(abs(remaining))}**')
+    else:
+        lines.append('A comparable whole-program budget is not available, so affordability is unknown.')
+    return '\n\n'.join((lines[0], '\n'.join(lines[1:]),
+        'This calculates your supplied scenario; it does not verify university fees or change your saved profile.'))
+
+
+def _cost_compound_request(text):
+    import re
+    return (bool(re.search(r'\b(?:and|also|then|recommend|suggest|compare|explain|scholarships?|visa|projects?|which|what|how|why|where|should|tell|show|find|list)\b', text, re.I))
+            or text.count('?') > 1)
+
+
+def standalone_cost_calculation(text):
+    """Conservatively decline compound requests after the calculator returns."""
+    import re
+    return (standalone_cost_inputs(text) is not None
+            or bool(re.fullmatch(
+                r'\s*(?:please\s+)?(?:calculate|compute|work out)\s+'
+                r'(?:(?:my|the|these|this)\s+)?(?:(?:total|whole[- ]degree|study)\s+)?'
+                r'costs?(?:\s+from\s+these\s+amounts)?\s*[?.!]*\s*', text, re.I)))
+
+
+def standalone_cost_inputs(text):
+    """Parse only a fully labelled, single-currency calculation request."""
+    import re
+    if _cost_compound_request(text):
+        return None
+    amount = r'(\d+(?:\.\d{1,2})?)'
+    pattern = (r'\s*(?:calculate|compute|work out)\s+(?:my\s+)?(?:study\s+|total\s+)?costs?\s*:\s*'
+               r'(INR|USD|GBP|EUR|CAD|AUD)\s*;\s*tuition\s+' + amount +
+               r'\s*;\s*living\s+monthly\s+' + amount +
+               r'\s*;\s*months\s+(\d{1,3})\s*;\s*other\s+' + amount +
+               r'(?:\s*;\s*budget\s+\1\s+' + amount + r')?\s*[.!]?\s*')
+    match = re.fullmatch(pattern, text, re.I)
+    if not match:
+        return None
+    currency, tuition, living, months, other, budget = match.groups()
+    return {'currency': currency.upper(), 'tuition_total': float(tuition),
+            'living_monthly': float(living), 'months': int(months),
+            'other_total': float(other), 'budget_total': float(budget) if budget else None}
+
+
 def planning_reply(ctx):
     """Calendar milestones are calculated, not guessed academic deadlines."""
     import re
     import calendar
     from django.utils import timezone
     text = ctx.get('current_message', '')
+    if re.search(r'\band\b|\balso\b|;', text, re.I) or text.count('?') > 1:
+        return None
     if not re.search(r'month[ -]by[ -]month', text, re.I):
         return None
     months = '|'.join(calendar.month_name[1:])

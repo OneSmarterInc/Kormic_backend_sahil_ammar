@@ -167,4 +167,4 @@ def unfinished_documents(student_id):
     rows = StudentDocumentEvidence.objects.filter(student__uuid=student_id, status='awaiting_proposal').order_by('-created_at')[:5]
     return {str(row.pk): {'visual': row.content_type.startswith('image/') or not row.raw_text,
         'needs_proposal': True, 'filename': row.filename, 'attachment_id': row.attachment_id,
-        'text': row.raw_text[:45000]} for row in rows}
+        'text': row.raw_text} for row in rows}

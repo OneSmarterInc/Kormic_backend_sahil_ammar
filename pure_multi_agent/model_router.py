@@ -19,6 +19,8 @@ from langchain_ollama import ChatOllama
 from django.conf import settings
 from github_profiles.scheduling import model_slot, provider_blocked, block_provider, CapacityBusy
 from kormic_backend.ollama_config import qwen_keep_alive
+from pure_multi_agent.qwen_context import select_context, needs_expansion, ContextBudgetExceeded
+from pure_multi_agent.reservations import reservation_estimate, claude_output_allowance
 
 logger = logging.getLogger(__name__)
 
@@ -103,24 +105,27 @@ def provider_messages(messages, provider, model_name):
     return [SystemMessage(content=content), *conversation]
 
 
-@lru_cache(maxsize=1)
-def qwen():
+@lru_cache(maxsize=16)
+def qwen(num_ctx=16384, num_predict=2400):
     base = os.getenv('STUDENT_OLLAMA_BASE_URL', settings.GITHUB_OLLAMA_BASE_URL).rstrip('/')
     if urlsplit(base).hostname not in settings.GITHUB_OLLAMA_ALLOWED_HOSTS:
         raise ValueError('Ollama host is not in the configured allowlist')
     return ChatOllama(model=os.getenv('STUDENT_OLLAMA_MODEL', settings.GITHUB_OLLAMA_MODEL),
-        base_url=base, temperature=0, reasoning=False, num_ctx=16384, num_predict=2400,
+        base_url=base, temperature=0, reasoning=False, num_ctx=num_ctx, num_predict=num_predict,
         keep_alive=qwen_keep_alive(),
         client_kwargs={'timeout': httpx.Timeout(90, connect=2), 'trust_env': False})
 
 
-@lru_cache(maxsize=1)
-def claude():
+@lru_cache(maxsize=4)
+def claude(max_tokens=6000):
     return ChatAnthropic(model=os.getenv('STUDENT_CLAUDE_MODEL', 'claude-haiku-4-5-20251001'),
-        max_tokens=6000, timeout=90, max_retries=0)
+        max_tokens=max_tokens, timeout=90, max_retries=0)
 
 
 def _validate(reply, tools, *, validate_arguments=True, require_tools=False):
+    if (getattr(reply, 'response_metadata', {}) or {}).get('stop_reason') == 'max_tokens':
+        logger.warning('Claude response reached its configured output allowance before completion')
+        raise ValueError('The model response was truncated; produce a concise complete answer.')
     if reply.invalid_tool_calls:
         raise ValueError('Malformed model tool call')
     mapping = {t.name: t for t in tools}
@@ -161,31 +166,50 @@ def _local_repair_instruction(reply, tools, error):
         '\nRelevant schemas: ' + json.dumps(schemas, ensure_ascii=False)[:14000])
 
 
-def invoke(messages, tools=(), *, force_claude=False, require_tools=False, json_schema=None, tool_call_validator=None, local_only=False, response_validator=None, single_attempt=False, research=False):
+def invoke(messages, tools=(), *, force_claude=False, require_tools=False, json_schema=None, tool_call_validator=None, local_only=False, response_validator=None, single_attempt=False, research=False, profile='general'):
     if _student_execution.get() and not research:
         local_only, force_claude = True, False
     # Text-only Qwen cannot interpret an uploaded image. Claude can.
     vision = any(isinstance(m.content, list) and any(isinstance(b, dict) and b.get('type') in ('image', 'image_url', 'document') for b in m.content) for m in messages)
-    def token_estimate(content):
-        if isinstance(content, list):
-            # Base64 bytes are transport, not text tokens. Reserve a conservative
-            # vision/document allowance without creating an impossible queue job.
-            return sum(16000 if isinstance(b, dict) and b.get('type') == 'document' else
-                6000 if isinstance(b, dict) and b.get('type') in ('image', 'image_url') else len(str(b)) // 3 for b in content)
-        return len(str(content)) // 3
-    estimate = max(1500, sum(token_estimate(m.content) for m in messages) + sum(len(str(t.args)) for t in tools) // 3 + 6000)
+    claude_limit = claude_output_allowance(profile)
+    estimate = reservation_estimate(messages, tools, profile=profile, format_schema=json_schema)
     local_busy = False
     first_reply = None
     if local_only and provider_blocked('qwen'):
         raise CapacityBusy('The local model is recovering; your request will resume shortly.', 10)
     if not (force_claude or vision or provider_blocked('qwen')):
         try:
-            with qwen_slot(estimate):
-                model = qwen().bind_tools(tools) if tools else qwen()
-                if json_schema is not None:
-                    model = model.bind(format=json_schema)
-                current_messages = provider_messages(messages, 'Qwen', qwen().model)
-                reply = measured_invoke(model, current_messages, 'qwen', qwen().model)
+            model_name = os.getenv('STUDENT_OLLAMA_MODEL', settings.GITHUB_OLLAMA_MODEL)
+            current_messages = provider_messages(messages, 'Qwen', model_name)
+            budget = select_context(current_messages, tools, profile=profile, format_schema=json_schema)
+            def local_model(window):
+                client = qwen(window.num_ctx, window.num_predict)
+                bound = client.bind_tools(tools) if tools else client
+                return bound.bind(format=json_schema) if json_schema is not None else bound
+            def dispatch(local_messages, window):
+                while True:
+                    active_model = local_model(window)
+                    candidate = measured_invoke(active_model, local_messages, 'qwen', model_name)
+                    metadata = getattr(candidate, 'response_metadata', {}) or {}
+                    usage = getattr(candidate, 'usage_metadata', {}) or {}
+                    if metadata.get('done_reason') == 'length':
+                        if window.num_predict >= 6000:
+                            raise ContextBudgetExceeded('Qwen reached the configured output allowance before completing its answer.')
+                        window = select_context(local_messages, tools, profile=profile,
+                            output_tokens=min(window.num_predict * 2, 6000),
+                            format_schema=json_schema, min_context=window.num_ctx)
+                        continue
+                    observed = metadata.get('prompt_eval_count', usage.get('input_tokens'))
+                    if not needs_expansion(window, observed):
+                        logger.info('Qwen context profile=%s window=%s input_estimate=%s prompt_tokens=%s output_reserve=%s',
+                            profile, window.num_ctx, window.input_estimate, observed, window.num_predict)
+                        return candidate, window
+                    logger.info('Qwen prompt approached context limit; retrying at a larger window')
+                    window = select_context(local_messages, tools, profile=profile,
+                        output_tokens=window.num_predict, format_schema=json_schema,
+                        min_context=window.num_ctx * 2)
+            with qwen_slot(budget.input_estimate + budget.num_predict):
+                reply, budget = dispatch(current_messages, budget)
                 first_reply = reply
                 try:
                     _validate(reply, tools, require_tools=require_tools)
@@ -213,7 +237,11 @@ def invoke(messages, tools=(), *, force_claude=False, require_tools=False, json_
                     else:
                         retry = [*current_messages, HumanMessage(content=_local_repair_instruction(reply, tools, exc))]
                     logger.info('Repairing local tool response before fallback (%s)', type(exc).__name__)
-                    reply = _validate(measured_invoke(model, retry, 'qwen', qwen().model), tools, require_tools=require_tools)
+                    retry_budget = select_context(retry, tools, profile=profile,
+                        output_tokens=budget.num_predict, format_schema=json_schema,
+                        min_context=budget.num_ctx)
+                    reply, budget = dispatch(retry, retry_budget)
+                    reply = _validate(reply, tools, require_tools=require_tools)
                     if response_validator:
                         response_validator(reply)
                     if tool_call_validator:
@@ -227,13 +255,17 @@ def invoke(messages, tools=(), *, force_claude=False, require_tools=False, json_
                         # Bad output does not mean the local provider is down.
                         raise ValueError('The local response did not match the requested JSON schema.') from exc
                 reply.response_metadata['routing_provider'] = 'qwen'
-                reply.response_metadata['routing_model'] = qwen().model
-                logger.info('AI response provider=qwen model=%s tool_calls=%s', qwen().model, len(reply.tool_calls))
+                reply.response_metadata['routing_model'] = model_name
+                logger.info('AI response provider=qwen model=%s tool_calls=%s', model_name, len(reply.tool_calls))
                 return reply
         except CapacityBusy:
             # Queue pressure is not a provider failure. The graph checkpoints
             # and resumes instead of turning a traffic spike into paid calls.
             raise
+        except ContextBudgetExceeded:
+            if local_only:
+                raise
+            logger.info('Qwen context maximum exceeded; using provider with a larger window')
         except Exception as exc:
             if getattr(exc, 'status_code', None) in (429, 503):
                 raise CapacityBusy('Qwen is busy', 5) from exc
@@ -261,11 +293,11 @@ def invoke(messages, tools=(), *, force_claude=False, require_tools=False, json_
         try:
             from pure_multi_agent.capacity import model_slot as distributed_claude_slot
             with distributed_claude_slot():
-                model = claude().bind_tools(tools, **({'tool_choice': 'any'} if require_tools else {})) if tools else claude()
+                model = claude(claude_limit).bind_tools(tools, **({'tool_choice': 'any'} if require_tools else {})) if tools else claude(claude_limit)
                 # LangChain tools validate arguments before execution. Return
                 # errors to Claude through the graph so it can repair a call.
-                current_messages = provider_messages(messages, 'Claude', claude().model)
-                reply = measured_invoke(model, current_messages, 'claude', claude().model)
+                current_messages = provider_messages(messages, 'Claude', claude(claude_limit).model)
+                reply = measured_invoke(model, current_messages, 'claude', claude(claude_limit).model)
                 try:
                     reply = _validate(reply, tools, require_tools=require_tools)
                     if response_validator:
@@ -282,7 +314,7 @@ def invoke(messages, tools=(), *, force_claude=False, require_tools=False, json_
                     correction += '. Use only these tools with their declared parameters.' if tools else '. Return a text answer without tool calls.'
                     correction += '\nValidation failure: ' + str(validation_error)[:4000]
                     try:
-                        reply = _validate(measured_invoke(model, [*current_messages, HumanMessage(content=correction)], 'claude', claude().model), tools,
+                        reply = _validate(measured_invoke(model, [*current_messages, HumanMessage(content=correction)], 'claude', claude(claude_limit).model), tools,
                             require_tools=require_tools)
                         if response_validator:
                             response_validator(reply)
@@ -292,7 +324,7 @@ def invoke(messages, tools=(), *, force_claude=False, require_tools=False, json_
                     except ValueError as invalid:
                         raise InvalidToolResponse('Tool arguments remained invalid after one correction attempt.') from invalid
                 reply.response_metadata['routing_provider'] = 'claude'
-                reply.response_metadata['routing_model'] = claude().model
+                reply.response_metadata['routing_model'] = claude(claude_limit).model
                 logger.info('AI response provider=claude tool_calls=%s', len(reply.tool_calls))
                 return reply
         except Exception as exc:

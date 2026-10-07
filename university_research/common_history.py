@@ -2,9 +2,9 @@
 from .models import CommonAgentMessage
 
 
-def history(ctx, university):
+def history(ctx, university, *, limit=16):
     rows = list(CommonAgentMessage.objects.filter(student__uuid=ctx['canonical_student_id'],
-        university=university, kind__in=['request', 'reply']).order_by('-created_at', '-id')[:16])
+        university=university, kind__in=['request', 'reply']).order_by('-created_at', '-id')[:min(max(limit, 1), 100)])
     return [{'speaker': 'Common University Agent' if row.actor == 'university_agent' else 'Student Agent',
              'content': row.content, 'timestamp': row.created_at.isoformat()} for row in reversed(rows)]
 

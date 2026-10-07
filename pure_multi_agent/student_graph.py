@@ -51,8 +51,46 @@ def _reason_impl(state: StudentState, runtime: Runtime[dict]):
         if action_reply:
             from langchain_core.messages import AIMessage
             return {'messages':[AIMessage(content=action_reply)]}
+    if ctx.get('model_steps', 0) == 0 and not ctx.get('turn_intent'):
+        from langchain_core.messages import AIMessage
+        from pure_multi_agent.reference_answers import direct_reply, standalone_cost_inputs
+        immediate = direct_reply(ctx)
+        if immediate:
+            return {'messages': [AIMessage(content=immediate)], 'active_university': {}}
+        if not ctx.get('chat_attachments') and not ctx.get('documents_read') and ctx.get('canonical_student_id'):
+            cost_inputs = standalone_cost_inputs(ctx.get('current_message', ''))
+            if cost_inputs:
+                from uuid import uuid4
+                ctx['model_steps'] = 1
+                ctx['turn_intent'] = {'route': 'general', 'institutions': [],
+                    'comparison': False, 'followup': False, 'reference_topic': 'none'}
+                return {'messages': [AIMessage(content='', tool_calls=[{'id': str(uuid4()),
+                    'name': 'calculate_study_budget', 'args': cost_inputs}])]}
+        if not ctx.get('clarification_checked') and not ctx.get('chat_attachments') and not ctx.get('documents_read'):
+            from pure_multi_agent.university_followup import restore_selection
+            selection = restore_selection(ctx, state['messages'])
+            if selection is not None:
+                from uuid import uuid4
+                ctx['clarification_checked'] = True
+                ctx['model_steps'] = 1
+                ctx['turn_intent'] = {'route': 'university', 'institutions': [],
+                    'comparison': False, 'followup': False, 'reference_topic': 'none'}
+                return {'messages': [AIMessage(content='', tool_calls=[{'id': str(uuid4()),
+                    'name': 'select_university_candidate', 'args': {'candidate_index': selection,
+                        'confirmation_detail': ctx['current_message']}}])]}
+    if ctx.get('completed_evidence_answer'):
+        from langchain_core.messages import AIMessage
+        return {'messages': [AIMessage(content=ctx['completed_evidence_answer'])],
+                'active_university': state.get('active_university', {})}
     from pure_multi_agent.turn_policy import classify, select_tools
-    intent = classify(ctx, turn_messages(state["messages"]))
+    from pure_multi_agent.qwen_context import ContextBudgetExceeded
+    try:
+        intent = classify(ctx, turn_messages(state["messages"]))
+    except ContextBudgetExceeded:
+        from langchain_core.messages import AIMessage
+        return {'messages': [AIMessage(content=(
+            'Your message is longer than I can safely process in one pass. '
+            'Please split it into smaller questions so I can consider every part.'))]}
     active = state.get('active_university') or {}
     if intent.get('followup') and not intent.get('institutions') and active:
         from pure_multi_agent.university_followup import restore_university_followup
@@ -66,14 +104,6 @@ def _reason_impl(state: StudentState, runtime: Runtime[dict]):
         return {'messages': [AIMessage(content=immediate)], 'active_university': {}}
     if not ctx.get('clarification_checked'):
         ctx['clarification_checked'] = True
-        from pure_multi_agent.university_followup import restore_selection
-        selection = restore_selection(ctx, state['messages'])
-        if selection is not None:
-            from langchain_core.messages import AIMessage
-            from uuid import uuid4
-            return {'messages':[AIMessage(content='',tool_calls=[{'id':str(uuid4()),
-                'name':'select_university_candidate','args':{'candidate_index':selection,
-                'confirmation_detail':ctx['current_message']}}])]}
         from pure_multi_agent.university_followup import restore_university_followup
         restore_university_followup(ctx, state.get("active_university"))
     if ctx.get('model_steps', 0) == 0 and not ctx.get('initial_evidence_requested') and not ctx.get('university_evidence_required'):
@@ -95,9 +125,6 @@ def _reason_impl(state: StudentState, runtime: Runtime[dict]):
     if ctx.get('university_consultation_failed'):
         from langchain_core.messages import AIMessage
         return {'messages':[AIMessage(content=ctx['university_consultation_failed'])]}
-    if ctx.get('completed_evidence_answer'):
-        from langchain_core.messages import AIMessage
-        return {'messages': [AIMessage(content=ctx['completed_evidence_answer'])], 'active_university': state.get('active_university', {})}
     if ctx.get('university_clarification'):
         from langchain_core.messages import AIMessage
         choices = ctx['university_clarification']
@@ -321,7 +348,17 @@ def _reason_impl(state: StudentState, runtime: Runtime[dict]):
                 raise ValueError('; '.join(problems))
         options['response_validator'] = validate_answer
     try:
-        reply = invoke([SystemMessage(content=prompt), *messages], tools, **options)
+        workload = ('document' if ctx.get('chat_attachments') or ctx.get('documents_read')
+                    else 'evidence' if intent['route'] in ('university', 'github')
+                    else 'general')
+        reply = invoke([SystemMessage(content=prompt), *messages], tools,
+            profile=workload, **options)
+    except ContextBudgetExceeded:
+        from langchain_core.messages import AIMessage
+        return {'messages': [AIMessage(content=(
+            'There is more source material than I can safely review in one pass. '
+            'I have not cut off the evidence or guessed an answer. Please ask about a narrower '
+            'part of the document or one programme at a time.'))]}
     except InvalidToolResponse as exc:
         if not ctx.get('university_discovery_pending'):
             from langchain_core.messages import AIMessage
@@ -400,22 +437,15 @@ def _tools(state: MessagesState, runtime: Runtime[dict]):
                 + ("You can check the [official university website](" + ref['url'] + ") or share the programme page for a more specific check."
                    if ref.get('url') else "Please share the official programme page for a more specific check."))
             ctx['university_evidence_required'] = False
-        if call['name'] == 'calculate_study_budget' and isinstance(result, dict) and result.get('remaining') is not None:
-            currency = result['currency']
-            def money(value):
-                from decimal import Decimal
-                return f'{Decimal(value):,.2f}'
-            ctx['completed_evidence_answer'] = (
-                'Using the amounts supplied for this calculation:\n\n'
-                f"- Tuition: {currency} {money(result['tuition_total'])}\n"
-                f"- Living costs: {currency} {money(result['living_monthly'])} × {result['months']} months = {currency} {money(result['living_total'])}\n"
-                f"- Other costs: {currency} {money(result['other_total'])}\n"
-                f"- **Whole-degree cost: {currency} {money(result['total'])}**\n"
-                f"- **Budget remaining: {currency} {money(result['remaining'])}**\n\n"
-                'This calculates your supplied scenario; it does not verify university fees or change your saved profile.')
+        if call['name'] == 'calculate_study_budget':
+            from pure_multi_agent.reference_answers import calculated_cost_reply, standalone_cost_calculation
+            answer = (calculated_cost_reply(result)
+                      if standalone_cost_calculation(ctx.get('current_message', '')) else None)
+            if answer:
+                ctx['completed_evidence_answer'] = answer
         media = result.pop('_media_blocks', []) if isinstance(result, dict) else []
         text = result if isinstance(result, str) else json.dumps(result, default=str, ensure_ascii=False)
-        content = [{'type': 'text', 'text': text[:45000]}, *media] if media else text[:45000]
+        content = [{'type': 'text', 'text': text}, *media] if media else text
         results.append(ToolMessage(content=content, tool_call_id=call['id']))
         logging.getLogger(__name__).info('student_tool name=%s elapsed_seconds=%.3f', call['name'], time.monotonic() - started)
     active = {}

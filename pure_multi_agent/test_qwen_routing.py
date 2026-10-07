@@ -38,7 +38,7 @@ class QwenRoutingTests(SimpleTestCase):
                  patch.object(legacy_qwen.httpx, 'post', return_value=response) as post:
                 legacy_qwen.create(messages=[{'role': 'user', 'content': 'Hello'}])
             self.assertEqual(post.call_args.kwargs['json']['keep_alive'], '2m')
-            self.assertEqual(post.call_args.kwargs['json']['options']['num_ctx'], 16384)
+            self.assertEqual(post.call_args.kwargs['json']['options']['num_ctx'], 8192)
 
     def test_backup_repairs_unavailable_tool_without_executing_it(self):
         model = Mock()
@@ -126,6 +126,8 @@ class QwenRoutingTests(SimpleTestCase):
         valid = AIMessage(content='', tool_calls=[{'id': 'good', 'name': tool.name, 'args': {
             'operation': 'add', 'requirement': {'criterion': 'Minimum CGPA', 'detail': 'A CGPA of 3.7 to 4.0 is required.',
                 'category': 'gpa', 'applies_to': 'All applicants', 'minimum': 3.7, 'maximum': 4, 'scale_maximum': 4}}}])
+        invalid.response_metadata['prompt_eval_count'] = 3000
+        valid.response_metadata['prompt_eval_count'] = 3000
         model = Mock()
         model.invoke.side_effect = [invalid, valid]
         with patch.object(model_router, 'provider_blocked', return_value=False), \

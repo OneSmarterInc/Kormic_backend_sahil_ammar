@@ -51,8 +51,7 @@ class SingleResearchCallTests(SimpleTestCase):
         from langchain_core.messages import AIMessage
         from university_research.claude_fallback import search_official_evidence
         with patch('pure_multi_agent.model_router.invoke', return_value=AIMessage(content='{"description":"Physics programmes"}')) as model, \
-             patch('university_research.claude_fallback.Anthropic') as client:
+             patch('university_research.extraction_cache.get_or_extract', side_effect=lambda **kwargs: (kwargs['extract'](), False)):
             page = search_official_evidence('https://example.edu/', source_page={'url':'https://example.edu/', 'content':'Physics programmes'})
         self.assertTrue(model.call_args.kwargs['local_only'])
         self.assertEqual(page['catalogue']['description'], 'Physics programmes')
-        client.assert_not_called()

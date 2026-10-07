@@ -13,6 +13,17 @@ workload = ContextVar('inference_workload', default=None)
 logger = logging.getLogger(__name__)
 
 
+def admission_poll_delay(elapsed):
+    """Bound DB polling while preserving quick admission for short waits."""
+    if elapsed < 0.6:
+        return 0.15
+    if elapsed < 3:
+        return 0.35
+    if elapsed < 8:
+        return 0.65
+    return 1.0
+
+
 def tenant_key(owner):
     # All university presenter conversations share a fair-service budget.
     return ':'.join(owner.split(':')[:2])
@@ -88,9 +99,10 @@ def admission(provider, run, estimate, acquire):
                         break
             except (AgentBusy, CapacityBusy):
                 pass
-            if time.monotonic() - started >= 30:
+            elapsed = time.monotonic() - started
+            if elapsed >= 30:
                 raise CapacityBusy('Waiting for shared ' + provider + ' capacity')
-            time.sleep(.15)
+            time.sleep(min(admission_poll_delay(elapsed), 30 - elapsed))
         admitted = time.monotonic()
         try:
             yield

@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 import os
+import secrets
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -76,12 +77,11 @@ TESTING = "test" in sys.argv or "pytest" in Path(sys.argv[0]).name.lower()
 # internet. Local dev sets DJANGO_DEBUG=true explicitly in .env.
 DEBUG = os.environ.get("DJANGO_DEBUG", "false").lower() == "true"
 
-# Keep the generated key strictly development-only. Production must provide
-# an explicit strong secret rather than silently falling back to an
-# insecure checked-in value.
-_DEV_SECRET_KEY = 'django-insecure-0zav109$orgckjm3w+%%8v!lxt&4)qv68d^w*f%@fid@_y!c83'
+# An unset development key is temporary and changes on restart. Set
+# DJANGO_SECRET_KEY in the local .env when persistent dev sessions are needed.
+# Production always requires an explicit stable key.
 if DEBUG:
-    SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY") or _DEV_SECRET_KEY
+    SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY") or secrets.token_urlsafe(48)
 else:
     SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "").strip()
     if not SECRET_KEY:
@@ -248,7 +248,7 @@ else:
             "ENGINE": "django.db.backends.postgresql",
             "NAME": os.environ.get("POSTGRES_DB", "kormic"),
             "USER": os.environ.get("POSTGRES_USER", "kormic"),
-            "PASSWORD": postgres_password or "kormic",
+            "PASSWORD": postgres_password,
             "HOST": os.environ.get("POSTGRES_HOST", "localhost"),
             "PORT": os.environ.get("POSTGRES_PORT", "5432"),
             "CONN_MAX_AGE": int(os.environ.get("DB_CONN_MAX_AGE", "60")),
@@ -508,6 +508,9 @@ AGENT_RETENTION_RESTORE_TESTED_AT = os.environ.get("AGENT_RETENTION_RESTORE_TEST
 
 CELERY_BEAT_SCHEDULE = {
     "cleanup-expired-face-challenges": {"task": "accounts.tasks.cleanup_face_challenges", "schedule": 3600.0},
+    "cleanup-public-collection-jobs": {
+        "task": "university_research.tasks.cleanup_collection_jobs", "schedule": 3600.0,
+    },
     "dispatch-agent-outbox": {"task": "pure_multi_agent.tasks.dispatch_agent_work", "schedule": 30.0},
     "purge-expired-institute-roster-files": {
         "task": "institutes_list.tasks.purge_expired_source_files",

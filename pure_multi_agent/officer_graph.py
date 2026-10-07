@@ -115,9 +115,15 @@ def _reason(state: MessagesState, runtime: Runtime[dict]):
             'use read_university_record(section="requirements"). For other portal data use '
             'read_portal_tab. For confirmation read university_change_status first. '
             'Do not produce a final answer until current tools have returned.')
-    reply = invoke([SystemMessage(content=prompt), *messages], tools,
-        local_only=True, require_tools=require_evidence,
-        tool_call_validator=lambda call: _validate_consent_call(call, ctx.get('current_message', '')))
+    from pure_multi_agent.qwen_context import ContextBudgetExceeded
+    try:
+        reply = invoke([SystemMessage(content=prompt), *messages], tools,
+            local_only=True, require_tools=require_evidence, profile='evidence',
+            tool_call_validator=lambda call: _validate_consent_call(call, ctx.get('current_message', '')))
+    except ContextBudgetExceeded:
+        return {'messages': [AIMessage(content=(
+            'There is more source material than I can safely review in one pass. '
+            'Please ask about a narrower portal area or a specific requirement.'))]}
     ctx['model_steps'] = ctx.get('model_steps', 0) + 1
     ctx['last_provider'] = reply.response_metadata.get('routing_provider', '')
     return {'messages': [reply]}
@@ -140,7 +146,7 @@ def _act(state: MessagesState, runtime: Runtime[dict]):
             logging.getLogger(__name__).exception('Officer tool failed: %s', call['name'])
             ctx['tool_errors'] = ctx.get('tool_errors', 0) + 1
             result = {'error': 'Tool unavailable. Explain the limitation; do not invent results or claim changes were saved.'}
-        results.append(ToolMessage(content=json.dumps(result, default=str, ensure_ascii=False)[:45000], tool_call_id=call['id']))
+        results.append(ToolMessage(content=json.dumps(result, default=str, ensure_ascii=False), tool_call_id=call['id']))
     return {'messages': results}
 
 

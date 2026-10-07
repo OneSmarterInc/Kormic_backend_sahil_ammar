@@ -17,15 +17,17 @@ def consult(ctx, row, question):
 def _consult(ctx, row, question, public_row=None):
     from agent_queries import services as queries
     from agent_queries.models import AgentQuery
+    from pure_multi_agent.conversation_context import needs_history_lookup, relevant_history
+    history_limit = 100 if needs_history_lookup(question) else 16
     if public_row is not None:
         from university_research.common_history import history, message
         conversation = None
-        prior = history(ctx, public_row)
+        prior = history(ctx, public_row, limit=history_limit)
         def record(actor, content, **kwargs):
             return message(ctx, public_row, actor, content, **kwargs)
     else:
         conversation = queries.conversation_for(ctx['canonical_student_id'], str(row.uuid))
-        prior = queries.history(conversation)
+        prior = queries.history(conversation, limit=history_limit)
         def record(actor, content, **kwargs):
             return queries.message(conversation, actor, content, **kwargs)
     record('student_agent', question, kind='request')
@@ -73,7 +75,7 @@ def _consult(ctx, row, question, public_row=None):
     from agents.student_context import university_context
     from pure_multi_agent.answer_context import profile_context
     student = profile_context(university_context(ctx['canonical_student_id'], ctx['student_profile']), question)
-    prior = [{'actor':item.get('actor'), 'content':str(item.get('content',''))[:500]} for item in prior[-4:] if item.get('kind') == 'request']
+    prior = relevant_history(prior, question, ctx.get('study_focus'))
     from pure_multi_agent.change_proposals import effective_profile
     _, assumptions = effective_profile(ctx)
     prompt = ('You are the ' + ('common university agent advising about ' if public_row else 'enrolled university adviser for ') + row.name + '. Use retrieve_official_information before answering. '
@@ -131,9 +133,17 @@ def _consult(ctx, row, question, public_row=None):
                 raise ValueError('; '.join(problems))
         try:
             reply = invoke([SystemMessage(content=instruction), *state['messages']], selected_tools,
-                require_tools=not retrieved[0], response_validator=validate_answer, **advice_options())
+                require_tools=not retrieved[0], response_validator=validate_answer,
+                profile='evidence', **advice_options())
         except Exception as exc:
             from pure_multi_agent.model_router import AIServiceUnavailable
+            from pure_multi_agent.qwen_context import ContextBudgetExceeded
+            if isinstance(exc, ContextBudgetExceeded):
+                from langchain_core.messages import AIMessage
+                reply = AIMessage(content=(
+                    'The available university records are too large to review in one pass. '
+                    'Please ask about one programme or requirement at a time.'))
+                return {'messages': [reply]}
             if not isinstance(exc, AIServiceUnavailable):
                 raise
             from pure_multi_agent.answer_context import partial_answer

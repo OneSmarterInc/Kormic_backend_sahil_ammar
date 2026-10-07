@@ -78,6 +78,39 @@ class UniversityPage(models.Model):
         constraints = [models.UniqueConstraint(fields=['university', 'url'], name='research_unique_page')]
 
 
+class PublicPageExtraction(models.Model):
+    """Reusable public-document interpretation; never contains student decisions."""
+    content_hash = models.CharField(max_length=64)
+    schema_version = models.CharField(max_length=100)
+    instructions_version = models.CharField(max_length=100)
+    model_version = models.CharField(max_length=150)
+    result = models.JSONField()
+    source_url = models.URLField(max_length=1000)
+    retrieved_at = models.DateTimeField()
+    supporting_excerpts = models.JSONField(default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=['content_hash', 'schema_version', 'instructions_version', 'model_version'],
+            name='unique_public_extraction_version')]
+
+
+class PublicCollectionJob(models.Model):
+    """One active public collection per exact research scope, with crash recovery."""
+    university = models.ForeignKey(PublicUniversity, on_delete=models.CASCADE, related_name='collection_jobs')
+    scope_key = models.CharField(max_length=64)
+    scope = models.JSONField(default=dict)
+    status = models.CharField(max_length=16, default='running')
+    lease_token = models.UUIDField(null=True)
+    lease_expires_at = models.DateTimeField(null=True)
+    completed_at = models.DateTimeField(null=True)
+    updated_at = models.DateTimeField(auto_now=True, db_index=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['university', 'scope_key'], name='unique_public_collection_scope')]
+
+
 class UniversityFact(models.Model):
     university = models.ForeignKey(PublicUniversity, on_delete=models.CASCADE, related_name='facts')
     page = models.ForeignKey(UniversityPage, on_delete=models.CASCADE)

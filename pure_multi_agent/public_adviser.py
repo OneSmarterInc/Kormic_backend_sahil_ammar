@@ -53,39 +53,54 @@ def consult(ctx, row, question):
     needs_collection = not has_saved or ref['stale'] or requested_topic_missing(cached, question)
     if needs_collection and str(row.pk) not in ctx.setdefault('collection_attempted', []):
         ctx['collection_attempted'].append(str(row.pk))
-        page = next((p for p in ctx.get('read_web_pages', {}).values()
-            if root_domain(urlsplit(p.get('url','')).hostname or '') == domain), None)
-        try:
-            if page is None:
-                candidates = search_official_site(row.website, question[:300])
-                target = candidates[0]['url'] if candidates else row.website
-                page = read_page_once(target, base_url=row.website)
-            if not page.get('catalogue'):
-                # Save readable partial evidence even if local structured extraction fails.
-                services.save_live_page(row, page, question)
-                page = extract_catalogue_locally(row.website, question, page)
-            if not useful_catalogue(page, question):
-                raise ValueError('The page does not cover the requested information.')
-        except (CapacityBusy, AgentBusy):
-            raise
-        except Exception as exc:
-            ctx['university_topic_gap'] = 'Some requested information could not be collected. Answer the available saved details and explain the missing part.'
-            emit('AGENT_PROGRESS','university_collection',outputs={'status':'partial','error_type':type(exc).__name__})
-            if domain in ctx.get('new_university_domains', []):
-                from university_research.new_university import research
-                try:
-                    page = research(ctx, row.website, question, page)
-                except (CapacityBusy, AgentBusy):
-                    raise
-                except Exception as research_error:
+        from university_research.collection_jobs import collect_once, research_scope, public_collection_query
+        scope = research_scope(row, question, ctx)
+        public_question = public_collection_query(scope, question)
+        def collect_public_evidence(owned):
+            page = next((p for p in ctx.get('read_web_pages', {}).values()
+                if root_domain(urlsplit(p.get('url','')).hostname or '') == domain), None)
+            try:
+                if page is None:
+                    candidates = search_official_site(row.website, public_question)
+                    target = candidates[0]['url'] if candidates else row.website
+                    page = read_page_once(target, base_url=row.website)
+                if not page.get('catalogue'):
+                    # Save readable partial evidence even if local extraction fails.
+                    services.save_live_page(row, page, public_question)
+                    page = extract_catalogue_locally(row.website, public_question, page)
+                if not useful_catalogue(page, public_question):
+                    raise ValueError('The page does not cover the requested information.')
+            except (CapacityBusy, AgentBusy):
+                raise
+            except Exception as exc:
+                ctx['university_topic_gap'] = 'Some requested information could not be collected. Answer the available saved details and explain the missing part.'
+                emit('AGENT_PROGRESS','university_collection',outputs={'status':'partial','error_type':type(exc).__name__})
+                if domain in ctx.get('new_university_domains', []):
+                    from university_research.new_university import research
+                    try:
+                        page = research(ctx, row.website, public_question, page)
+                    except (CapacityBusy, AgentBusy):
+                        raise
+                    except Exception as research_error:
+                        page = None
+                        emit('AGENT_PROGRESS','university_research',outputs={'status':'unavailable','error_type':type(research_error).__name__})
+                else:
                     page = None
-                    emit('AGENT_PROGRESS','university_research',outputs={'status':'unavailable','error_type':type(research_error).__name__})
-            else:
-                page = None
-        if page and page.get('catalogue'):
-            # Save failures propagate distinctly; never claim successful publication.
-            save_catalogue(row, page)
-            row.refresh_from_db()
+            if page and page.get('catalogue'):
+                # Save failures propagate distinctly; never claim publication.
+                if not owned():
+                    raise CapacityBusy('Public research ownership expired; retry this collection.', 5)
+                save_catalogue(row, page)
+                return True
+            return False
+        outcome = collect_once(row, scope, collect_public_evidence)
+        row.refresh_from_db()
+        if outcome == 'busy':
+            ctx['university_topic_gap'] = ('Official research for this programme and topic is still being collected. '
+                'Use existing evidence only and explain what remains unverified.')
+        elif outcome == 'failed':
+            ctx['university_topic_gap'] = ('Official research for this programme and topic could not be completed yet. '
+                'Use existing evidence only and explain what remains unverified.')
         ctx.setdefault('research_after_reply', set()).discard(str(row.pk))
     ctx.setdefault('research_after_reply', set()).discard(str(row.pk))
     ctx['university_cache_after_reply'] = {key:value for key,value in ctx.get('university_cache_after_reply',{}).items() if value['university_id'] != str(row.pk)}

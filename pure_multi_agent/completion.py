@@ -34,7 +34,7 @@ def review_completion(messages, reply):
         }, default=str))], json_schema={
             'type': 'object', 'properties': {'complete': {'type': 'boolean'}, 'next_action': {'type': 'string'}},
             'required': ['complete', 'next_action'], 'additionalProperties': False,
-        })
+        }, profile='routing')
     try:
         data = json.loads(result.content)
         if data.get('next_action', '').strip():

@@ -213,3 +213,52 @@ means a large backlog drains over successive nights.
 Implementation references: [LangGraph Runtime](https://reference.langchain.com/python/langgraph/runtime/Runtime),
 [Celery task delivery](https://docs.celeryq.dev/en/stable/userguide/tasks.html),
 [pgvector indexing/filtering](https://github.com/pgvector/pgvector).
+
+## Local Qwen context profiles
+
+Routing starts at a 4,096-token context with 512 output tokens; general advice
+starts at 8,192 with 2,400 output tokens; university and document evidence
+starts at 16,384 with at least 2,400 output tokens. These are initial profiles,
+not caps on the student's message. The request sizer includes messages, tool
+schemas and output space, then expands to the next available window. The
+default maximum is `KORMIC_QWEN_MAX_CONTEXT=16384`. Increase it only after
+checking the installed model's context capacity and measuring host RAM and
+latency; the [Qwen3:1.7b model listing](https://ollama.com/library/qwen3%3A1.7b)
+currently advertises a 40K context window.
+
+Ollama's `prompt_eval_count` is checked after each local response. If the prompt
+approaches the configured window, the request is retried at a larger context
+before any tool call is executed. Requests that cannot fit or whose prompt size
+cannot be verified fail explicitly; source text is not silently shortened.
+Compare logged `Qwen context` windows and observed prompt counts with idle RAM,
+peak RAM, and warm/cold response latency before adjusting the profiles or
+maximum. [Ollama's API usage metrics](https://github.com/ollama/ollama/blob/main/docs/api/usage.mdx)
+describe `prompt_eval_count` and related timings.
+
+## Shared public research and inference scheduling
+
+Public university collection now uses a durable, institution-scoped job key
+containing programme, intake, applicant category and requested topic. One
+request owns a five-minute lease; concurrent requests for that exact scope wait
+up to 25 seconds, then answer from existing evidence with an explicit gap if
+collection is still running. Expired leases can be reclaimed. Successful
+results can be reused for one day, and an hourly Celery task removes old job
+coordination rows after seven days. The scope and shared collection query omit
+student scores, names and conversations. Each student's final answer still
+uses their own profile. Apply the `university_research` migrations and restart
+the web, worker and beat processes when deploying this change.
+
+University adviser prompts now select up to four relevant prior exchanges
+from the recent history. Explicit references to older discussion allow a wider
+history lookup before relevance selection; saved conversation history is not
+deleted. Existing adviser tools remain selected for the current step.
+
+Inference reservations count message and tool-schema input, the configured
+output allowance for the request profile, image/document allowances and a
+safety margin. The short routing profile reserves less output; general and
+evidence profiles retain their larger output allowance. Truncated Claude
+responses are rejected for correction instead of treated as complete.
+Admission polling starts at 150 ms and backs off to at most one check per
+second during a long wait, preserving the 30-second deadline and current
+queue ordering. Compare queue wait time, database queries, truncation rate,
+provider usage and answer quality before changing these limits further.
