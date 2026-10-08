@@ -761,8 +761,6 @@ Return ONLY the reformatted answer text. No JSON, no preamble.
         caller_role: str = "student",
         history: Optional[List[dict]] = None,
     ) -> Dict[str, Any]:
-        # Finding 2c: Receiver-side validate (Advisory)
-        try:
         """
         Answer a question from Aria or direct mode.
 

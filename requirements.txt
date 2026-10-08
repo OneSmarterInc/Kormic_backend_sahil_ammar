@@ -131,4 +131,4 @@ fastembed==0.8.1
 pytesseract==0.3.13
 rapidocr-onnxruntime==1.4.4
 # MeshKor SDK (From TestPyPI for Pilot)
-meshkor @ https://test-files.pythonhosted.org/packages/92/52/78edbd24c54092a601652544f52dac57695174a101b32d8cf128b25cbd6c/meshkor-1.0.4-py3-none-any.whl --hash=sha256:5e6238c178786dcbe23d47e73895ca3a7c6b4b6d972b5043638689f3d7aefe17
+meshkor @ https://test-files.pythonhosted.org/packages/92/52/78edbd24c54092a601652544f52dac57695174a101b32d8cf128b25cbd6c/meshkor-1.0.4-py3-none-any.whl#sha256=5e6238c178786dcbe23d47e73895ca3a7c6b4b6d972b5043638689f3d7aefe17

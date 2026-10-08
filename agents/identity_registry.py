@@ -10,6 +10,9 @@
 
 from __future__ import annotations
 
+import logging
+logger = logging.getLogger(__name__)
+
 from typing import Any, Dict, Optional
 
 
@@ -29,18 +32,18 @@ def get_or_create_identity(owner_type: str, owner_id: str, agent_name: str = "")
     # --- MeshKor Integration: Agent Birth (Global Registry) ---
     if not identity.ain:
         try:
-            from agents.meshkor_client import meshkor_client, MANIFEST_STUDENT, MANIFEST_UNIVERSITY, CONSTITUTION_HASH
+            from agents.meshkor_client import meshkor_client, MANIFEST_STUDENT, MANIFEST_UNIVERSITY, CONSTITUTION_HASH, CLASS_STUDENT, CLASS_UNIVERSITY
             manifest = MANIFEST_STUDENT if owner_type == "student" else MANIFEST_UNIVERSITY
             # Finding 2b / Finding 2a / Finding 2c applied
             identity.ain = meshkor_client.enroll_agent(
-                agent_class=f"BLD.{owner_type}_agent".capitalize(),
+                agent_class=CLASS_STUDENT if owner_type == "student" else CLASS_UNIVERSITY,
                 instance_ref=f"agent_{identity.agent_id}",
                 manifest=manifest,
                 constitution_hash=CONSTITUTION_HASH
             )
             identity.save(update_fields=["ain"])
-        except Exception:
-            pass # Fail-open in advisory mode
+        except Exception as e:
+            logger.warning(f"MeshKor agent enrollment failed: {e}. Falling open.")
     # ----------------------------------------------------------
 
     if not created and agent_name and identity.agent_name != agent_name:
@@ -104,8 +107,8 @@ def log_conversation(
                 event_description="agent_responded",
                 event_data={"source_agent": str(asker.agent_id), "source": knowledge_source}
             )
-    except Exception:
-        pass # Fail-open
+    except Exception as e:
+        logger.warning(f"MeshKor event logging failed: {e}. Falling open.")
     # ----------------------------------------------------------------------
 
     return AgentConversationLog.objects.create(

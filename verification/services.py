@@ -112,14 +112,15 @@ def _run_engine(
         # --- MeshKor Integration: Agent Action Tracking ---
         if check.ain:
             try:
-                from meshkor.integrations.kormic import KormicMeshKorIntegration
-                KormicMeshKorIntegration().record_event(
+                from agents.meshkor_client import meshkor_client
+                meshkor_client.record_event(
                     ain=check.ain,
                     event_type="agent_analysis_started",
                     details={"sources": sources_present}
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"MeshKor event logging failed: {e}. Falling open.")
         # --------------------------------------------------
 
         result = AIVerificationAgent().analyze(
@@ -355,7 +356,8 @@ def run_verification(student_id: str, user: Any = None, *, force: bool = False, 
             )
             check.save(update_fields=["ain"])
         except Exception as e:
-            pass # Fail-open: If MeshKor fails to import or enroll, don't crash Kormic!
+            import logging
+            logging.getLogger(__name__).warning(f"MeshKor agent enrollment failed: {e}. Falling open.")
     # ----------------------------------------
 
     try:
