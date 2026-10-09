@@ -137,3 +137,32 @@ dc exec web python manage.py check_deployment --model --timeout 240
 Only this Compose project's applications stop; PostgreSQL, Redis, Ollama and other
 projects remain running. Do not scale model/worker concurrency on a 4 GiB host
 without measurements. Pin OLLAMA_IMAGE to the tested release/digest after validation.
+
+## JSON response compression
+
+Keep the `gzip` directives in `aws.nginx.conf` when adapting the API virtual host.
+Nginx's default `gzip on` does not include `application/json`; without the explicit
+MIME type, large university information responses can exceed the browser's
+60-second request timeout even when Django returns HTTP 200.
+
+For an existing installation, add these directives inside the Kormic API's
+`server` block, preserving its domain, TLS settings and existing upstream port:
+
+```nginx
+gzip on;
+gzip_types application/json;
+gzip_vary on;
+gzip_min_length 1024;
+gzip_comp_level 5;
+```
+
+Back up the existing site configuration, run `sudo nginx -t`, and only if it
+passes run `sudo systemctl reload nginx`. This does not require restarting the
+application or workers. Verify a large authenticated response has
+`Content-Encoding: gzip`, valid JSON after decompression, and the expected CORS
+origin. Small responses below 1024 bytes may remain uncompressed.
+
+On 9 October 2026, the hosted University Information entities endpoint returned
+1,470 records: compression reduced its 1,993,295-byte JSON response to 222,256
+bytes, with HTTP 200 in approximately four seconds in a server-side HTTPS check.
+The overview endpoint also returned HTTP 200. Client connection speeds vary.
