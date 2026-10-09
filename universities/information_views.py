@@ -27,6 +27,29 @@ class InformationListView(APIView):
                 item = research_record(kind, row)
                 if item["research_key"] not in keys:
                     records.append(item)
+        if 'page' in request.query_params:
+            from django.core.paginator import Paginator
+            try:
+                page_number = int(request.query_params['page'])
+                if page_number < 1:
+                    raise ValueError
+            except (ValueError, TypeError):
+                return _error('page must be a positive integer.')
+            other_count = sum(item.get('category', 'other') == 'other' for item in records)
+            counts = {'other': other_count, 'categories': len(records) - other_count}
+            group = request.query_params.get('category_group')
+            if group in {'other', 'categories'}:
+                records = [item for item in records if (item.get('category', 'other') == 'other') == (group == 'other')]
+            search = request.query_params.get('search', '').strip().casefold()
+            if search:
+                import json
+                records = [item for item in records if search in
+                    (str(item.get('topic', '')) + ' ' + str(item.get('content', '')) + ' ' + json.dumps(item.get('details', {}), ensure_ascii=False)).casefold()]
+            records.sort(key=lambda item: str(item['id']))
+            paginator = Paginator(records, 50)
+            page = paginator.get_page(page_number)
+            return Response({'knowledge': list(page), 'count': paginator.count, 'page': page.number,
+                             'pages': paginator.num_pages, 'category_counts': counts})
         return Response({"knowledge": records})
 
     @transaction.atomic

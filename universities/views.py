@@ -640,6 +640,22 @@ class KnowledgeFactListCreateAPIView(APIView):
         if group_slug:
             entries = entries.filter(group__slug=group_slug.strip().lower())
 
+        search = request.query_params.get('search', '').strip()
+        if search:
+            from django.db.models import Q
+            entries = entries.filter(Q(topic__icontains=search) | Q(content__icontains=search))
+        if 'page' in request.query_params:
+            from django.core.paginator import Paginator
+            try:
+                page_number = int(request.query_params['page'])
+                if page_number < 1:
+                    raise ValueError
+            except (ValueError, TypeError):
+                return _error('page must be a positive integer.')
+            paginator = Paginator(entries.order_by('-id'), 50)
+            page = paginator.get_page(page_number)
+            return Response({'knowledge': [_serialize_knowledge_entry(entry) for entry in page],
+                'count': paginator.count, 'page': page.number, 'pages': paginator.num_pages})
         return Response({"knowledge": [_serialize_knowledge_entry(entry) for entry in entries]})
 
     def post(self, request):
