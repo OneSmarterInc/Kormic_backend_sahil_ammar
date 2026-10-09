@@ -54,8 +54,13 @@ def violations(answer, evidence, profile=None):
                 if re.search(r'\b' + test + r'\b', paragraph, re.I) and re.search(r'\b(acceptable|sufficient|meets?|required|minimum|waived)\b', paragraph, re.I) and not re.search(r'\b(unknown|unverified|not.*(?:found|available|confirm)|cannot|can.t)\b', paragraph, re.I):
                     problems.append(test + ' admission conclusion has no matching official test evidence; describe it as unverified, not acceptable or required.')
                     break
-    if re.search(r'\bGRE\b', answer, re.I) and re.search(r'\b(all|virtually all|non-negotiable|cannot apply|compulsory everywhere)\b', answer, re.I):
-        problems.append('Do not generalize GRE requirements across institutions; verify the exact programme policy.')
+    # A GRE mention must not borrow a quantifier from unrelated requirements
+    # (for example, transcripts from all schools attended in another paragraph).
+    for sentence in re.split(r'(?<=[.!?])\s+|\n', answer):
+        gre_claim = re.sub(r'\bnot\s+(?:virtually\s+)?all\b', 'some', sentence, flags=re.I)
+        if re.search(r'\bGRE\b', gre_claim, re.I) and re.search(r'\b(all|virtually all|non-negotiable|cannot apply|compulsory everywhere)\b', gre_claim, re.I):
+            problems.append('Do not generalize GRE requirements across institutions; verify the exact programme policy.')
+            break
     return problems
 
 
