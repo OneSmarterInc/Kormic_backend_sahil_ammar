@@ -1,6 +1,7 @@
 """Bounded, question-specific model input and non-model failure recovery."""
 import json
 import re
+from pure_multi_agent.chat_cost_controls import unique_records
 
 
 def study_focus(previous, text):
@@ -42,7 +43,7 @@ def compact_evidence(data, question):
     for key, limit in (('facts', 5), ('courses', 6), ('intakes', 6), ('saved_knowledge', 4), ('previous_answers_for_this_student', 2)):
         values = data.get(key, [])
         if isinstance(values, list):
-            ranked = sorted(values, key=score, reverse=True)
+            ranked = sorted(unique_records(values), key=score, reverse=True)
             kept, size = [], 0
             for value in ranked[:limit]:
                 length = len(json.dumps(value, default=str))

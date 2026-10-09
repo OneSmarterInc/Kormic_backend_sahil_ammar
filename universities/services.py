@@ -138,6 +138,16 @@ def sync_profile_facts_to_kb(university: University) -> None:
     university_id = str(university.uuid)
     kb = _kb_for(university_id)
     topics_to_replace: List[str] = [PROGRAM_OVERVIEW_TOPIC, CONTACT_INFO_TOPIC]
+    # Profile edits made from either screen must update the same authoritative
+    # overview, so an older form save cannot contradict the current profile.
+    from universities.information import OVERVIEW_FIELDS
+    overview = UniversityKnowledgeEntry.objects.filter(university_id=university_id,
+        details___information_overview=True).first()
+    if overview:
+        values = {key: getattr(university, key) for key in OVERVIEW_FIELDS}
+        overview.content = '\n'.join(f"{key.replace('_', ' ').title()}: {value}" for key, value in values.items() if value)
+        overview.details = {**overview.details, **values, '_information_edited_at': timezone.now().isoformat()}
+        overview.save(update_fields=['content', 'details'])
 
     eligibility_topics = [
         f"Eligibility: {str(item.get('criterion', '')).strip()}"
@@ -146,7 +156,7 @@ def sync_profile_facts_to_kb(university: University) -> None:
     ]
     topics_to_replace.extend(eligibility_topics)
 
-    UniversityKnowledgeEntry.objects.filter(university_id=university_id, topic__in=topics_to_replace).delete()
+    UniversityKnowledgeEntry.objects.filter(university_id=university_id, topic__in=topics_to_replace).exclude(source_type="human_verified").delete()
     # The in-memory KB instance was loaded before the delete above; drop its
     # cached copies of these topics too so store()'s duplicate-detection
     # doesn't resurrect a stale entry instead of writing the new content.
@@ -337,7 +347,7 @@ def scrape_now(university: University) -> Dict[str, Any]:
     }
 
 
-def scrape_selected_urls(university: University, urls: List[str], group_id: Optional[int] = None, on_progress=None) -> Dict[str, Any]:
+def scrape_selected_urls(university: University, urls: List[str], group_id: Optional[int] = None, on_progress=None, force_refresh: bool = False) -> Dict[str, Any]:
     """Same one-URL-at-a-time loop as scrape_now(), but for an explicit URL
     subset instead of every saved scrape_url.
 
@@ -355,7 +365,7 @@ def scrape_selected_urls(university: University, urls: List[str], group_id: Opti
     university_id = str(university.uuid)
     urls = _dedupe_urls(list(urls))
     kb = _kb_for(university_id)
-    already_scraped = _already_scraped_urls(university_id)
+    already_scraped = set() if force_refresh else _already_scraped_urls(university_id)
 
     results: List[Dict[str, Any]] = []
     for index, url in enumerate(urls):

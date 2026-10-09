@@ -48,7 +48,8 @@ def extract(paths):
             agent = DecisionPhotoAgent(llm=RoutedModel(), validator=validate_data)
             reread = None if Path(doc['path']).suffix.lower() in ('.txt', '.md') else lambda region, mode: reread_image_region(doc['path'], region, mode)
             try:
-                observation, _ = agent.extract(doc['text'], section=doc['section'], reread=reread)
+                observation, _ = agent.extract(doc['text'], section=doc['section'], reread=reread,
+                                               plan_locally=reread is None)
             except (CapacityBusy, AgentBusy):
                 raise
             except Exception:

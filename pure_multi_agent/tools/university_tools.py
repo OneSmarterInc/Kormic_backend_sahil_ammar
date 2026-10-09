@@ -216,7 +216,7 @@ def _university_evidence(ctx, university_id, question):
             'contact': {'email': row.contact_email, 'phone': row.contact_phone, 'address': row.admissions_office_address}},
         'departments': list(row.knowledge_groups.values('slug', 'escalation_contact_name', 'escalation_contact_email')),
         'facts': [entry.to_dict() for entry in entries], 'official_website_research': website_evidence,
-        'instruction': 'When asked for a department contact, share its configured email from departments. Synthesize a source-grounded answer. Missing requirements/deadlines are unknown, not guessed. Website research is queued after the answer when no catalog is cached.'}
+        'instruction': 'Current human_verified university corrections supersede older scraped records, profile values and previous answers on the same topic. When asked for a department contact, share its configured email from departments. Synthesize a source-grounded answer. Missing requirements/deadlines are unknown, not guessed. Website research is queued after the answer when no catalog is cached.'}
 
 
 def resolution_error(ctx, university_id):

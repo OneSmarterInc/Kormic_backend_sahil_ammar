@@ -301,6 +301,7 @@ class DirectUniversityCrawler:
         self.base_url = job.base_url
         self.allowed_domains = job.allowed_domains or []
         self.config = job.settings or {}
+        self.full_site = bool(self.config.get('full_site', False))
 
         self.max_pages = int(self.config.get("max_pages", 150))
         self.max_depth = int(self.config.get("max_depth", 6))
@@ -321,7 +322,9 @@ class DirectUniversityCrawler:
         self.queued: set[str] = set()
         self.fetched: set[str] = set()
         self.queue: deque[tuple[str, str | None, str, int, int | None]] = deque()
+        self._queue_ranks: dict[str, tuple] = {}
         self.robot_parser: robotparser.RobotFileParser | None = None
+        self.robot_parsers: dict[str, robotparser.RobotFileParser | None] = {}
         self.user_agent = "Mozilla/5.0 (compatible; KormicUniversityURLDiscovery/1.0; +educational-indexer)"
 
     def run(self) -> None:
@@ -339,6 +342,14 @@ class DirectUniversityCrawler:
             return
         self._mark_running()
         try:
+            if self.full_site:
+                for record in DiscoveredUrl.objects.filter(job_id=self.job_id).iterator():
+                    self.seen.add(record.normalized_url)
+                    if record.crawled_at:
+                        self.fetched.add(record.normalized_url)
+                    else:
+                        self._enqueue(record.normalized_url, record.parent_url,
+                                      record.anchor_text or '', record.crawl_depth, None, False)
             self._seed()
             with httpx.Client(
                 headers={
@@ -356,17 +367,21 @@ class DirectUniversityCrawler:
                     if job_status in {"stop_requested", "stopped"}:
                         self._finish("stopped")
                         return
-                    if self._pages_crawled() >= self.max_pages:
+                    if not self.full_site and self._pages_crawled() >= self.max_pages:
                         break
 
                     url, parent_url, anchor_text, depth, navigation_level = self.queue.popleft()
                     self.queued.discard(url)
+                    if self.full_site and self.respect_robots:
+                        origin = urlsplit(url).scheme + '://' + urlsplit(url).netloc
+                        if origin not in self.robot_parsers:
+                            self._prepare_robots(client, origin)
                     inside_normal_depth = depth <= self.max_depth
                     inside_navigation_depth = (
                         navigation_level is not None
                         and navigation_level <= self.navigation_max_depth
                     )
-                    if not inside_normal_depth and not inside_navigation_depth:
+                    if not self.full_site and not inside_normal_depth and not inside_navigation_depth:
                         continue
                     if not self._robots_allowed(url):
                         self._mark_fetch_failure(url, "Blocked by robots.txt", excluded=False)
@@ -419,10 +434,12 @@ class DirectUniversityCrawler:
             navigation_level=0,
         )
 
-    def _prepare_robots(self, client: httpx.Client) -> None:
+    def _prepare_robots(self, client: httpx.Client, base_url: str | None = None) -> None:
         if not self.respect_robots:
             return
-        robots_url = urljoin(self.base_url, "/robots.txt")
+        base_url = base_url or self.base_url
+        origin = urlsplit(base_url).scheme + '://' + urlsplit(base_url).netloc
+        robots_url = urljoin(base_url, "/robots.txt")
         parser = robotparser.RobotFileParser()
         parser.set_url(robots_url)
         try:
@@ -433,17 +450,21 @@ class DirectUniversityCrawler:
                 raise ValueError(f"HTTP {status}")
             parser.parse(body.decode("utf-8", errors="replace").splitlines())
             self.robot_parser = parser
+            self.robot_parsers[origin] = parser
             for sitemap in parser.site_maps() or []:
                 self._discover(sitemap, final_url, "Sitemap from robots.txt", 0, force_queue=True)
         except Exception as exc:  # network/SSL/parser issues must not kill crawling
-            LOGGER.info("robots.txt unavailable for %s: %s", self.base_url, exc)
+            LOGGER.info("robots.txt unavailable for %s: %s", base_url, exc)
             self.robot_parser = None
+            self.robot_parsers[origin] = None
 
     def _robots_allowed(self, url: str) -> bool:
-        if not self.robot_parser:
+        origin = urlsplit(url).scheme + '://' + urlsplit(url).netloc
+        parser = self.robot_parsers.get(origin) if self.full_site else self.robot_parser
+        if not parser:
             return True
         try:
-            return self.robot_parser.can_fetch(self.user_agent, url)
+            return parser.can_fetch(self.user_agent, url)
         except Exception:
             return True
 
@@ -459,10 +480,22 @@ class DirectUniversityCrawler:
         if normalized in self.queued or normalized in self.fetched:
             return
         item = (normalized, parent_url, anchor_text, depth, navigation_level)
-        if priority:
-            self.queue.appendleft(item)
-        else:
-            self.queue.append(item)
+        if self.full_site:
+            if priority and depth == 0:
+                self.queue.appendleft(item)
+            else:
+                self.queue.append(item)
+            self.queued.add(normalized)
+            return
+        # Previously every new navigation link went to the front, reversing
+        # the menu order and exhausting the crawl budget down one department's
+        # news/archive tree. Visit broad, shallow topics first; use relevance
+        # to order pages at the same depth and preserve ties in discovery order.
+        rank = (depth, -crawl_priority(normalized, anchor_text), not priority)
+        self._queue_ranks[normalized] = rank
+        position = next((index for index, queued in enumerate(self.queue)
+                         if rank < self._queue_ranks[queued[0]]), len(self.queue))
+        self.queue.insert(position, item)
         self.queued.add(normalized)
 
     def _upgrade_existing_discovery(
@@ -512,7 +545,7 @@ class DirectUniversityCrawler:
             navigation_level is not None
             and navigation_level <= self.navigation_max_depth
         )
-        if (force_queue or inside_normal_depth or inside_navigation_depth) and (
+        if (self.full_site or force_queue or inside_normal_depth or inside_navigation_depth) and (
             normalized not in self.fetched and normalized not in self.queued
         ):
             self._enqueue(
@@ -560,6 +593,8 @@ class DirectUniversityCrawler:
             navigation_level = inherit_navigation_level
 
         if normalized in self.seen:
+            if self.full_site:
+                return
             self._upgrade_existing_discovery(
                 normalized,
                 parent_url,
@@ -603,7 +638,7 @@ class DirectUniversityCrawler:
             navigation_level is not None
             and navigation_level <= self.navigation_max_depth
         )
-        should_queue = force_queue or inside_navigation_depth or (
+        should_queue = self.full_site or force_queue or inside_navigation_depth or (
             inside_normal_depth
             and (
                 depth <= 2
@@ -643,6 +678,10 @@ class DirectUniversityCrawler:
 
         content_type = headers.get("content-type", "").split(";", 1)[0].lower().strip()
         final_url = normalize_url(response_url) or url
+        allowed, reason = hard_filter_url(final_url, self.include_documents)
+        if not allowed:
+            self._mark_fetch_failure(url, 'Redirected to excluded page: ' + str(reason), http_status=status_code)
+            return
         if status_code >= 400:
             self._mark_fetch_failure(url, f"HTTP {status_code}", http_status=status_code)
             return

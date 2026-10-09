@@ -23,13 +23,15 @@ def normalize_url(url: str) -> str:
     if not value:
         return ""
 
-    parts = urlsplit(value)
-    scheme = parts.scheme.lower()
-    hostname = (parts.hostname or "").lower().rstrip(".")
-    if not scheme or not hostname:
+    try:
+        parts = urlsplit(value)
+        scheme = parts.scheme.lower()
+        hostname = (parts.hostname or "").lower().rstrip(".")
+        port = parts.port
+    except ValueError:
         return ""
-
-    port = parts.port
+    if scheme not in {'http', 'https'} or not hostname or '\\' in value:
+        return ""
     if port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
         netloc = f"{hostname}:{port}"
     else:

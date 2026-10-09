@@ -1,4 +1,5 @@
 from unittest.mock import patch
+from contextlib import nullcontext
 from django.test import TestCase, override_settings
 from django.contrib.auth.models import User
 from langchain_core.messages import AIMessage
@@ -12,6 +13,50 @@ from pure_multi_agent.officer_graph import run_turn
 
 @override_settings(AGENT_DISTRIBUTED_LIMITS=False, UNIVERSITY_VECTOR_SEARCH=False)
 class WorkspaceToolsTests(TestCase):
+    def test_admission_edit_with_repair_and_later_confirmation(self):
+        from pure_multi_agent import model_router
+        from django_api.models import AgentChangeProposal
+        requirement = {'criterion': 'Minimum CGPA', 'detail': 'Minimum CGPA 3.7 on a 4.0 scale.',
+            'category': 'gpa', 'minimum': 3.7, 'maximum': 4.0, 'scale_maximum': 4.0,
+            'applies_to': 'All applicants'}
+        # A real router validation failure is corrected before any tool executes.
+        steps = [('unknown_tool', {}), ('read_university_record', {'section': 'requirements'}),
+                 ('enable_officer_tool', {'name': 'propose_admission_requirement'}),
+                 ('propose_admission_requirement', {'operation': 'update', 'index': 0,
+                                                    'requirement': requirement}),
+                 (None, {}), ('university_change_status', {}),
+                 ('resolve_university_change', {}), (None, {})]
+        dispatches = []
+        def respond(model, messages, *args):
+            index = len(dispatches)
+            dispatches.append(messages)
+            name, arguments = steps[index]
+            if name == 'resolve_university_change':
+                proposal = AgentChangeProposal.objects.get(status='pending')
+                arguments = {'proposal_id': str(proposal.pk), 'decision': 'approve',
+                             'confirmation_message': 'yes'}
+            return AIMessage(content='Please confirm.' if index == 4 else 'Saved.' if name is None else '',
+                tool_calls=[{'name': name, 'args': arguments, 'id': str(index)}] if name else [],
+                response_metadata={'prompt_eval_count': 3000})
+        saver = InMemorySaver()
+        with patch.object(model_router, 'provider_blocked', return_value=False), \
+             patch.object(model_router, 'qwen_slot', return_value=nullcontext()), \
+             patch.object(model_router, 'qwen'), \
+             patch.object(model_router, 'measured_invoke', side_effect=respond):
+            first = run_turn(str(self.uni.uuid), self.user.pk,
+                'Change the minimum CGPA to 3.7, maximum and scale 4.0, for all applicants.',
+                checkpointer=saver, history=[{'role': 'user', 'content': 'Earlier question'},
+                    {'role': 'assistant', 'content': 'Old discussion ' * 1000}])
+            self.uni.refresh_from_db()
+            self.assertEqual(self.uni.eligibility_criteria[0]['detail'], '3.5 to 4.0 scale')
+            self.assertTrue(AgentChangeProposal.objects.filter(status='pending').exists())
+            self.assertIn('confirm', first['reply'])
+            second = run_turn(str(self.uni.uuid), self.user.pk, 'yes', checkpointer=saver)
+        self.uni.refresh_from_db()
+        self.assertEqual(self.uni.eligibility_criteria[0]['minimum'], 3.7)
+        self.assertEqual(second['reply'], 'Saved.')
+        self.assertEqual(len(dispatches), len(steps))
+
     def setUp(self):
         self.user = User.objects.create_user(username='workspace-officer')
         self.uni = University.objects.create(name='Synthetic University', eligibility_criteria=[

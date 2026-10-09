@@ -33,7 +33,7 @@ class KnowledgeEntry:
         self.learned_at = learned_at or datetime.now().isoformat()
         self.times_used = int(times_used or 0)
         self.group_id = group_id
-        self.details = details or {}
+        self.details = {key: value for key, value in (details or {}).items() if not key.startswith("_information_")}
         self.search_score = 0.0
         self.db_id: Optional[int] = None
 
@@ -283,6 +283,22 @@ class UniversityKnowledgeBase:
         if not topic or not content:
             raise ValueError("Knowledge entry requires both topic and content.")
 
+        # A later scrape of the same page must not resurrect a corrected fact.
+        if source_type == "seed" or (source_type == "scraped" and source_url):
+            from django_api.models import UniversityKnowledgeEntry
+            corrections = UniversityKnowledgeEntry.objects.filter(
+                university_id=self.university_id, source_type="human_verified",
+            )
+            if source_type == "scraped":
+                corrections = corrections.filter(source_url=source_url)
+            for corrected in corrections.defer("embedding"):
+                original = (corrected.details or {}).get("_information_original_topic")
+                if original and self._normalize_key(original, "")[0] == self._normalize_key(topic, "")[0]:
+                    result = KnowledgeEntry(corrected.topic, corrected.content, corrected.source_type,
+                                            source_url=corrected.source_url, details=corrected.details)
+                    result.db_id = corrected.pk
+                    return result
+
         if not allow_duplicates:
             duplicate = self._find_duplicate(topic, content)
 
@@ -392,6 +408,9 @@ class UniversityKnowledgeBase:
         - source priority
         - usage score
         """
+        # Cached agents must not retain pre-edit content between student turns.
+        if not self.lazy:
+            self.reload()
         query_words = self._tokenize(query)
 
         if not query_words:

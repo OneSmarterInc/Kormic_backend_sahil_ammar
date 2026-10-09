@@ -134,6 +134,8 @@ def read_page(url, base_url=None):
     for el in soup.select('[role="navigation"], [role="banner"]'):
         el.decompose()
     main = soup.find('main') or soup.find(attrs={'role': 'main'}) or soup
+    from universities.structured_information import extract_document
+    structured_entities = extract_document(main, final)
     tables = []
     for table in main.find_all('table'):
         heading = table.find_previous(['h2', 'h3', 'h4'])
@@ -147,4 +149,4 @@ def read_page(url, base_url=None):
     # Previously only the separate `tables` field preserved these relationships.
     table_text = '\n\n'.join(t['heading']+'\n'+'\n'.join(t['rows']) for t in tables)
     content = (table_text + '\n\n' + '\n'.join(re.sub(r'\s+', ' ', line).strip() for line in main.get_text('\n', strip=True).splitlines() if line.strip()))[:20000]
-    return {'url': final, 'title': title, 'content': content, 'tables': tables, 'links': links[:100], 'truncated': len(content) >= 20000}
+    return {'url': final, 'title': title, 'content': content, 'tables': tables, 'structured_entities': structured_entities, 'links': links[:100], 'truncated': len(content) >= 20000}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import re
 from urllib.parse import urlsplit
 
 import yaml
@@ -24,7 +25,7 @@ def hard_filter_url(url: str, include_documents: bool = True) -> tuple[bool, str
     rules = filter_rules()
 
     for fragment in rules.get("blocked_path_fragments", []):
-        if str(fragment).lower() in lowered_path:
+        if re.search(re.escape(str(fragment).lower().rstrip('/')) + r'(?:/|$)', lowered_path):
             return False, f"blocked path: {fragment}"
 
     extension = extension_from_url(url)

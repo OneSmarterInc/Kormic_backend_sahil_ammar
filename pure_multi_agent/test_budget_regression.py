@@ -24,8 +24,8 @@ class BudgetRegressionTests(SimpleTestCase):
         self.assertEqual(budget_context(profile)['currency'], 'USD')
 
     def test_auto_small_model_is_local_only_for_advice(self):
-        with patch.dict(os.environ, {'STUDENT_REASONING_PROVIDER': 'auto', 'STUDENT_OLLAMA_MODEL': 'qwen3:0.6b'}):
-            self.assertEqual(advice_options(), {'local_only': True})
+        with patch.dict(os.environ, {'STUDENT_REASONING_PROVIDER': 'auto', 'STUDENT_OLLAMA_MODEL': 'qwen3:1.7b'}):
+            self.assertEqual(advice_options(), {'force_claude': True})
 
     def test_clarification_uses_one_local_answer_without_reviews_or_tools(self):
         from pure_multi_agent.student_graph import _reason
@@ -40,8 +40,8 @@ class BudgetRegressionTests(SimpleTestCase):
             result = _reason({'messages': [HumanMessage(content=ctx['current_message'])]}, SimpleNamespace(context={'ctx':ctx,'prompt':''}))
         model.assert_called_once()
         self.assertEqual(model.call_args.args[1], [])
-        self.assertFalse(model.call_args.kwargs.get('force_claude', False))
-        self.assertTrue(model.call_args.kwargs.get('local_only', False))
+        self.assertTrue(model.call_args.kwargs.get('force_claude', False))
+        self.assertFalse(model.call_args.kwargs.get('local_only', False))
         self.assertIs(result['messages'][0], reply)
         review.assert_not_called()
 

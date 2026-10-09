@@ -87,16 +87,13 @@ from github_profiles.scheduling import retry_database
 def save_catalogue(row, page):
     """Commit a catalogue before any adviser can read it; retries merge by identity."""
     from .models import PublicUniversity, UniversityPage, UniversityFact, UniversityCourse, UniversityIntake
-    from . import services
     from pure_multi_agent.telemetry import emit
     if page.get('evidence_provider') == 'claude_direct':
         raise ValueError('Model-memory catalogue data cannot be saved as university evidence.')
     data = Catalogue.model_validate(page.get('catalogue') or {})
     row = PublicUniversity.objects.select_for_update().get(pk=row.pk)
-    canonical = row.registered_university
-    if canonical and services.registered().filter(pk=canonical.pk).exists():
-        # Officer-managed institutions must always use their dedicated agent.
-        return canonical
+    # Linked institutions still need their scraped evidence saved. Officer
+    # corrections are applied at retrieval, without changing the source record.
     identity = page.get('provider_identity') or {}
     country = str(identity.get('country') or row.country or '').upper()
     if len(country) != 2:
@@ -114,7 +111,15 @@ def save_catalogue(row, page):
     saved, _ = UniversityPage.objects.update_or_create(university=row, url=page['url'], defaults={
         'title':row.name, 'content':content, 'provider':provider,
         'content_hash':hashlib.sha256(content.encode()).hexdigest(), 'fetched_at':now})
-    for item in data.facts:
+    profile_facts = [FactData(topic=label, content=str(getattr(data, field))[:6000])
+        for field, label in (('description', 'University overview'), ('contact_email', 'Contact email'),
+                             ('contact_phone', 'Contact phone')) if getattr(data, field)]
+    if data.eligibility_criteria:
+        profile_facts.append(FactData(topic='Eligibility criteria',
+            content=json.dumps(data.eligibility_criteria, ensure_ascii=False)[:6000]))
+    profile_facts.extend(FactData(topic=('Scholarship: ' + item.name)[:200],
+        content=json.dumps(item.model_dump(), ensure_ascii=False)[:6000]) for item in data.scholarships)
+    for item in [*profile_facts, *data.facts]:
         UniversityFact.objects.update_or_create(university=row, page=saved, topic=item.topic,
             defaults={'content':item.content, 'source_quote':item.content, 'fetched_at':now})
     for item in data.courses:

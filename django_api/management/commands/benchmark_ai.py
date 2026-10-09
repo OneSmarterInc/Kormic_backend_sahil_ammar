@@ -1,4 +1,4 @@
-"""Synthetic concurrency probe: no real profiles, secrets or external fallback."""
+"""Small paid Claude concurrency probe with synthetic input only."""
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -14,18 +14,13 @@ def probe(index):
     close_old_connections()
     started = time.monotonic()
     try:
-        with chat_workload('benchmark:' + str(index)), model_slot('qwen', None, 500):
-            admitted = time.monotonic()
-            with httpx.Client(trust_env=False, timeout=120) as client:
-                response = client.post(settings.GITHUB_OLLAMA_BASE_URL.rstrip('/') + '/api/chat', json={
-                    'model': settings.GITHUB_OLLAMA_MODEL, 'stream': False, 'think': False,
-                    'messages': [{'role':'user', 'content':f'Synthetic request {index}. In one sentence explain why universities have admission requirements.'}],
-                    'options': {'num_ctx': 16384, 'num_predict': 60, 'temperature': 0}, 'keep_alive': -1})
-                response.raise_for_status()
-                data = response.json()
-            return {'request':index, 'success':bool(data.get('message', {}).get('content')),
-                'wait_seconds':round(admitted-started, 3), 'total_seconds':round(time.monotonic()-started, 3),
-                'tokens':data.get('eval_count')}
+        from pure_multi_agent.model_router import invoke
+        from pure_multi_agent.telemetry import diagnostic_scope
+        from langchain_core.messages import HumanMessage
+        with diagnostic_scope(), chat_workload('benchmark:' + str(index)):
+            reply = invoke([HumanMessage(content='Reply ready only.')], profile='routing', single_attempt=True)
+            return {'request': index, 'success': bool(reply.content),
+                'total_seconds': round(time.monotonic()-started, 3), 'usage': reply.usage_metadata}
     except Exception as exc:
         return {'request':index, 'success':False, 'error_type':type(exc).__name__}
     finally:
@@ -33,10 +28,10 @@ def probe(index):
 
 
 class Command(BaseCommand):
-    help = 'Run ten synthetic Qwen-only requests through shared admission.'
+    help = 'Run three small paid Claude requests through shared admission.'
     def handle(self, *args, **options):
         started = time.monotonic()
-        with ThreadPoolExecutor(max_workers=10) as pool:
-            results = list(pool.map(probe, range(10)))
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            results = list(pool.map(probe, range(3)))
         self.stdout.write(json.dumps({'seconds':round(time.monotonic()-started,3),
-            'slots':settings.GITHUB_QWEN_CONCURRENCY, 'results':results}, indent=2))
+            'slots':settings.GITHUB_CLAUDE_CONCURRENCY, 'results':results}, indent=2))

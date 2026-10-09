@@ -21,19 +21,21 @@ from .scheduling import claim, release, heartbeat, fenced, model_slot, CapacityB
 from .tests import FixtureGitHub, finding
 
 
-def make_run(index=0):
+def make_run(index=0, selected=False):
     user = User.objects.create(username=f'agent-test-{index}')
     student = StudentProfile.objects.create(name=f'Student {index}')
     connection = GitHubOAuthConnection.objects.create(user=user, github_user_id=index+10,
         github_username=f'user-{index}', access_token_encrypted='not-a-live-token')
     profile = GitHubProfileSnapshot.objects.create(student=student, connection=connection,
         github_user_id=connection.github_user_id, identity={'login': 'ada'})
-    return GitHubSyncRun.objects.create(profile=profile)
+    ids = [GitHubRepository.objects.create(profile=profile, github_id=n,
+        name=f'repo-{n}', full_name=f'ada/repo-{n}', owner_login='ada').pk for n in (1, 2)] if selected else []
+    return GitHubSyncRun.objects.create(profile=profile, work={'mode': 'analysis', 'selected_repository_ids': ids})
 
 
 class SchedulingTests(TransactionTestCase):
     def test_multiple_users_complete_with_concurrent_workers(self):
-        sessions = [make_run(i) for i in range(8)]
+        sessions = [make_run(i, selected=True) for i in range(8)]
         class MultiUserGitHub(FixtureGitHub):
             def get(self, path, params=None, optional=False):
                 value = super().get(path, params, optional)
@@ -151,7 +153,7 @@ class SchedulingTests(TransactionTestCase):
         from accounts.models import Account
         from rest_framework.exceptions import Throttled
         from .sync import queue_sync
-        run = make_run()
+        run = make_run(selected=True)
         Account.objects.create(user=run.profile.connection.user, role='student', student_profile=run.profile.student)
         student_id = str(run.profile.student.uuid)
         self.assertEqual(queue_sync(student_id).pk, run.pk)
@@ -253,7 +255,7 @@ class AgentBehaviorTests(TransactionTestCase):
 
     def test_capacity_pause_keeps_checkpoint_and_does_not_consume_retry(self):
         self.run.stage = 'agent'
-        self.run.work = {'repositories': [self.repo.pk], 'cursor': 0, 'sha': self.sha, 'reports': {}}
+        self.run.work = {'repositories': [self.repo.pk], 'cursor': 0, 'sha': self.sha, 'reports': {}, 'selected_repository_ids': [self.repo.pk]}
         with fenced(self.run):
             GitHubSyncRun.objects.filter(pk=self.run.pk).update(stage=self.run.stage, work=self.run.work)
         with patch('github_profiles.sync.get_valid_access_token', return_value='test'), patch('github_profiles.sync.GitHub', FixtureGitHub), patch('github_profiles.agent.Inference.chat', side_effect=CapacityBusy()):
@@ -268,28 +270,22 @@ class AgentBehaviorTests(TransactionTestCase):
         with patch('github_profiles.agent.Inference.chat', side_effect=finding):
             self.agent().advance()
 
-    def test_large_overview_yields_and_reuses_completed_model_batches(self):
+    def test_large_overview_completes_without_model_calls(self):
         report_ids = {}
-        for n in range(12):
+        for n in range(5):
             repo = GitHubRepository.objects.create(profile=self.run.profile, github_id=n+100,
                 name=f'large-{n}', full_name=f'ada/large-{n}', owner_login='ada', metadata={'description': 'x'*1500})
             report = GitHubRepositoryReport.objects.create(repository=repo, sha=self.sha, analysis_version=3,
                 provider='qwen', model='test', data={'summary': 'Project description. '*70, 'skills': [], 'domains': []})
             report_ids[str(repo.pk)] = report.pk
-        self.run.stage, self.run.work = 'finalize', {'reports': report_ids}
+        self.run.stage, self.run.work = 'finalize', {'reports': report_ids, 'selected_repository_ids': [int(pk) for pk in report_ids]}
         GitHubSyncRun.objects.filter(pk=self.run.pk).update(stage='finalize', work=self.run.work)
-        seen = []
-        def outline(messages, schema):
-            payload = messages[-1]['content']
-            self.assertNotIn(payload, seen, 'A completed overview model batch was repeated')
-            seen.append(payload)
-            return finding(messages, schema)
-        with patch('github_profiles.sync.Inference.chat', side_effect=outline):
-            for _ in range(10):
-                execute_slice(self.run)
-                self.run.refresh_from_db()
-                if self.run.status == 'completed':
-                    break
-                self.run = claim(self.run.pk)
+        with patch('github_profiles.sync.Inference.chat') as model:
+            execute_slice(self.run)
+        self.run.refresh_from_db()
         self.assertEqual(self.run.status, 'completed')
-        self.assertGreater(len(seen), 1)
+        model.assert_not_called()
+        self.run.profile.refresh_from_db()
+        self.assertIn('Development Opportunities', self.run.profile.summary)
+        for n in range(5):
+            self.assertIn(f'ada/large-{n}', self.run.profile.summary)

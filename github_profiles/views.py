@@ -15,6 +15,7 @@ def run_payload(run, include_result=False):
     data = {'job_id': str(run.pk), 'status': run.status, 'progress': run.progress, 'error': run.error,
         'updated_at': run.updated_at, 'poll_after_ms': 3000,
         'stage': run.stage, 'model_calls': run.model_calls,
+        'mode': run.work.get('mode', 'analysis'),
         'completed_repositories': len(run.work.get('reports', {})),
         'total_repositories': len(run.work.get('repositories', []))}
     if include_result and run.status == 'completed':
@@ -47,7 +48,7 @@ class GitHubOverviewView(APIView):
         # The dedicated overview never exposes per-repository descriptions, README
         # bodies or source snippets. Those remain in the normalized private store.
         overview = re.sub(r'## Project Experience\n.*?(?=\n## |\Z)', '', snapshot.summary, flags=re.S).strip()
-        latest = snapshot.runs.first()
+        latest = snapshot.runs.exclude(work__mode='inventory').first()
         return Response({'connected': True, 'sync': run_payload(latest) if latest else None,
             'profile': {'identity': snapshot.identity, 'overview': overview, 'statistics': snapshot.statistics,
                 'languages': snapshot.languages, 'technologies': snapshot.technologies, 'domains': snapshot.domains,
@@ -56,6 +57,14 @@ class GitHubOverviewView(APIView):
 
 class GitHubRepositoriesView(APIView):
     permission_classes = PERMISSIONS
+
+    def post(self, request):
+        from .sync import queue_inventory
+        from accounts.github_oauth import GitHubNotConnectedError
+        try:
+            return Response(run_payload(queue_inventory(request.user.account.student_uuid)), status=202)
+        except GitHubNotConnectedError as exc:
+            return Response({'detail': str(exc)}, status=400)
 
     def get(self, request):
         try:
@@ -68,10 +77,22 @@ class GitHubRepositoriesView(APIView):
         snapshot = GitHubProfileSnapshot.objects.filter(connection=connection,
             github_user_id=connection.github_user_id, student_id=request.user.account.student_profile_id).first() if connection else None
         queryset = snapshot.repositories.filter(active=True) if snapshot else None
+        total = queryset.count() if queryset is not None else 0
+        analysis = snapshot.runs.exclude(work__mode='inventory').first() if snapshot else None
+        selected_ids = (analysis.work if analysis else {}).get('selected_repository_ids', [])
+        if queryset is not None and request.query_params.get('scope') == 'selected':
+            queryset = queryset.filter(pk__in=selected_ids)
+        search = request.query_params.get('search', '').strip()[:200]
+        if queryset is not None and search:
+            queryset = queryset.filter(full_name__icontains=search)
         count = queryset.count() if queryset is not None else 0
         pages = max(1, (count + 9) // 10)
         if page > pages:
             return Response({'detail': 'Repository page not found.'}, status=404)
         rows = list(queryset.values('id', 'full_name')[(page-1)*10:page*10]) if queryset is not None else []
-        return Response({'count': count, 'page': page, 'page_size': 10, 'total_pages': pages,
+        latest = snapshot.runs.first() if snapshot else None
+        selected = list(snapshot.repositories.filter(pk__in=selected_ids, active=True).values('id', 'full_name')) if snapshot else []
+        return Response({'count': count, 'total_count': total, 'page': page, 'page_size': 10, 'total_pages': pages,
+            'max_selection': 5, 'sync': run_payload(latest) if latest else None,
+            'selected_repositories': [{'id': r['id'], 'name': r['full_name']} for r in selected],
             'results': [{'id': r['id'], 'name': r['full_name']} for r in rows]})

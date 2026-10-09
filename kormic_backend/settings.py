@@ -38,7 +38,7 @@ if KORMIC_PUBLIC_URL:
     os.environ['GITHUB_OAUTH_REDIRECT_URI'] = KORMIC_PUBLIC_URL + '/api/auth/github/callback/'
     os.environ['CLAIM_PAGE_URL'] = KORMIC_PUBLIC_URL + '/claim'
 
-# GitHub source analysis uses local Qwen first, then the existing Claude key.
+# Inference uses Claude only. Ollama settings remain for retired adapter compatibility.
 GITHUB_OLLAMA_BASE_URL = os.getenv("GITHUB_OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 GITHUB_OLLAMA_MODEL = os.getenv("GITHUB_OLLAMA_MODEL", "qwen3:0.6b")
 GITHUB_OLLAMA_TIMEOUT = float(os.getenv("GITHUB_OLLAMA_TIMEOUT", "180"))
@@ -51,11 +51,11 @@ GITHUB_QWEN_RPM = int(os.getenv("GITHUB_QWEN_RPM", "60"))
 GITHUB_CLAUDE_RPM = int(os.getenv("GITHUB_CLAUDE_RPM", "40"))
 GITHUB_QWEN_TPM = int(os.getenv("GITHUB_QWEN_TPM", "300000"))
 GITHUB_CLAUDE_TPM = int(os.getenv("GITHUB_CLAUDE_TPM", "150000"))
-GITHUB_RUN_MAX_MODEL_CALLS = int(os.getenv("GITHUB_RUN_MAX_MODEL_CALLS", "400"))
-GITHUB_RUN_MAX_TOKENS = int(os.getenv("GITHUB_RUN_MAX_TOKENS", "2000000"))
-GITHUB_AGENT_MAX_STEPS = int(os.getenv("GITHUB_AGENT_MAX_STEPS", "12"))
+GITHUB_RUN_MAX_MODEL_CALLS = int(os.getenv("GITHUB_RUN_MAX_MODEL_CALLS", "40"))
+GITHUB_RUN_MAX_TOKENS = int(os.getenv("GITHUB_RUN_MAX_TOKENS", "200000"))
+GITHUB_AGENT_MAX_STEPS = int(os.getenv("GITHUB_AGENT_MAX_STEPS", "6"))
 GITHUB_RUN_MAX_SECONDS = int(os.getenv("GITHUB_RUN_MAX_SECONDS", "86400"))
-GITHUB_DAILY_SYNC_LIMIT = int(os.getenv("GITHUB_DAILY_SYNC_LIMIT", "20"))
+GITHUB_DAILY_SYNC_LIMIT = int(os.getenv("GITHUB_DAILY_SYNC_LIMIT", "3"))
 
 # First key encrypts new TOTP seeds; all configured keys can decrypt. Supply
 # independently of DB credentials, DJANGO_SECRET_KEY and GitHub OAuth keys.

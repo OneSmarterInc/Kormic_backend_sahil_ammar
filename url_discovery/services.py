@@ -103,6 +103,8 @@ def start_discovery(
     max_pages: Optional[int] = None,
     top_n: Optional[int] = None,
     auto_apply: bool = True,
+    full_site: bool = False,
+    dispatch: bool = True,
 ) -> DiscoveryJob:
     """Kick off a background crawl of `university.website_url` to propose
     candidate scrape_urls. Raises ValueError for anything the caller should
@@ -153,13 +155,15 @@ def start_discovery(
         university=university,
         base_url=base_url,
         root_domain=root,
-        settings={"max_pages": capped_pages},
+        settings={"max_pages": capped_pages, "full_site": bool(full_site)},
         top_n=capped_top_n,
         auto_apply=bool(auto_apply),
     )
 
     from url_discovery.tasks import run_discovery_job
 
+    if not dispatch:
+        return job
     if settings.DEBUG and not getattr(settings, "TESTING", False):
         _run_discovery_job_in_local_thread(job.id)
     else:
@@ -234,7 +238,12 @@ def run_auto_apply_and_scrape(job: DiscoveryJob) -> None:
         # See STUDENT_ESSENTIAL_FLOOR: a small requested top_n can only be
         # honored by the uncapped navigation selector, not the topic-quota one.
         mode = "student_essential" if (job.top_n or DEFAULT_TOP_N) >= STUDENT_ESSENTIAL_FLOOR else "base_important"
-        records = recommended_urls(job, mode=mode, limit=job.top_n)
+        if job.settings.get('full_site'):
+            mode = 'full_site'
+            records = job.urls.filter(http_status__gte=200, http_status__lt=300).exclude(
+                content_type__icontains='xml').exclude(content_type__isnull=True).order_by('id')
+        else:
+            records = recommended_urls(job, mode=mode, limit=job.top_n)
         urls = [record.final_url or record.normalized_url for record in records]
         urls = [u for u in urls if u]
 
@@ -264,6 +273,7 @@ def serialize_job(job: DiscoveryJob) -> Dict[str, Any]:
         "base_url": job.base_url,
         "top_n": job.top_n,
         "auto_apply": job.auto_apply,
+        "full_site": bool(job.settings.get('full_site')),
         "pages_discovered": job.pages_discovered,
         "pages_crawled": job.pages_crawled,
         "relevant_count": job.relevant_count,

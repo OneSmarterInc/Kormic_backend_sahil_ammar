@@ -21,7 +21,7 @@ class PublicExtractionCacheTests(TestCase):
             second = extract_catalogue_locally('https://second.edu/', 'admissions',
                 {'url': 'https://second.edu/admissions', 'content': text})
 
-        self.assertEqual(model.call_count, 1)
+        model.assert_not_called()
         self.assertEqual(first['catalogue'], second['catalogue'])
         self.assertEqual(second['url'], 'https://second.edu/admissions')
         cached = PublicPageExtraction.objects.get()
@@ -77,11 +77,12 @@ class PublicExtractionCacheTests(TestCase):
             first = extract_facts_from_page('https://first.edu/english', source, 'First University')
             second = extract_facts_from_page('https://second.edu/english', source, 'Second University')
 
-        self.assertEqual(first, second)
-        provider.return_value.messages.create.assert_called_once()
-        self.assertEqual(PublicPageExtraction.objects.get().supporting_excerpts[0], source)
+        self.assertIn(source, first[0]['content'])
+        self.assertIn(source, second[0]['content'])
+        provider.assert_not_called()
+        self.assertFalse(PublicPageExtraction.objects.exists())
 
-    def test_unquoted_registered_fact_is_returned_but_not_cached(self):
+    def test_unquoted_registered_fact_uses_source_excerpt_and_is_not_cached(self):
         from knowledge.scraper import extract_facts_from_page
 
         response = SimpleNamespace(content=[SimpleNamespace(text=json.dumps([{
@@ -89,8 +90,10 @@ class PublicExtractionCacheTests(TestCase):
         }]))])
         with patch('knowledge.scraper._get_anthropic_client') as provider:
             provider.return_value.messages.create.return_value = response
-            extract_facts_from_page('https://first.edu/fees', 'Tuition is listed.', 'First University')
+            result = extract_facts_from_page('https://first.edu/fees', 'Tuition is listed.', 'First University')
             extract_facts_from_page('https://first.edu/fees', 'Tuition is listed.', 'First University')
 
-        self.assertEqual(provider.return_value.messages.create.call_count, 2)
+        provider.assert_not_called()
         self.assertFalse(PublicPageExtraction.objects.exists())
+        self.assertIn('Page excerpt: Tuition is listed.', result[0]['content'])
+        self.assertLess(result[0]['confidence'], 0.9)

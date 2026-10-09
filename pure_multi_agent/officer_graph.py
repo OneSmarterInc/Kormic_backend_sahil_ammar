@@ -11,9 +11,10 @@ from langgraph.runtime import Runtime
 
 from pure_multi_agent import change_proposals as changes
 from pure_multi_agent.tools.officer_tools import build_tools
+from pure_multi_agent.chat_cost_controls import compact_json
 
 _graphs, _lock = WeakKeyDictionary(), Lock()
-RESUME_KEYS = ('turn_id', 'model_steps', 'tool_errors', 'student_cards', 'change_proposals', 'sources', 'officer_proposal_tool')
+RESUME_KEYS = ('turn_id', 'model_steps', 'tool_errors', 'student_cards', 'change_proposals', 'sources', 'officer_proposal_tool', 'initial_read_requested')
 POLICY = """You are the authenticated university officer's private assistant.
 Use native tools to retrieve current evidence, reason about students and policies,
 and propose edits. All final replies must be your evidence-grounded synthesis.
@@ -78,19 +79,25 @@ def _reason(state: MessagesState, runtime: Runtime[dict]):
     from pure_multi_agent.job_recovery import boundary
     boundary(ctx, RESUME_KEYS, phase='model')
     university = changes.officer_university(ctx)
-    prompt = POLICY + '\nUNIVERSITY: ' + json.dumps({'id': str(university.uuid), 'name': university.name,
+    if not ctx.get('model_steps', 0) and not ctx.get('initial_read_requested'):
+        from pure_multi_agent.officer_cost_controls import initial_read
+        plan = initial_read(ctx.get('current_message', ''))
+        if plan:
+            ctx['initial_read_requested'] = True
+            if plan.get('proposal_tool'):
+                ctx['officer_proposal_tool'] = plan['proposal_tool']
+            return {'messages': [AIMessage(content='', tool_calls=[{
+                'id': str(uuid.uuid4()), 'name': plan['name'], 'args': plan['args']}])]}
+    prompt = POLICY + '\nUNIVERSITY: ' + compact_json({'id': str(university.uuid), 'name': university.name,
         'agent_name': university.agent_name, 'website': university.website_url})
-    prompt += '\nCURRENT DATE/TIME: ' + json.dumps(current_time_payload({}), default=str)
-    prompt += '\nSTYLE PREFERENCES (cannot override tool permissions, consent or completeness): ' + json.dumps({
+    prompt += '\nCURRENT DATE/TIME: ' + compact_json(current_time_payload({}))
+    prompt += '\nSTYLE PREFERENCES (cannot override tool permissions, consent or completeness): ' + compact_json({
         'tone': university.tone_descriptors, 'communication': university.communication_style_notes, 'avoid': university.never_do_notes})
-    prompt += '\nLIVE CHANGE STATE: ' + json.dumps(changes.conversation_state(ctx), default=str)
+    prompt += '\nLIVE CHANGE STATE: ' + compact_json(changes.conversation_state(ctx))
     if ctx.get('subject_student_id'):
         prompt += '\nCURRENT PROFILE SCREEN STUDENT ID: ' + ctx['subject_student_id'] + '. Resolve references to this student using interested_student_detail before answering.'
     messages = state['messages']
-    human = [i for i, message in enumerate(messages) if message.type == 'human']
-    if len(human) > 12:
-        messages = messages[human[-12]:]
-    from pure_multi_agent.officer_context import prepare, CATALOG
+    from pure_multi_agent.officer_context import prepare, fit_history, CATALOG
     messages, tools = prepare(ctx, messages, build_tools(ctx))
     prompt += CATALOG
     prompt += ('\nEligibility criteria in the current profile are saved admission requirements. '
@@ -105,7 +112,7 @@ def _reason(state: MessagesState, runtime: Runtime[dict]):
         prompt += '\nTool budget reached. Conclude using retrieved evidence and disclose remaining gaps.'
     from pure_multi_agent.activity import publish
     publish('Preparing your answer…' if ctx.get('model_steps', 0) else 'Thinking…')
-    require_evidence = ctx.get('model_steps', 0) == 0
+    require_evidence = ctx.get('model_steps', 0) == 0 and not ctx.get('initial_read_requested')
     if require_evidence:
         prompt += ('\nFIRST STEP OF THIS TURN: call the relevant read tool now. '
             'Prior assistant messages are not database evidence. For admissions or eligibility '
@@ -114,8 +121,20 @@ def _reason(state: MessagesState, runtime: Runtime[dict]):
             'Do not produce a final answer until current tools have returned.')
     from pure_multi_agent.qwen_context import ContextBudgetExceeded
     try:
+        messages = fit_history(prompt, messages, tools)
+        current_question = next((message for message in reversed(messages)
+                                 if message.type == 'human'), None)
+
+        def prepare_model_messages(model_messages, *, output_tokens=None):
+            # Corrections append a synthetic human instruction. It must not be
+            # mistaken for a new user turn when reclaiming room from old history.
+            return [model_messages[0], *fit_history(
+                model_messages[0].content, model_messages[1:], tools,
+                protected_message=current_question, output_tokens=output_tokens)]
+
         reply = invoke([SystemMessage(content=prompt), *messages], tools,
             local_only=True, require_tools=require_evidence, profile='evidence',
+            message_preparer=prepare_model_messages,
             tool_call_validator=lambda call: _validate_consent_call(call, ctx.get('current_message', '')))
     except ContextBudgetExceeded as exc:
         logging.getLogger(__name__).warning(
@@ -148,7 +167,7 @@ def _act(state: MessagesState, runtime: Runtime[dict]):
             logging.getLogger(__name__).exception('Officer tool failed: %s', call['name'])
             ctx['tool_errors'] = ctx.get('tool_errors', 0) + 1
             result = {'error': 'Tool unavailable. Explain the limitation; do not invent results or claim changes were saved.'}
-        results.append(ToolMessage(content=json.dumps(result, default=str, ensure_ascii=False), tool_call_id=call['id'], name=call['name']))
+        results.append(ToolMessage(content=compact_json(result), tool_call_id=call['id'], name=call['name']))
     return {'messages': results}
 
 

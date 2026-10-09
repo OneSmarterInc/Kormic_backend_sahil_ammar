@@ -12,10 +12,10 @@ from kormic_backend.celery import app
 
 
 class Command(BaseCommand):
-    help = 'Verify PostgreSQL, Redis, all Celery queues, and Ollama; optionally generate text.'
+    help = 'Verify PostgreSQL, Redis, all Celery queues, and Claude configuration; optionally generate text.'
 
     def add_arguments(self, parser):
-        parser.add_argument('--model', action='store_true', help='Also run real Qwen inference (may be slow).')
+        parser.add_argument('--model', action='store_true', help='Also run one small paid Claude inference request.')
         parser.add_argument('--timeout', type=int, default=120)
 
     def handle(self, *args, **options):
@@ -65,24 +65,18 @@ class Command(BaseCommand):
                 result.forget()
             self.stdout.write(f'PASS Celery queue {queue}')
 
-        base = settings.GITHUB_OLLAMA_BASE_URL.rstrip('/')
-        model = settings.GITHUB_OLLAMA_MODEL
-        with urlopen(base + '/api/tags', timeout=10) as response:
-            models = json.load(response)['models']
-        if model not in {row['name'] for row in models}:
-            raise CommandError(f'Ollama model {model} has not been pulled')
-        self.stdout.write(f'PASS Ollama model present: {model}')
+        import os
+        from pure_multi_agent.claude_policy import model_name
+        if not os.getenv('ANTHROPIC_API_KEY'):
+            raise CommandError('ANTHROPIC_API_KEY is missing')
+        self.stdout.write(f'PASS Claude configured: {model_name()} (credentials not yet verified)')
         if options['model']:
-            # Match the actual agent context allocation; a tiny probe must not
-            # falsely certify memory capacity for a 16K-context agent request.
-            body = {'model': model, 'prompt': 'Reply with the word ready.',
-                    'stream': False, 'think': False, 'keep_alive': '2m',
-                    'options': {'num_ctx': 16384, 'num_predict': 16}}
-            request = Request(base + '/api/generate', data=json.dumps(body).encode(),
-                              headers={'Content-Type': 'application/json'})
-            with urlopen(request, timeout=timeout) as response:
-                result = json.load(response)
-            if not result.get('response', '').strip() or not result.get('done'):
-                raise CommandError('Ollama did not complete text generation')
-            self.stdout.write('PASS real Qwen inference at agent context size')
+            from pure_multi_agent.model_router import invoke
+            from langchain_core.messages import HumanMessage
+            from pure_multi_agent.telemetry import diagnostic_scope
+            with diagnostic_scope():
+                reply = invoke([HumanMessage(content='Reply ready only.')], profile='routing', single_attempt=True)
+            if not reply.content:
+                raise CommandError('Claude did not complete text generation')
+            self.stdout.write('PASS real Claude inference')
         self.stdout.write(self.style.SUCCESS('Deployment checks passed. Test login, uploads and agent workflows separately.'))

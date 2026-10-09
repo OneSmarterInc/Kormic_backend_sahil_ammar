@@ -549,7 +549,8 @@ class GitHubAnalyzeAPIView(APIView):
     """
     POST /api/profile/github/
     Analyzes the student's own OAuth-connected GitHub account (§3.5) --
-    no request body. There is no way to point this at someone else's
+    body: repository_ids (1–5 IDs from the authenticated repository picker).
+    There is no way to point this at someone else's
     GitHub profile; the username always comes from the verified OAuth
     connection, never from client input.
     """
@@ -561,13 +562,15 @@ class GitHubAnalyzeAPIView(APIView):
 
         try:
             from github_profiles.sync import queue_sync
+            from github_profiles.sync import validate_selection
             from github_profiles.views import run_payload
-            return Response(run_payload(queue_sync(student_id)), status=status.HTTP_202_ACCEPTED)
+            ids = validate_selection(request.data.get('repository_ids'))
+            return Response(run_payload(queue_sync(student_id, ids)), status=status.HTTP_202_ACCEPTED)
         except GitHubNotConnectedError as exc:
             return api_error(str(exc), status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
-            from rest_framework.exceptions import Throttled
-            if isinstance(exc, Throttled):
+            from rest_framework.exceptions import Throttled, ValidationError
+            if isinstance(exc, (Throttled, ValidationError)):
                 raise
             return unexpected_server_error("Unexpected error while analyzing GitHub profile.", exc)
 

@@ -27,33 +27,33 @@ MESSAGES = [{'role': 'system', 'content': 'Analyze data.'}, {'role': 'user', 'co
 class InferenceTests(SimpleTestCase):
     @patch('agents.github_agent._get_anthropic_client')
     @patch('github_profiles.inference.httpx.post')
-    def test_qwen_first_no_claude_when_valid(self, post, claude):
-        post.return_value = Mock(json=lambda: {'message': {'content': '{"summary":"Source evidence"}'}})
+    def test_claude_only_even_when_legacy_local_configuration_exists(self, post, claude):
+        claude.return_value.messages.create.return_value = SimpleNamespace(content=[SimpleNamespace(text='{"summary":"Source evidence"}')])
         with patch.dict(os.environ, {'KORMIC_QWEN_KEEP_ALIVE': '2m'}):
             answer = Inference().chat(MESSAGES, SCHEMA)
-        self.assertEqual(answer['provider'], 'qwen')
-        claude.assert_not_called()
-        self.assertEqual(post.call_args.kwargs['json']['format'], SCHEMA)
-        self.assertEqual(post.call_args.kwargs['json']['keep_alive'], '2m')
-        self.assertFalse(post.call_args.kwargs['trust_env'])
+        self.assertEqual(answer['provider'], 'claude')
+        post.assert_not_called()
+        self.assertEqual(claude.call_count, 1)
 
     @patch('agents.github_agent._get_anthropic_client')
     @patch('github_profiles.inference.httpx.post')
-    def test_offline_qwen_falls_back_and_is_not_retried_for_each_repo(self, post, claude):
+    def test_local_provider_is_never_contacted_across_repositories(self, post, claude):
         post.side_effect = httpx.ConnectError('Offline')
         claude.return_value.messages.create.return_value = SimpleNamespace(content=[SimpleNamespace(text='{"summary":"Evidence"}')])
         model = Inference()
         self.assertEqual(model.chat(MESSAGES, SCHEMA)['provider'], 'claude')
         model.chat(MESSAGES, SCHEMA)
-        self.assertEqual(post.call_count, 1)
+        post.assert_not_called()
         self.assertEqual(claude.call_count, 2)
 
     @patch('agents.github_agent._get_anthropic_client')
     @patch('github_profiles.inference.httpx.post')
-    def test_invalid_qwen_schema_falls_back(self, post, claude):
-        post.return_value = Mock(json=lambda: {'message': {'content': '{"summary":42}'}})
-        claude.return_value.messages.create.return_value = SimpleNamespace(content=[SimpleNamespace(text='{"summary":"Validated"}')])
-        self.assertEqual(Inference().chat(MESSAGES, SCHEMA)['provider'], 'claude')
+    def test_invalid_claude_schema_allows_explicit_individual_recovery(self, post, claude):
+        from .inference import InvalidResponse
+        claude.return_value.messages.create.return_value = SimpleNamespace(content=[SimpleNamespace(text='{"summary":42}')])
+        with self.assertRaises(InvalidResponse):
+            Inference().chat(MESSAGES, SCHEMA)
+        post.assert_not_called()
 
     @patch('agents.github_agent._get_anthropic_client')
     @patch('github_profiles.inference.httpx.post', side_effect=httpx.ConnectError('Offline'))
@@ -114,8 +114,15 @@ class FixtureGitHub(GitHub):
         return 'print("bounded source")\n' * 300
 
 
-def finding(messages, schema):
+def finding(messages, schema, **kwargs):
     prompt = json.loads(messages[-1]['content'])
+    if 'repositories' in prompt:
+        return {'content': json.dumps({'results': [{
+            'repository_id': repo['repository_id'], 'needs_more_evidence': False,
+            'finding': {'summary': 'A Python application.', 'domains': ['Software'],
+                'skills': [{'name': 'Python', 'evidence_ids': [repo['sources'][0]['id']]}],
+                'limitations': ['Sampled.']}}
+            for repo in prompt['repositories']]}), 'provider': 'claude', 'model': 'test'}
     if 'tools' in prompt:
         history = prompt['observations']
         if not history:
@@ -155,9 +162,13 @@ class ExtractionTests(TransactionTestCase):
             github_username='ada', access_token_encrypted='test-only')
         self.client = APIClient()
         self.client.force_authenticate(self.user)
+        profile = GitHubProfileSnapshot.objects.create(student=self.student, connection=self.connection,
+            github_user_id=10, identity={'login': 'ada'})
+        self.repository_ids = [GitHubRepository.objects.create(profile=profile, github_id=n,
+            name=f'repo-{n}', full_name=f'ada/repo-{n}', owner_login='ada').pk for n in (1, 2)]
 
     def run_extraction(self, fail=False):
-        run = queue_sync(str(self.student.uuid))
+        run = queue_sync(str(self.student.uuid), self.repository_ids)
         with patch('github_profiles.sync.get_valid_access_token', return_value='test-only'), patch('github_profiles.sync.GitHub', FixtureGitHub), patch('github_profiles.sync.Inference.chat', side_effect=ServiceError('AI unavailable') if fail else finding):
             drain(run)
         run.refresh_from_db()
@@ -165,8 +176,8 @@ class ExtractionTests(TransactionTestCase):
         return run
 
     def test_queue_deduplicates_and_post_is_accepted(self):
-        first = self.client.post('/api/profile/github/', {}, format='json')
-        second = self.client.post('/api/profile/github/', {}, format='json')
+        first = self.client.post('/api/profile/github/', {'repository_ids': self.repository_ids}, format='json')
+        second = self.client.post('/api/profile/github/', {'repository_ids': self.repository_ids}, format='json')
         self.assertEqual(first.status_code, 202)
         self.assertEqual(first.data['job_id'], second.data['job_id'])
         self.assertEqual(GitHubSyncRun.objects.count(), 1)
@@ -215,7 +226,7 @@ class ExtractionTests(TransactionTestCase):
                     return super().get(path, params, optional)[:1] * 100
                 return super().get(path, params, optional)
 
-        next_run = queue_sync(str(self.student.uuid))
+        next_run = queue_sync(str(self.student.uuid), self.repository_ids)
         with patch('github_profiles.sync.get_valid_access_token', return_value='test-only'), patch('github_profiles.sync.GitHub', IncompleteGitHub), patch('github_profiles.sync.Inference.chat', side_effect=finding):
             drain(next_run)
         next_run.refresh_from_db()
@@ -233,7 +244,7 @@ class ExtractionTests(TransactionTestCase):
         self.assertEqual(self.client.get('/api/profile/github/repos/').data['count'], 2)
 
     def test_expired_student_token_does_not_use_shared_credentials(self):
-        run = queue_sync(str(self.student.uuid))
+        run = queue_sync(str(self.student.uuid), self.repository_ids)
         with patch('github_profiles.sync.get_valid_access_token', side_effect=RuntimeError('Expired')), patch('github_profiles.sync.GitHub') as github:
             drain(run)
         run.refresh_from_db()
@@ -296,9 +307,9 @@ class ExtractionTests(TransactionTestCase):
 
     def test_interrupted_worker_is_recoverable(self):
         from datetime import timedelta
-        run = queue_sync(str(self.student.uuid))
+        run = queue_sync(str(self.student.uuid), self.repository_ids)
         GitHubSyncRun.objects.filter(pk=run.pk).update(status='running', updated_at=timezone.now()-timedelta(minutes=16))
         expire_interrupted_runs()
         run.refresh_from_db()
-        self.assertEqual(run.status, 'queued')
-        self.assertEqual(queue_sync(str(self.student.uuid)).pk, run.pk)
+        self.assertEqual(run.status, 'running')
+        self.assertEqual(queue_sync(str(self.student.uuid), self.repository_ids).pk, run.pk)

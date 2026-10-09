@@ -1,4 +1,4 @@
-"""Bounded LangGraph research agent: model chooses pages and submits cited facts."""
+"""Bounded algorithmic research: ranked URLs and verbatim source evidence."""
 import json
 import re
 import unicodedata
@@ -168,20 +168,30 @@ def build_tools(pages, result, website, draft=None):
 
 def graph_for(website, name):
     def reason(state):
-        tools = build_tools(dict(state.get('pages', {})), {}, website)
-        if len(state.get('pages', {})) >= 8:
-            tools = [t for t in tools if t.name == 'submit_research']
-        # Rank known links by the research objectives instead of spending the
-        # crawl budget on generic campus pages. URLs still come from evidence.
-        links = {link['url']:link for page in state.get('pages',{}).values() for link in page.get('links',[])
-            if link.get('url') not in state.get('pages',{})}
+        from langchain_core.messages import AIMessage
+        from uuid import uuid4
+        pages = state.get('pages', {})
+        attempted = {call['args'].get('url') for message in state.get('messages', [])
+                     for call in getattr(message, 'tool_calls', []) if call['name'] == 'read_official_page'}
+        links = {link['url']: link for page in pages.values() for link in page.get('links', [])
+                 if link.get('url') not in pages and link.get('url') not in attempted}
         def priority(link):
-            text = (link.get('label','')+' '+link['url']).lower()
-            return sum(weight for pattern,weight in [('tuition|fees|cost',5),('deadline|timeline',5),('catalog|program|course',4),('admission|scholarship|financial',3)] if re.search(pattern,text))
-        preferred = sorted(links.values(),key=priority,reverse=True)[:12]
-        instructions = PROMPT + '\nPrioritize these retrieved links (data): ' + json.dumps(preferred)
-        response = invoke([SystemMessage(content=instructions + '\nSelected university: ' + name + '\nOfficial website: ' + website), *state['messages']], tools, local_only=True, require_tools=True)
-        return {'messages': [response]}
+            value = (link.get('label', '') + ' ' + link['url']).lower()
+            return sum(weight for pattern, weight in [('tuition|fees|cost',5), ('deadline|timeline',5),
+                ('catalog|program|course',4), ('admission|scholarship|financial',3)] if re.search(pattern, value))
+        if not pages and website not in attempted:
+            action, args = 'read_official_page', {'url': website}
+        elif len(pages) < 8 and links:
+            target = sorted(links.values(), key=priority, reverse=True)[0]
+            action, args = 'read_official_page', {'url': target['url']}
+        else:
+            from knowledge.scraper import page_chunks
+            facts = [{'topic': (page.get('title') or 'Official university information')[:200],
+                      'content': chunk, 'source_url': page['url'], 'source_quote': chunk[:500]}
+                     for page in pages.values() for chunk in page_chunks(page['content'], size=3500, overlap=0) if len(chunk) >= 8]
+            action, args = 'submit_research', {'facts': facts[:50], 'courses': [], 'intakes': [],
+                'coverage_notes': 'Algorithmic collection of up to eight public pages. Full-site scraping is managed separately; coverage is partial.'}
+        return {'messages': [AIMessage(content='', tool_calls=[{'id': str(uuid4()), 'name': action, 'args': args}])]}
 
     def act(state):
         pages, result, draft = dict(state.get('pages', {})), {}, deepcopy(state.get('draft', {}))

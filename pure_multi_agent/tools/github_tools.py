@@ -56,7 +56,11 @@ def build_tools(ctx):
             return {'status': 'not_connected', 'action': 'Connect GitHub on the profile screen first.'}
         if github_input and github_input.rstrip('/').split('/')[-1].casefold() != connection.github_username.casefold():
             return {'error': 'This tool only analyzes your connected GitHub account.'}
-        queue_sync(ctx['canonical_student_id'])
+        from rest_framework.exceptions import ValidationError
+        try:
+            queue_sync(ctx['canonical_student_id'])
+        except ValidationError:
+            return {'status': 'selection_required', 'action': 'Open the GitHub page, select between one and five repositories, then choose Analyse selected repositories.'}
         return github_evidence(ctx['canonical_student_id'])
 
     return [get_github_processing_status, analyze_github_profile]

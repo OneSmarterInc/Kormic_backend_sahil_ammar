@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
+from django.db import transaction
+from django.utils import timezone
+from universities.information import CATEGORY_IDS, category_for, revision_for
 
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -20,6 +23,8 @@ UNIVERSITY_ADMIN_PERMISSIONS = [IsAuthenticated, IsTOTPEnrolled, IsUniversityRol
 # Profile fields that are also mirrored into the knowledge base -- editing
 # any of these should re-sync the derived KB facts.
 _KB_SYNCED_FIELDS = {
+    "name",
+    "location",
     "description",
     "contact_email",
     "contact_phone",
@@ -95,6 +100,10 @@ def _serialize_knowledge_entry(entry) -> Dict[str, Any]:
         "times_used": entry.times_used,
         "group": entry.group.slug if entry.group_id else None,
         "created_at": entry.created_at,
+        "category": category_for(entry),
+        "details": {k: v for k, v in (entry.details or {}).items() if not k.startswith("_information_")},
+        "revision": revision_for(entry),
+        "edited_at": (entry.details or {}).get("_information_edited_at"),
     }
 
 
@@ -612,7 +621,7 @@ class KnowledgeFactListCreateAPIView(APIView):
         if account is None or not account.university_id:
             return _error("No university profile found for this account.", status.HTTP_404_NOT_FOUND)
 
-        entries = UniversityKnowledgeEntry.objects.filter(university_id=account.university_uuid)
+        entries = UniversityKnowledgeEntry.objects.filter(university_id=account.university_uuid).select_related("group").defer("embedding")
 
         section = request.query_params.get("section")
         if section:
@@ -757,25 +766,61 @@ class KnowledgeFactDetailAPIView(APIView):
 
         return entry, None
 
-    def patch(self, request, fact_id: int):
+    @transaction.atomic
+    def patch(self, request, fact_id: int, checked_revision=False):
         entry, error = self._get_editable_entry(request, fact_id)
         if error is not None:
             return error
 
-        data = request.data or {}
+        from django_api.models import UniversityKnowledgeEntry
+        entry = UniversityKnowledgeEntry.objects.select_for_update().get(pk=entry.pk)
+
+        data = dict(request.data or {})
+        if (entry.details or {}).get("_information_research_kind") in {"course", "intake"} and isinstance(data.get("details"), dict):
+            previous_details = {k: v for k, v in entry.details.items() if not k.startswith("_information_")}
+            if data["details"] != previous_details and data.get("content", entry.content) == entry.content:
+                data["content"] = "\n".join(f"{key.replace('_', ' ')}: {value}" for key, value in data["details"].items() if value not in (None, ""))
+        if not checked_revision and data.get("expected_revision") and data["expected_revision"] != revision_for(entry):
+            return _error("This information changed since you opened it. Reload before saving.", status.HTTP_409_CONFLICT)
         update_fields = []
 
+        if "details" in data:
+            if not isinstance(data["details"], dict) or any(k.startswith("_information_") for k in data["details"]):
+                return _error("details must be an object with no reserved information fields.")
+            if data['details'].get('information_type') == 'fees':
+                from universities.information_costs import validate_cost_owner
+                try:
+                    owner_label = validate_cost_owner(data['details'], entry.university_id)
+                except ValueError as exc:
+                    return _error(str(exc))
+                data['details']['cost_owner_name'] = owner_label
+                data['content'] = '\n'.join(f"{key.replace('_', ' ').title()}: {value}" for key, value in data['details'].items()
+                    if value not in (None, '') and key not in {'cost_owner', 'information_type'})
+            metadata = {k: v for k, v in (entry.details or {}).items() if k.startswith("_information_")}
+            entry.details = {**data["details"], **metadata}
+            update_fields.append("details")
+
+        entry.details = {**(entry.details or {}), "_information_original_topic": (entry.details or {}).get("_information_original_topic", entry.topic)}
+
+        if "category" in data:
+            if not isinstance(data["category"], str) or data["category"] not in CATEGORY_IDS:
+                return _error("Choose a valid information category.")
+            entry.details = {**(entry.details or {}), "_information_category": data["category"]}
+            update_fields.append("details")
+
         if "topic" in data:
-            topic = str(data["topic"]).strip()
-            if not topic:
-                return _error("topic cannot be empty.")
+            topic = data["topic"]
+            if not isinstance(topic, str) or not topic.strip() or len(topic.strip()) > 500:
+                return _error("topic must contain between 1 and 500 characters.")
+            topic = topic.strip()
             entry.topic = topic
             update_fields.append("topic")
 
         if "content" in data:
-            content = str(data["content"]).strip()
-            if not content:
+            content = data["content"]
+            if not isinstance(content, str) or not content.strip():
                 return _error("content cannot be empty.")
+            content = content.strip()
             entry.content = content
             update_fields.append("content")
 
@@ -813,7 +858,12 @@ class KnowledgeFactDetailAPIView(APIView):
         if not update_fields:
             return _error("Provide at least one of topic, content, confidence, group to update.")
 
-        entry.save(update_fields=update_fields)
+        # Officer corrections become authoritative and trigger the existing
+        # transactional indexing outbox. Preserve the original source URL.
+        entry.details = {**(entry.details or {}), "_information_edited_at": timezone.now().isoformat()}
+        entry.source_type = "human_verified"
+        entry.confidence = 1.0
+        entry.save(update_fields=set(update_fields) | {"details", "source_type", "confidence"})
         return Response(_serialize_knowledge_entry(entry))
 
     def delete(self, request, fact_id: int):

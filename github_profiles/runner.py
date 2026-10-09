@@ -1,7 +1,5 @@
 """One short collection/agent slice per claim; users rotate fairly through workers."""
 import base64
-import hashlib
-import json
 import logging
 from collections import Counter
 from urllib.parse import quote
@@ -24,7 +22,8 @@ logger = logging.getLogger(__name__)
 
 def refresh_facts(run):
     snapshot = run.profile
-    repos = list(snapshot.repositories.filter(active=True).order_by('id'))
+    repos = list(snapshot.repositories.filter(active=True,
+        pk__in=run.work.get('selected_repository_ids', [])).order_by('id'))
     reports = {r.pk: r for r in GitHubRepositoryReport.objects.filter(repository__profile=snapshot,
         pk__in=list(run.work.get('reports', {}).values()))}
     languages, topics, tech, domains = Counter(), Counter(), Counter(), Counter()
@@ -60,12 +59,21 @@ def initialize(run, gh):
         raise ServiceError('GitHub account changed. Reconnect before syncing.')
     emit('AGENT_PROGRESS', 'GitHub authentication', outputs={'summary': 'GitHub connection verified. Account information received.'})
     run.profile.identity = {k: identity.get(k) for k in PROFILE_FIELDS}
+    mode = run.work.get('mode', 'analysis')
+    selected = run.work.get('selected_repository_ids', [])
+    if mode == 'inventory':
+        run.work = {'mode': mode, 'page': 1, 'seen': [], 'reports': {}}
+        run.profile.coverage['repository_list_complete'] = False
+        run.stage = 'inventory'
+        sync.save_snapshot(run)
+        return
     run.profile.warnings = []
     run.profile.academic_guidance = {}
     run.profile.coverage = {'repository_list_complete': False, 'readme_character_limit': 12000,
         'source_file_limit': 10, 'source_character_budget': 18000, 'agent': 'langgraph',
-        'note': 'All accessible repositories are inventoried. Source investigation is sampled and budgeted. Project technologies do not establish personal mastery or authorship. Code and tests are not executed.'}
-    run.work = {'page': 1, 'seen': [], 'reports': {}, 'cursor': 0}
+        'selected_repositories': len(selected),
+        'note': 'Only repositories selected by the student (up to five) are analysed. Source investigation is sampled and budgeted. Project technologies do not establish personal mastery or authorship. Code and tests are not executed.'}
+    run.work = {'mode': mode, 'selected_repository_ids': selected, 'page': 1, 'seen': [], 'reports': {}, 'cursor': 0}
     sync.save_snapshot(run)
     run.stage = 'inventory'
 
@@ -93,7 +101,7 @@ def inventory(run, gh):
         if len(batch) < 100:
             run.profile.repositories.exclude(github_id__in=run.work['seen']).update(active=False)
             run.profile.coverage['repository_list_complete'] = True
-            run.stage = 'organizations'
+            run.stage = 'inventory_done' if run.work.get('mode') == 'inventory' else 'organizations'
             run.work['organization_page'] = 1
             run.profile.organizations = []
         sync.save_snapshot(run)
@@ -118,7 +126,11 @@ def activity(run, gh):
 
 
 def begin_details(run):
-    run.work['repositories'] = list(run.profile.repositories.filter(active=True).order_by('id').values_list('pk', flat=True))
+    run.work['repositories'] = list(run.profile.repositories.filter(active=True,
+        pk__in=run.work.get('selected_repository_ids', [])).order_by('id').values_list('pk', flat=True))
+    missing = set(run.work.get('selected_repository_ids', [])) - set(run.work['repositories'])
+    if missing:
+        run.profile.warnings.append({'resource': 'selection', 'detail': 'Some selected repositories are no longer available.'})
     run.work['cursor'] = 0
     run.stage = 'details'
     refresh_facts(run)
@@ -145,6 +157,10 @@ def details(run, gh):
 
 
 def agent_step(run, gh):
+    # Jobs already inside the old investigation resume their existing checkpoint.
+    if not run.work.get('sha'):
+        from .grouped import step
+        return step(run, gh)
     ids, cursor = run.work['repositories'], run.work['cursor']
     if cursor >= len(ids):
         run.stage = 'finalize'
@@ -167,29 +183,10 @@ def agent_step(run, gh):
 
 def finalize(run):
     repos, projects = refresh_facts(run)
-    model = sync.Inference(run)
     run.profile.academic_guidance = recommend_masters(run.profile.identity, projects)
-    used_model = False
-    def resumable_outline(messages, schema):
-        nonlocal used_model
-        key = hashlib.sha256(json.dumps([messages, schema], sort_keys=True).encode()).hexdigest()
-        cache = run.work.setdefault('outline_cache', {})
-        if key in cache:
-            model.providers.add(cache[key]['provider'])
-            return cache[key]
-        if used_model:
-            raise CapacityBusy('Continuing portfolio overview', delay=0)
-        answer = model.chat(messages, schema)
-        used_model = True
-        cache[key] = answer
-        with fenced(run):
-            owned(run).update(work=run.work)
-        return answer
-    try:
-        run.profile.summary = synthesize_overview(run.profile.identity, run.profile.statistics, run.profile.languages, projects, run.profile.coverage, resumable_outline)
-        run.profile.summary_kind = '+'.join(sorted(model.providers)) or 'factual'
-    except ServiceError as exc:
-        run.profile.warnings.append({'resource': 'overview', 'detail': str(exc)})
+    run.profile.summary = synthesize_overview(run.profile.identity, run.profile.statistics,
+        run.profile.languages, projects, run.profile.coverage)
+    run.profile.summary_kind = 'factual'
     # Final student assessment and completion commit together; retries cannot duplicate it.
     with fenced(run):
         sync.save_snapshot(run)
@@ -197,14 +194,14 @@ def finalize(run):
         from notifications.services import notify_profile_processed
         notify_profile_processed(result['student_id'], 'github', run.pk)
         owned(run).update(status='completed', progress='GitHub agent profile saved', result=result,
-            stage='done', lease_token=None, lease_expires_at=None, updated_at=timezone.now())
+            stage='done', work=run.work, lease_token=None, lease_expires_at=None, updated_at=timezone.now())
 
 
 def skip_failed_resource(run, error):
     run.profile.warnings.append({'resource': run.stage, 'detail': error})
     if run.stage == 'inventory':
         # Incomplete inventory must never retire previously saved repos.
-        run.stage = 'organizations'
+        run.stage = 'inventory_done' if run.work.get('mode') == 'inventory' else 'organizations'
         run.work['organization_page'] = 1
         run.profile.organizations = []
     elif run.stage == 'organizations':
@@ -226,10 +223,23 @@ from pure_multi_agent.telemetry import trace_github_slice
 def execute_slice(run):
     try:
         sync.pulse(run)
+        if run.work.get('mode') != 'inventory':
+            from rest_framework.exceptions import ValidationError
+            try:
+                selected = sync.validate_selection(run.work.get('selected_repository_ids'))
+            except ValidationError as exc:
+                raise ServiceError('Choose up to five repositories on the GitHub page before starting analysis.') from exc
+            if not set(run.work.get('repositories', [])) <= set(selected):
+                raise ServiceError('Analysis contains repositories outside the student selection.')
         if (timezone.now()-run.created_at).total_seconds() > settings.GITHUB_RUN_MAX_SECONDS:
             raise ServiceError('Extraction time budget reached. Saved data is retained; sync again to continue.')
         if run.stage == 'finalize':
             finalize(run)
+            return
+        if run.stage == 'inventory_done':
+            release(run, status='completed', stage='done', work=run.work,
+                progress='Repositories ready. Select up to five to analyse.',
+                result={'status': 'success', 'mode': 'inventory'})
             return
         emit('AGENT_PROGRESS', 'GitHub authentication', outputs={'summary': 'Checking the saved GitHub connection and obtaining authorized access.'})
         access = sync.get_valid_access_token(run.profile.connection)

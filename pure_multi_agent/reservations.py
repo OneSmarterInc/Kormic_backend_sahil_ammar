@@ -3,11 +3,11 @@
 import json
 
 
-CLAUDE_OUTPUT = {'routing': 1024, 'general': 6000, 'evidence': 6000, 'document': 6000}
+CLAUDE_OUTPUT = {'routing': 512, 'general': 2400, 'evidence': 3200, 'document': 4000}
 
 
 def claude_output_allowance(profile):
-    return CLAUDE_OUTPUT.get(profile, 6000)
+    return CLAUDE_OUTPUT.get(profile, 2400)
 
 
 def _input_size(value):

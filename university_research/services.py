@@ -145,12 +145,14 @@ def retrieve(row, question=''):
         selected = list(facts.filter(query)[:10]) if tokens else list(facts[:10])
     from .agent import normalize
     selected = [fact for fact in selected if fact.page.provider in ('scraper_extracted', 'claude_research') or normalize(fact.source_quote) in normalize(fact.page.content)]
-    return {'university': reference(row), 'provider_answer': None, 'facts': [{'topic': f.topic, 'content': f.content,
+    evidence = {'university': reference(row), 'provider_answer': None, 'facts': [{'topic': f.topic, 'content': f.content,
           'provider': f.page.provider, 'source_url': f.page.url, 'source_title': f.page.title, 'source_quote': f.source_quote, 'fetched_at': f.fetched_at.isoformat()} for f in selected],
         'saved_knowledge': [],
         'courses': list(row.courses.exclude(page__provider='claude_direct').values('name', 'level', 'duration', 'study_mode', 'tuition', 'currency', 'seats', 'academic_year', 'requirements', 'source_quote', 'page__url', 'fetched_at')[:100]),
         'intakes': list(row.intakes.exclude(page__provider='claude_direct').values('course_name', 'term', 'year', 'deadline', 'applicant_scope', 'page__url', 'fetched_at')[:30]),
         'limits': 'Website coverage is partial. Only documented details are known; empty fields are unknown.'}
+    from universities.information import overlay_research
+    return overlay_research(row, evidence)
 
 
 def save_live_page(row, page, question=''):

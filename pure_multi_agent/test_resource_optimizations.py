@@ -15,7 +15,7 @@ class ResourceOptimizationTests(SimpleTestCase):
         prompt = [HumanMessage(content='Classify this message')]
         self.assertLess(reservation_estimate(prompt, profile='routing'),
             reservation_estimate(prompt, profile='general'))
-        self.assertEqual(claude_output_allowance('routing'), 1024)
+        self.assertEqual(claude_output_allowance('routing'), 512)
         self.assertGreater(reservation_estimate([HumanMessage(content=[
             {'type': 'image_url', 'image_url': 'data:image/png;base64,placeholder'}])], profile='routing'),
             reservation_estimate(prompt, profile='routing'))

@@ -16,8 +16,16 @@ class ProjectFinding(BaseModel):
 
 def eligible(path):
     p = PurePosixPath(path)
-    blocked = {'node_modules', 'vendor', 'dist', 'build', '.git', '.venv', '__pycache__'}
-    if set(p.parts) & blocked or p.name.startswith('.env') or p.suffix.lower() in {'.pem', '.key', '.lock', '.svg'}:
+    blocked = {'node_modules', 'vendor', 'dist', 'build', '.git', '.venv', 'venv', '__pycache__', '.next', '.nuxt', 'coverage'}
+    name = p.name.lower()
+    lockfiles = {'package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'bun.lockb',
+                 'composer.lock', 'pipfile.lock', 'poetry.lock', 'uv.lock', 'yarn.lock',
+                 'cargo.lock', 'packages.lock.json'}
+    generated_suffixes = ('.min.js', '.min.css', '.map', '.generated.ts', '.generated.js',
+                          '.g.cs', '.g.dart', '.freezed.dart', '_pb2.py', '_pb2_grpc.py', '.pb.go')
+    if (set(part.lower() for part in p.parts) & blocked or name.startswith('.env')
+            or name in lockfiles or name.endswith(generated_suffixes)
+            or p.suffix.lower() in {'.pem', '.key', '.lock', '.svg'}):
         return False
     return p.suffix.lower() in {'.py', '.js', '.jsx', '.ts', '.tsx', '.go', '.rs', '.java', '.md', '.toml', '.json', '.yml', '.yaml', '.sql', '.cs', '.rb', '.html', '.css', '.scss', '.c', '.cpp', '.h', '.php', '.swift', '.kt', '.dart', '.r'} or p.name in {'Dockerfile', 'requirements.txt', 'go.mod'}
 

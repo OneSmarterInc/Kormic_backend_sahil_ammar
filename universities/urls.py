@@ -2,8 +2,13 @@ from django.urls import path
 
 from universities import views
 from universities.department_users import DepartmentUsersView
+from universities.information_views import InformationListView, ResearchInformationDetailView, InformationOverviewView, InformationEntitiesView
 
 urlpatterns = [
+    path("information/", InformationListView.as_view(), name="university-information"),
+    path("information/entities/", InformationEntitiesView.as_view(), name="university-information-entities"),
+    path("information/overview/", InformationOverviewView.as_view(), name="university-information-overview"),
+    path("information/research/<str:kind>/<int:record_id>/", ResearchInformationDetailView.as_view(), name="university-research-information"),
     path("department-users/", DepartmentUsersView.as_view(), name="department-users"),
     path("profile/", views.UniversityProfileAPIView.as_view(), name="university-admin-profile"),
     path(

@@ -5,6 +5,26 @@ from .pipeline import RoutedModel
 
 
 class LinkedInRoutingTests(SimpleTestCase):
+    def test_text_pipeline_uses_extraction_only_and_preserves_validated_sections(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from .pipeline import extract
+        from .schemas import ImageObservation
+        source = 'Education\nCity College\nDiploma'
+        payload = {'education': [{'institution': 'City College', 'degree': 'Diploma', 'evidence': source}]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'linkedin.txt'
+            path.write_text(source, encoding='utf-8')
+            with patch('pure_multi_agent.model_router.invoke', return_value=SimpleNamespace(content=json.dumps(payload))) as paid:
+                result = extract([str(path)])
+        self.assertTrue(result['education'])
+        self.assertTrue(paid.call_count)
+        for call in paid.call_args_list:
+            self.assertFalse(call.args[0][0].content.startswith('You control'))
+        self.assertEqual(result['education'][0]['institution'], 'City College')
+        self.assertEqual([step['action'] for step in result['agent_trace'][0]['actions']], ['extract', 'finish'])
+
     @patch('pure_multi_agent.model_router.invoke')
     def test_json_contract_reaches_primary_router_without_extra_call(self, invoke):
         invoke.return_value = SimpleNamespace(content='{"action":"finish"}')

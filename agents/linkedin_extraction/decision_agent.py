@@ -80,7 +80,7 @@ class DecisionPhotoAgent:
         self.max_steps, self.max_calls, self.max_seconds = max_steps, max_calls, max_seconds
         self.trace, self.warnings, self.evidence_source = [], [], ""
 
-    def extract(self, source, section="AUTO", reread=None, on_event=None):
+    def extract(self, source, section="AUTO", reread=None, on_event=None, plan_locally=False):
         if section != "AUTO" and section not in SECTION_FIELDS:
             raise ValueError("Unknown upload section")
         self.trace, self.warnings = [], []
@@ -150,8 +150,13 @@ class DecisionPhotoAgent:
                 "ocr_retries_remaining": 2 - retries if reread else 0,
             }
             try:
-                response = budget.invoke([("system", CONTROLLER_PROMPT), ("human", json.dumps(state))], format="json")
-                action = parse_action(response.content)
+                if plan_locally and reread is None:
+                    remaining = sorted(required - attempted)
+                    action = ({'action': 'extract', 'chunk': remaining[0]} if remaining else
+                              {'action': 'finish' if fact_count(combined) else 'request_clearer_image'})
+                else:
+                    response = budget.invoke([("system", CONTROLLER_PROMPT), ("human", json.dumps(state, separators=(',', ':')))], format="json")
+                    action = parse_action(response.content)
                 signature = json.dumps(action, sort_keys=True)
                 usage[signature] = usage.get(signature, 0) + 1
                 if usage[signature] > 2:

@@ -3,6 +3,8 @@ import hashlib
 import json
 
 from langchain_core.tools import tool
+from langchain_core.messages import SystemMessage
+from pure_multi_agent.chat_cost_controls import compact_json
 
 PAGE_CHARS = 4000
 DEFERRED = {
@@ -11,6 +13,36 @@ DEFERRED = {
     'propose_admission_requirement': 'Add or update a structured admission requirement.',
     'propose_department_contact': 'Change a department escalation contact.',
 }
+
+
+def fit_history(prompt, messages, tools, *, protected_message=None, output_tokens=None):
+    """Fit whole recent turns; retain the current turn and checkpoint originals."""
+    from pure_multi_agent.qwen_context import select_context, ContextBudgetExceeded
+
+    remaining = list(messages)
+    protected_message = protected_message or next(
+        (message for message in reversed(remaining) if message.type == 'human'), None)
+    omitted = 0
+    while True:
+        notice = [SystemMessage(content=(
+            f'{omitted} older conversation turns are outside this request window. '
+            'They remain saved. Use read_portal_tab(tab="assistant_chat", query=..., page=...) '
+            'for prior details before relying on them. Current saved proposal state and '
+            'current user instructions remain authoritative; do not invent missing context.'
+        ))] if omitted else []
+        try:
+            select_context([SystemMessage(content=prompt), *notice, *remaining],
+                           tools, profile='evidence', output_tokens=output_tokens)
+            return [*notice, *remaining]
+        except ContextBudgetExceeded:
+            human = [i for i, message in enumerate(remaining) if message.type == 'human']
+            protected_index = next((i for i, message in enumerate(remaining)
+                                    if message is protected_message), 0)
+            if len(human) < 2 or human[1] > protected_index:
+                # Never silently cut the current question, evidence page or tool chain.
+                raise
+            remaining = remaining[human[1]:]
+            omitted += 1
 
 
 def prepare(ctx, messages, all_tools):
@@ -29,7 +61,7 @@ def prepare(ctx, messages, all_tools):
                 projected.append(message)
             else:
                 page = json.loads(message.content)
-                projected.append(message.model_copy(update={'content': json.dumps({
+                projected.append(message.model_copy(update={'content': compact_json({
                     key: value for key, value in page.items() if key != 'content'
                 })}))
             continue
@@ -41,7 +73,7 @@ def prepare(ctx, messages, all_tools):
             continue
         # Old tool output remains retrievable; keep call/result pairing intact.
         preview = content[:PAGE_CHARS] if index == latest else ''
-        projected.append(message.model_copy(update={'content': json.dumps({
+        projected.append(message.model_copy(update={'content': compact_json({
             'evidence_id': reference, 'total_characters': len(content),
             'content': preview, 'next_offset': len(preview),
             'instruction': 'Partial evidence. Use read_officer_evidence for remaining text before '

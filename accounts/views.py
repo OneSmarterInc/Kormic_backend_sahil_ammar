@@ -684,17 +684,16 @@ class GitHubOAuthCallbackView(APIView):
             connection_activity(state, user, 'RUN_ERROR', 'GitHub Agent could not complete the connection.', error='GitHub authorization or identity verification failed.')
             return self._failure(str(exc))
 
-        # Connecting an account automatically begins the same durable extraction
-        # used by the profile Sync button and the student's LangGraph tools.
+        # Only discover names after connection. Analysis waits for explicit selection.
         try:
-            from github_profiles.sync import queue_sync
+            from github_profiles.sync import queue_inventory
             if user.account.student_uuid:
-                sync_run = queue_sync(user.account.student_uuid)
-                connection_activity(state, user, 'AGENT_PROGRESS', 'GitHub Agent queued repository analysis.', job_id=str(sync_run.pk))
+                sync_run = queue_inventory(user.account.student_uuid)
+                connection_activity(state, user, 'AGENT_PROGRESS', 'Collecting repository names for selection; analysis has not started.', job_id=str(sync_run.pk))
         except Exception:
             import logging
-            logging.getLogger(__name__).exception('GitHub connected but initial sync could not be queued')
-            connection_activity(state, user, 'AGENT_STEP_ERROR', 'GitHub connected, but repository analysis could not be queued.', error='Repository analysis was not queued; retry Sync.')
+            logging.getLogger(__name__).exception('GitHub connected but repository discovery could not be queued')
+            connection_activity(state, user, 'AGENT_STEP_ERROR', 'GitHub connected, but repository names could not be collected.', error='Refresh the repository list to retry.')
         connection_activity(state, user, 'RUN_COMPLETE', 'GitHub Agent completed the account connection.', github_username=connection.github_username)
         return self._success(connection.github_username)
 

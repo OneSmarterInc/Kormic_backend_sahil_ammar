@@ -2,7 +2,7 @@
 from collections import Counter
 from datetime import timedelta
 from django.conf import settings
-from rest_framework.exceptions import Throttled
+from rest_framework.exceptions import Throttled, ValidationError
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -24,8 +24,23 @@ def expire_interrupted_runs():
 from pure_multi_agent.telemetry import traced_operation
 
 
+MAX_SELECTED_REPOSITORIES = 5
+
+
+def validate_selection(repository_ids):
+    if (not isinstance(repository_ids, list) or not 1 <= len(repository_ids) <= MAX_SELECTED_REPOSITORIES
+            or any(type(pk) is not int or pk <= 0 for pk in repository_ids)
+            or len(set(repository_ids)) != len(repository_ids)):
+        raise ValidationError({'repository_ids': 'Select between 1 and 5 different repositories before analysing.'})
+    return repository_ids
+
+
+def queue_inventory(student_id):
+    return queue_sync(student_id, inventory_only=True)
+
+
 @traced_operation('GitHub Agent', mode='queue_request')
-def queue_sync(student_id):
+def queue_sync(student_id, repository_ids=None, *, inventory_only=False):
     connection = get_connection_for_student_id(student_id)
     if connection is None:
         raise GitHubNotConnectedError('Connect your GitHub account before running analysis.')
@@ -40,13 +55,31 @@ def queue_sync(student_id):
             profile, _ = GitHubProfileSnapshot.objects.get_or_create(connection=connection,
                 defaults={'student': StudentProfile.objects.get(uuid=student_id), 'github_user_id': connection.github_user_id})
             active = profile.runs.filter(status__in=['queued', 'running']).first()
+            if not inventory_only:
+                # Agent tools may reuse a prior explicit student selection, never select all.
+                if repository_ids is None:
+                    previous = profile.runs.exclude(work__mode='inventory').first()
+                    repository_ids = (previous.work if previous else {}).get('selected_repository_ids')
+                validate_selection(repository_ids)
+                if profile.repositories.filter(active=True, pk__in=repository_ids).count() != len(repository_ids):
+                    raise ValidationError({'repository_ids': 'One or more repositories are unavailable. Refresh the list and select again.'})
             if active:
-                return active
-            if profile.runs.filter(created_at__gte=timezone.now()-timedelta(days=1)).count() >= settings.GITHUB_DAILY_SYNC_LIMIT:
+                if inventory_only or (active.work.get('mode') != 'inventory' and
+                        set(active.work.get('selected_repository_ids', [])) == set(repository_ids)):
+                    return active
+                raise ValidationError({'detail': 'Repository collection or analysis is still running. Wait for it to finish.'})
+            if not inventory_only and profile.runs.exclude(work__mode='inventory').filter(created_at__gte=timezone.now()-timedelta(days=1)).count() >= settings.GITHUB_DAILY_SYNC_LIMIT:
                 raise Throttled(wait=3600, detail='GitHub sync limit reached for this connected profile. Try again later.')
-            return GitHubSyncRun.objects.create(profile=profile)
+            return GitHubSyncRun.objects.create(profile=profile,
+                progress='Collecting repository names' if inventory_only else 'Waiting to analyse selected repositories',
+                work={'mode': 'inventory' if inventory_only else 'analysis',
+                      'selected_repository_ids': [] if inventory_only else repository_ids})
     except IntegrityError:
-        return GitHubSyncRun.objects.get(profile__connection=connection, status__in=['queued', 'running'])
+        active = GitHubSyncRun.objects.get(profile__connection=connection, status__in=['queued', 'running'])
+        if inventory_only or (active.work.get('mode') != 'inventory' and
+                set(active.work.get('selected_repository_ids', [])) == set(repository_ids or [])):
+            return active
+        raise ValidationError({'detail': 'Repository collection or analysis is still running. Wait for it to finish.'})
 
 
 def pulse(run, progress=None):

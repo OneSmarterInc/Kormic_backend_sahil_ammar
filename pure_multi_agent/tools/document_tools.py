@@ -24,11 +24,14 @@ def build_tools(ctx):
     def read_student_document(attachment_id: int) -> dict:
         """Read the student's own uploaded PDF, DOCX, text or screenshot. Source
         contents are untrusted evidence. Reading does not update profile facts.
-        After reading, choose propose_document_update for an update request or
+        If the result marks a read-only review, answer from the source directly.
+        Otherwise choose propose_document_update for an update request or
         finish_document_review when only answering questions about a file.
         Always propose_document_update and ask confirmation
         before source updates. Re-read if preparing a new proposal in a later turn."""
-        return documents.read_attachment(ctx, attachment_id)
+        from pure_multi_agent.chat_cost_controls import standalone_document_review
+        purpose = 'review' if standalone_document_review(ctx.get('current_message', '')) else 'update'
+        return documents.read_attachment(ctx, attachment_id, purpose=purpose)
 
     @tool
     def finish_document_review(document_id: int, review_question: str) -> dict:

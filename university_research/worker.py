@@ -12,6 +12,7 @@ from pure_multi_agent.capacity import AgentBusy
 from .models import ResearchRun, UniversityPage, UniversityFact, UniversityCourse, UniversityIntake
 from .agent import graph_for
 from pure_multi_agent.model_router import InvalidLocalToolResponse
+from pure_multi_agent.qwen_context import ContextBudgetExceeded
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,9 @@ def finish_research(run, state):
     try:
         page = search_official_evidence(run.university.website,
             'courses, tuition fees, admissions requirements and deadlines, scholarships, housing, amenities and contacts',ctx={})
-        if not any(page.get('catalogue',{}).get(k) for k in ('description','facts','courses','intakes')):
+        if not any(page.get('catalogue',{}).get(k) for k in (
+                'description', 'contact_email', 'contact_phone', 'eligibility_criteria',
+                'facts', 'courses', 'intakes', 'scholarships')):
             raise ValueError('Research returned no usable university information.')
         with transaction.atomic():
             if not owned(run).select_for_update().exists():
@@ -159,6 +162,14 @@ def work_once():
         else:
             release(run, status='queued', state=output, steps=run.steps+1, attempts=0, available_at=timezone.now(),
                 progress=f"Researching official pages ({len(output.get('pages', {}))}/8 read)")
+    except ContextBudgetExceeded:
+        # Replaying the same oversized checkpoint cannot succeed. Use the
+        # pipeline's existing partial-publication / budgeted research fallback.
+        state['messages'] = messages_to_dict(state.get('messages', []))
+        try:
+            finish_research(run, state)
+        except (CapacityBusy, AgentBusy) as exc:
+            release(run, status='queued', available_at=timezone.now()+timedelta(seconds=getattr(exc, 'delay', 10)), progress='Waiting for AI capacity; collected evidence is saved')
     except InvalidLocalToolResponse:
         # Argument repair is local-only. Do not pay Claude to repair a tool
         # schema, or retry the identical checkpoint repeatedly.

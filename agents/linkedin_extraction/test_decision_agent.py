@@ -13,6 +13,32 @@ def response(payload):
 
 
 class DecisionLoopTests(SimpleTestCase):
+    def test_text_workflow_extracts_without_paid_planning(self):
+        llm = self.model([], {'education': [{'institution': 'City College', 'degree': 'Diploma',
+                                           'evidence': 'City College\nDiploma'}]})
+        agent = DecisionPhotoAgent(llm, validate_data)
+        result, calls = agent.extract('City College\nDiploma', 'EDUCATION', plan_locally=True)
+        self.assertEqual(len(result.education), 1)
+        self.assertEqual(calls, 1)
+        self.assertEqual([e['action'] for e in agent.trace], ['extract', 'finish'])
+
+    def test_text_planning_covers_every_chunk_and_preserves_busy_signal(self):
+        from github_profiles.scheduling import CapacityBusy
+        llm = Mock(invoke=Mock(side_effect=CapacityBusy()))
+        with self.assertRaises(CapacityBusy):
+            DecisionPhotoAgent(llm, validate_data).extract('City College\nDiploma', 'EDUCATION', plan_locally=True)
+        self.assertEqual(llm.invoke.call_count, 1)
+        source = 'City College\nDiploma\n' + 'Supporting detail ' * 400
+        agent = DecisionPhotoAgent(llm, validate_data, max_steps=1)
+        with patch('agents.linkedin_extraction.decision_agent.AutonomousPhotoAgent') as worker:
+            worker.return_value.extract.return_value = (ImageObservation(education=[
+                {'institution': 'City College', 'evidence': 'City College'}]), 1)
+            worker.return_value.warnings = []
+            agent.extract(source, 'EDUCATION', plan_locally=True)
+        from .decision_agent import chunks
+        self.assertEqual(worker.return_value.extract.call_count, len(list(chunks(source))))
+        self.assertEqual(agent.evidence_source, source)
+
     def test_busy_capacity_is_not_retried_as_bad_extraction(self):
         from github_profiles.scheduling import CapacityBusy
         model = Mock(invoke=Mock(side_effect=CapacityBusy()))

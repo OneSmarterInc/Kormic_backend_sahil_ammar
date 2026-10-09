@@ -82,6 +82,11 @@ def direct_reply(ctx):
     if not ctx.get('canonical_student_id') or ctx.get('chat_attachments') or ctx.get('documents_read'):
         return None
     text = ctx.get('current_message', '')
+    import re
+    if re.fullmatch(r'\s*(?:hi|hello|hey)[!.]*\s*', text, re.I):
+        return 'Hello! What would you like help with—your profile, university options, or an application?'
+    if re.fullmatch(r'\s*(?:thanks|thank you|thanks a lot)[!.]*\s*', text, re.I):
+        return 'You’re welcome!'
     if standalone_github_connection(text) and not (ctx.get('student_profile') or {}).get('github'):
         return ANSWERS['github_connection']
     if standalone_resume_review(text):

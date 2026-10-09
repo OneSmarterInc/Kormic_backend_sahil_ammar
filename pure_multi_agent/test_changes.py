@@ -189,6 +189,84 @@ class DocumentTests(TestCase):
         self.assertEqual(documents.unfinished_documents(str(self.student.uuid)), {})
 
     @override_settings(AGENT_DISTRIBUTED_LIMITS=False)
+    def test_pdf_review_reads_full_text_then_uses_one_answer_call(self):
+        from reportlab.pdfgen import canvas
+        from pure_multi_agent.student_graph import build_student_agent
+        path = Path(self.temp.name) / 'review.pdf'
+        pdf = canvas.Canvas(str(path))
+        pdf.drawString(40, 750, 'Asha Raman GPA 3.8/4.0')
+        pdf.drawString(40, 50, 'Final source detail: Python and SQL')
+        pdf.save()
+        self.attachment.file_path, self.attachment.content_type = str(path), 'application/pdf'
+        self.attachment.save()
+        self.ctx.update(current_message='Summarize this PDF', chat_attachments=[{'id': self.attachment.pk}],
+                        profile_action_checked=True, clarification_checked=True)
+        def model(messages, tools, **kwargs):
+            read = [json.loads(m.content) for m in messages if m.type == 'tool']
+            self.assertEqual(len(read), 1)
+            self.assertIn('Final source detail: Python and SQL', read[0]['text'])
+            self.assertFalse(kwargs['require_tools'])
+            self.assertNotIn('university adviser', messages[0].content)
+            self.assertNotIn('propose_document_update', {t.name for t in tools})
+            self.assertLess(len(messages[0].content), 1500)
+            return AIMessage(content='The document states GPA 3.8/4.0 and Python and SQL skills.')
+        with mock.patch('pure_multi_agent.model_router.invoke', side_effect=model) as paid:
+            agent = build_student_agent(self.ctx, 'Assist the student.', InMemorySaver())
+            result = agent.invoke({'messages': [HumanMessage(content=self.ctx['current_message'])]},
+                                  {'configurable': {'thread_id': 'pdf-review-cost'}})
+        paid.assert_called_once()
+        self.assertIn('Python and SQL', result['messages'][-1].content)
+        self.assertEqual(documents.unfinished_documents(str(self.student.uuid)), {})
+        self.assertFalse(AgentChangeProposal.objects.exists())
+        self.assertFalse(ResumeUpload.objects.exists())
+        self.student.refresh_from_db()
+        self.assertEqual((self.student.name, self.student.gpa), ('Asha', 3.4))
+
+    @override_settings(AGENT_DISTRIBUTED_LIMITS=False)
+    def test_concept_answer_uses_one_call_with_answer_validation(self):
+        from pure_multi_agent.student_graph import build_student_agent
+        self.ctx.update(current_message='What is a semester?', profile_action_checked=True, clarification_checked=True)
+        def model(messages, tools, **kwargs):
+            self.assertTrue(callable(kwargs['response_validator']))
+            self.assertNotIn('json_schema', kwargs)
+            self.assertEqual(messages[-1].content, 'What is a semester?')
+            self.assertLess(len(messages[0].content), 1000)
+            self.assertNotIn('Saved profile', messages[0].content)
+            return AIMessage(content='A semester is an academic term within a university year.')
+        with mock.patch('pure_multi_agent.model_router.invoke', side_effect=model) as paid:
+            agent = build_student_agent(self.ctx, 'Assist the student.', InMemorySaver())
+            agent.invoke({'messages': [HumanMessage(content=self.ctx['current_message'])]},
+                         {'configurable': {'thread_id': 'concept-cost'}})
+        paid.assert_called_once()
+
+    @override_settings(AGENT_DISTRIBUTED_LIMITS=False)
+    def test_explicit_profile_review_reads_fresh_evidence_and_uses_one_answer_call(self):
+        from pure_multi_agent.student_graph import build_student_agent
+        self.ctx.update(current_message='Review my academic profile in detail',
+                        profile_action_checked=True, clarification_checked=True)
+        def model(messages, tools, **kwargs):
+            evidence = [json.loads(m.content) for m in messages if m.type == 'tool']
+            self.assertEqual(evidence[0]['profile']['gpa'], 3.4)
+            self.assertIn('conversation_assumptions', evidence[0])
+            self.assertIn('document_availability', evidence[0])
+            self.assertTrue(callable(kwargs['response_validator']))
+            return AIMessage(content='Your saved GPA is 3.4/4.0. Choose a target programme to identify the requirements to check.')
+        with mock.patch('pure_multi_agent.model_router.invoke', side_effect=model) as paid:
+            agent = build_student_agent(self.ctx, 'Assist the student.', InMemorySaver())
+            agent.invoke({'messages': [HumanMessage(content=self.ctx['current_message'])]},
+                         {'configurable': {'thread_id': 'profile-review-cost'}})
+        paid.assert_called_once()
+        self.assertFalse(AgentChangeProposal.objects.exists())
+
+    def test_compound_document_request_still_requires_proposal(self):
+        from pure_multi_agent.tools.document_tools import build_tools
+        self.ctx['current_message'] = 'Review my resume and update my profile'
+        tool = next(t for t in build_tools(self.ctx) if t.name == 'read_student_document')
+        read = tool.invoke({'attachment_id': self.attachment.pk})
+        self.assertTrue(self.ctx['documents_read'][str(read['document_id'])]['needs_proposal'])
+        self.assertTrue(documents.unfinished_documents(str(self.student.uuid)))
+
+    @override_settings(AGENT_DISTRIBUTED_LIMITS=False)
     def test_native_graph_requires_document_proposal_before_reply(self):
         from pure_multi_agent.student_graph import build_student_agent
         read = documents.read_attachment(self.ctx, self.attachment.pk)
@@ -305,9 +383,12 @@ class OfficerTests(TestCase):
         def model(messages, tools, **kwargs):
             calls.append([t.name for t in tools])
             last = messages[-1]
-            if last.type == 'tool' and last.name != 'enable_officer_tool':
+            if last.type == 'tool' and last.name not in ('enable_officer_tool', 'university_change_status'):
                 return AIMessage(content='Please confirm.' if 'pending' in last.content else 'Saved.')
-            if last.content == 'yes':
+            if last.type == 'tool' and last.name == 'university_change_status':
+                # The initial status read is now dispatched without a paid model call.
+                self.assertEqual(next(m.content for m in reversed(messages) if m.type == 'human'), 'yes')
+                self.assertIn('pending', last.content)
                 proposal = AgentChangeProposal.objects.get(status='pending')
                 name, args = 'resolve_university_change', {'proposal_id': str(proposal.pk), 'decision': 'approve', 'confirmation_message': 'yes'}
             elif 'propose_knowledge_change' not in {t.name for t in tools}:

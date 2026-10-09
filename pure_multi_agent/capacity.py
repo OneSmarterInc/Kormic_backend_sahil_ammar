@@ -116,21 +116,15 @@ class LimitedMessages:
         self.messages = messages
 
     def create(self, **kwargs):
-        skip_qwen = kwargs.pop('_skip_qwen', False)
-        if not skip_qwen:
-            try:
-                from pure_multi_agent.legacy_qwen import create
-                return create(**kwargs)
-            except Exception as exc:
-                from github_profiles.scheduling import CapacityBusy
-                if isinstance(exc, CapacityBusy):
-                    raise
-                import logging
-                logging.getLogger(__name__).info('Qwen unavailable for legacy agent call; using Claude (%s)', type(exc).__name__)
+        kwargs.pop('_skip_qwen', None)
+        from pure_multi_agent.claude_policy import prepare_sdk, measured_create
+        kwargs = prepare_sdk(kwargs)
         with model_slot():
-            return self.messages.create(**kwargs)
+            return measured_create(self.messages, kwargs)
+
 
 
 def limited_client(client):
+    client.max_retries = 0
     client.messages = LimitedMessages(client.messages)
     return client
