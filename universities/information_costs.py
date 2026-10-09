@@ -9,6 +9,22 @@ def normalized(value):
 def place_costs(records):
     targets = [r for r in records if r['details'].get('information_type') in {'academics', 'housing'}]
     by_id = {str(r['id']): r for r in targets}
+    # Normalize each target once, not once for every fee. This is request-local
+    # so edits are immediately visible and universities never share cached data.
+    prepared = []
+    for target in targets:
+        kind = target['details']['information_type']
+        name = target['details'].get('name') or target['topic']
+        aliases = [normalized(name)]
+        code = target['details'].get('program_code')
+        if code:
+            aliases.append(normalized(code))
+        if kind == 'housing':
+            if re.search(r'tuition|fees|services|housing options|residence halls|^apartments$', name, re.I):
+                continue
+            alias = re.sub(r'\b(the|apartments|hall|community)\b', '', aliases[0])
+            aliases.append(' '.join(alias.split()))
+        prepared.append((target, kind, tuple(f' {alias} ' for alias in aliases if len(alias) >= 5)))
     for record in records:
         if record['details'].get('information_type') != 'fees':
             continue
@@ -25,25 +41,14 @@ def place_costs(records):
             details = record['details']
             evidence = normalized(' '.join(str(details.get(key, '')) for key in ['name', 'program', 'table_context', 'charge_label']))
             matches = []
-            for target in targets:
-                kind = target['details']['information_type']
-                if kind == 'academics' and re.search(r'\b(programs|college|school|department)\b', evidence):
+            broad_academic_rate = re.search(r'\b(programs|college|school|department)\b', evidence)
+            padded_evidence = f' {evidence} '
+            for target, kind, aliases in prepared:
+                if kind == 'academics' and broad_academic_rate:
                     # A college-wide M.S. rate is not evidence for a single M.S.
                     # program whose title happens to be a substring of it.
                     continue
-                name = target['details'].get('name') or target['topic']
-                aliases = [normalized(name)]
-                code = target['details'].get('program_code')
-                if code:
-                    aliases.append(normalized(code))
-                if kind == 'housing':
-                    alias = re.sub(r'\b(the|apartments|hall|community)\b', '', normalized(name))
-                    alias = ' '.join(alias.split())
-                    if len(alias) >= 5:
-                        aliases.append(alias)
-                    if re.search(r'tuition|fees|services|housing options|residence halls|^apartments$', name, re.I):
-                        continue
-                if any(len(alias) >= 5 and f' {alias} ' in f' {evidence} ' for alias in aliases):
+                if any(alias in padded_evidence for alias in aliases):
                     matches.append(target)
             if len(matches) == 1:
                 target = matches[0]

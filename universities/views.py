@@ -132,7 +132,12 @@ class UniversityProfileAPIView(APIView):
         university = _get_own_university(request)
         if university is None:
             return _error("No university profile found for this account.", status.HTTP_404_NOT_FOUND)
-        return Response(_serialize_profile(university))
+        profile = _serialize_profile(university)
+        # The portal shell only needs profile/setup fields. Sources have their
+        # own endpoint; retain the original response for existing clients.
+        if request.query_params.get('include_sources') == 'false':
+            profile.pop('scrape_urls', None)
+        return Response(profile)
 
     def patch(self, request):
         university = _get_own_university(request)

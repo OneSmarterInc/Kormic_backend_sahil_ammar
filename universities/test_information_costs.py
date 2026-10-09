@@ -10,6 +10,23 @@ def record(pk, name, kind, **details):
 
 @override_settings(UNIVERSITY_VECTOR_SEARCH=False)
 class InformationCostTests(TestCase):
+    def test_compact_profile_preserves_setup_without_downloading_sources(self):
+        client, uid = make_university_client()
+        full = client.get('/api/university-admin/profile/').data
+        compact = client.get('/api/university-admin/profile/?include_sources=false').data
+        self.assertIn('scrape_urls', full)
+        self.assertEqual(compact, {key: value for key, value in full.items() if key != 'scrape_urls'})
+
+    def test_duplicate_aliases_remain_ambiguous_and_word_boundaries_are_preserved(self):
+        rows = place_costs([
+            record(1, 'The Woods', 'housing'), record(2, 'Woods Hall', 'housing'),
+            record(3, 'Woods Double', 'fees'), record(4, 'Woodstock rent', 'fees'),
+            record(5, 'Woods Double', 'fees', cost_owner='housing:1'),
+        ])
+        self.assertEqual(rows[2]['cost_placement']['scope'], 'review')
+        self.assertEqual(rows[3]['cost_placement']['scope'], 'review')
+        self.assertEqual(rows[4]['cost_placement'], {'scope': 'housing', 'target_id': 1})
+
     def test_placement_keeps_costs_with_unique_owner_and_does_not_guess_ambiguous_tuition(self):
         rows = place_costs([
             record(1, 'Computer Science, MS', 'academics'),
