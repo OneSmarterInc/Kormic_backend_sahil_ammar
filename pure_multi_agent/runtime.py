@@ -369,6 +369,35 @@ def run_turn(
     if VERBOSE:
         console.print(f"[bold magenta]=== turn complete ({tracer._step} model call(s)) ===[/bold magenta]\n")
 
+    # --- MeshKor Integration (Phase 3.4: Telemetry in Chat Flow) ---
+    try:
+        from agents.meshkor_client import meshkor_client
+        from agents.identity_registry import student_identity
+        import hashlib
+        asker = student_identity(student_id)
+        if meshkor_client and asker and asker.ain:
+            q_hash = hashlib.sha256(message.encode("utf-8")).hexdigest() if message else ""
+            meshkor_client.record_event(
+                ain=asker.ain,
+                event_description="intent_classified",
+                event_data={"question_hash": q_hash, "intent": ctx.get("turn_intent", {}).get("route", "general")}
+            )
+            meshkor_client.record_event(
+                ain=asker.ain,
+                event_description="agent_received_message",
+                event_data={"question_hash": q_hash}
+            )
+            r_hash = hashlib.sha256(reply.encode("utf-8")).hexdigest() if reply else ""
+            meshkor_client.record_event(
+                ain=asker.ain,
+                event_description="agent_sent_message",
+                event_data={"reply_hash": r_hash, "provider": ctx.get("last_provider", "")}
+            )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"MeshKor chat telemetry failed: {e}. Falling open.")
+    # ----------------------------------------------------------------
+
     from pure_multi_agent.change_proposals import conversation_state
     turn_result = TurnResult(ctx['agent_name'], reply, {'model_provider': ctx.get('last_provider', ''), 'model_name': ctx.get('last_model', ''), 'university_references': list(ctx.get('university_references', {}).values()),
         'change_proposals': list(ctx.get('change_proposals', {}).values()), **conversation_state(ctx)})

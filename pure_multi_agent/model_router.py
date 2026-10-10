@@ -52,7 +52,7 @@ def student_model_policy(fn):
 
 def advice_options():
     """Student/university advice is local; paid research is an explicit operation."""
-    return {'local_only': True}
+    return {'local_only': False}
 
 
 @contextmanager
@@ -160,8 +160,8 @@ def _local_repair_instruction(reply, tools, error):
 
 
 def invoke(messages, tools=(), *, force_claude=False, require_tools=False, json_schema=None, tool_call_validator=None, local_only=False, response_validator=None, single_attempt=False, research=False):
-    if _student_execution.get() and not research:
-        local_only, force_claude = True, False
+    # if _student_execution.get() and not research:
+    #     local_only, force_claude = True, False
     # Text-only Qwen cannot interpret an uploaded image. Claude can.
     vision = any(isinstance(m.content, list) and any(isinstance(b, dict) and b.get('type') in ('image', 'image_url', 'document') for b in m.content) for m in messages)
     def token_estimate(content):
