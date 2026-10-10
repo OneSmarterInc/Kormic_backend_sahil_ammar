@@ -571,7 +571,9 @@ class DirectUniversityCrawler:
         normalized = normalize_url(url)
         if not normalized:
             return
-        if not self.domain_policy.is_allowed(normalized):
+        if self.full_site and normalized in self.seen:
+            return
+        if not self.domain_policy.is_in_scope(normalized):
             return
         allowed, _reason = hard_filter_url(normalized, self.include_documents)
         if not allowed:

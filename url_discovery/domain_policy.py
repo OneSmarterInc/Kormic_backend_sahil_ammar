@@ -89,15 +89,19 @@ class DomainPolicy:
             if item
         }
 
-    def is_allowed(self, url: str) -> bool:
+    def is_in_scope(self, url: str) -> bool:
+        """Cheap candidate filtering; every actual fetch still checks DNS."""
         parts = urlsplit(url)
         if parts.scheme.lower() not in {"http", "https"}:
             return False
         host = (parts.hostname or "").lower().rstrip(".")
-        if not host or is_private_or_local_host(host) or not resolves_to_public_ip(host):
+        if not host or is_private_or_local_host(host):
             return False
         if host in self.extra_domains:
             return True
         if self.include_subdomains:
             return root_domain(host) == self.root
         return host == self.base_host
+
+    def is_allowed(self, url: str) -> bool:
+        return self.is_in_scope(url) and resolves_to_public_ip(urlsplit(url).hostname or '')
