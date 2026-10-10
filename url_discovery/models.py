@@ -91,6 +91,8 @@ class DiscoveredUrl(models.Model):
     classification_reason = models.TextField(null=True, blank=True)
     exclusion_reason = models.TextField(null=True, blank=True)
     content_hash = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    html_snapshot = models.TextField(blank=True, default='')
+    rendered = models.BooleanField(default=False)
 
     discovered_at = models.DateTimeField(auto_now_add=True)
     crawled_at = models.DateTimeField(null=True, blank=True)

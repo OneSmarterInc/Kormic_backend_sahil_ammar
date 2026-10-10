@@ -109,6 +109,7 @@ def fetch_page(
     domain_policy: DomainPolicy | None = None,
     client: httpx.Client | None = None,
     on_document=None,
+    snapshot=None,
 ) -> str:
     """Fetch a page through the same SSRF/redirect/size policy as discovery."""
     policy = domain_policy or DomainPolicy(url, include_subdomains=True)
@@ -122,7 +123,7 @@ def fetch_page(
         )
 
     try:
-        status_code, headers, body, final_url = request_with_policy(
+        status_code, headers, body, final_url = snapshot or request_with_policy(
             client,
             url,
             policy,
@@ -366,10 +367,23 @@ def scrape_university(
             f"  [dim]Scraping ({index + 1}/{len(urls)}): {url[:80]}...[/dim]"
         )
 
+        from datetime import timedelta
+        from django.db.models import Q
+        from django.utils import timezone
+        from url_discovery.models import DiscoveredUrl
+        from url_discovery.url_normalizer import normalize_url
+        normalized = normalize_url(url) or url
+        cached = DiscoveredUrl.objects.filter(
+            job__university__uuid=university_id, crawled_at__gte=timezone.now() - timedelta(hours=24),
+            http_status__gte=200, http_status__lt=300,
+        ).filter(Q(normalized_url=normalized) | Q(final_url=normalized)).exclude(html_snapshot='').order_by('-crawled_at').first()
+        snapshot = (cached.http_status, {'content-type': 'text/html'}, cached.html_snapshot.encode('utf-8'),
+                    cached.final_url or cached.normalized_url) if cached else None
         page_text = fetch_page(
             url,
             domain_policy=DomainPolicy(url, include_subdomains=True),
             on_document=lambda document, source: _ingest_form_entities(university_id, document, source),
+            snapshot=snapshot,
         )
 
         if not page_text:

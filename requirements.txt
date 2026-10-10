@@ -131,3 +131,4 @@ fastembed==0.8.1
 
 pytesseract==0.3.13
 rapidocr-onnxruntime==1.4.4
+crawlee[beautifulsoup,playwright]==1.10.4

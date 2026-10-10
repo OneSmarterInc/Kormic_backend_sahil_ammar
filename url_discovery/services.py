@@ -155,7 +155,7 @@ def start_discovery(
         university=university,
         base_url=base_url,
         root_domain=root,
-        settings={"max_pages": capped_pages, "full_site": bool(full_site)},
+        settings={"max_pages": capped_pages, "full_site": bool(full_site), "crawler": "crawlee"},
         top_n=capped_top_n,
         auto_apply=bool(auto_apply),
     )
@@ -274,6 +274,8 @@ def serialize_job(job: DiscoveryJob) -> Dict[str, Any]:
         "top_n": job.top_n,
         "auto_apply": job.auto_apply,
         "full_site": bool(job.settings.get('full_site')),
+        "crawler": job.settings.get('crawler', 'legacy'),
+        "coverage": job.settings.get('coverage', {}),
         "pages_discovered": job.pages_discovered,
         "pages_crawled": job.pages_crawled,
         "relevant_count": job.relevant_count,

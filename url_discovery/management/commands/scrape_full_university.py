@@ -8,16 +8,17 @@ from django.utils import timezone
 
 from universities.models import University
 from universities.services import scrape_selected_urls
-from url_discovery.crawler import DirectUniversityCrawler
+from url_discovery.crawlee_runner import CrawleeUniversityCrawler
 from url_discovery.models import DiscoveryJob
 from url_discovery.services import apply_selected_urls, start_discovery
 
 
 class Command(BaseCommand):
-    help = 'Crawl every reachable public university page and extract through the normal knowledge pipeline.'
+    help = 'Run a bounded university crawl and extract through the normal knowledge pipeline.'
 
     def add_arguments(self, parser):
         parser.add_argument('university_uuid')
+        parser.add_argument('--max-pages', type=int, default=150, help='Page budget for a new crawl (20-400).')
         parser.add_argument('--resume', type=int, help='Resume an interrupted full-site job, retaining completed pages.')
         parser.add_argument('--reextract', action='store_true', help='Reprocess discovered pages after an extractor fix; keep manual edits.')
 
@@ -33,12 +34,12 @@ class Command(BaseCommand):
                 job.status, job.error_message = 'queued', ''
                 job.save(update_fields=['status', 'error_message', 'updated_at'])
         else:
-            job = start_discovery(university, full_site=True, auto_apply=False, dispatch=False)
+            job = start_discovery(university, max_pages=options['max_pages'], full_site=True, auto_apply=False, dispatch=False)
         self.stdout.write(f'Full-site job {job.pk} for {university.name}')
 
         def crawl():
             try:
-                DirectUniversityCrawler(job.pk).run()
+                CrawleeUniversityCrawler(job.pk).run()
             finally:
                 close_old_connections()
 
@@ -80,5 +81,6 @@ class Command(BaseCommand):
                             pages_processed=len(attempted), results=results)
             DiscoveryJob.objects.filter(pk=job.pk).update(scrape_result=progress)
             self.stdout.write(f"Discovery {job.status}: {job.pages_crawled} pages crawled; {len(attempted)} extracted; {job.failed_count} fetch failures")
+            self.stdout.write(f"Coverage: {job.settings.get('coverage', {})}. Extracted information still requires review.")
         except KeyboardInterrupt:
             self.stdout.write(f'Progress saved. Resume with --resume {job.pk} after the worker heartbeat expires.')

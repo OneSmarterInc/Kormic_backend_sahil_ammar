@@ -43,11 +43,11 @@ def run_discovery_job(self, job_id: int) -> None:
     University.scrape_urls and runs the existing scrape_now fact-extraction
     pipeline immediately, so a discovery run can end with a populated
     knowledge base with no further manual steps."""
-    from url_discovery.crawler import DirectUniversityCrawler
+    from url_discovery.crawlee_runner import CrawleeUniversityCrawler
     from url_discovery.models import DiscoveryJob
 
     try:
-        DirectUniversityCrawler(job_id).run()
+        CrawleeUniversityCrawler(job_id).run()
     except _RETRYABLE_EXCEPTIONS as exc:
         if self.request.retries < self.max_retries:
             logger.warning("Discovery job %s hit a transient error, retrying: %s", job_id, exc)

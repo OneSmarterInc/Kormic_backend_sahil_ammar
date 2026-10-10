@@ -678,6 +678,12 @@ class DirectUniversityCrawler:
             self._mark_fetch_failure(url, str(exc))
             return
 
+        self._parse_response(url, parent_url, anchor_text, depth, navigation_level,
+                             (status_code, headers, body, response_url))
+
+    def _parse_response(self, url, parent_url, anchor_text, depth, navigation_level, response):
+        """Shared parsing/persistence, independent of the crawl scheduler."""
+        status_code, headers, body, response_url = response
         content_type = headers.get("content-type", "").split(";", 1)[0].lower().strip()
         final_url = normalize_url(response_url) or url
         allowed, reason = hard_filter_url(final_url, self.include_documents)
