@@ -91,10 +91,9 @@ def build_tools(ctx: Dict[str, Any]) -> List[Any]:
                 f"{next_item.get('message')}\n"
                 f"Expected: {next_item.get('expected_value') or 'not specified'}\n"
                 f"Found: {next_item.get('found_value') or 'not specified'}\n\n"
-                "Ask the student if this is correct, should be ignored, or if "
-                "they'd like to clarify."
+                "Which value is correct, or would you like to ignore this discrepancy?"
             )
 
-        return "Recorded -- that covers everything. The profile is fully reviewed for now."
+        return "Recorded -- there are no remaining discrepancies in this verification check."
 
     return [check_profile_verification, resolve_verification_item]

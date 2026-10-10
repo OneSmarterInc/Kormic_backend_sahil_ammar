@@ -105,6 +105,12 @@ def _consult(ctx, row, question, public_row=None):
     from pure_multi_agent.advice_policy import ADVICE_RULES
     prompt += ADVICE_RULES + render_runtime_time_context({})
     prompt += '\nStudent values are NOT university facts. A student budget is not tuition; their GPA is not an admission threshold. Do not infer a tuition fee from a semester contribution. Missing records mean unavailable information, not a nonexistent programme. Answer only requested topics, and do not repeat the previous answer.'
+    prompt += ('\nFor admission requirements, distinguish university-wide rules from programme, degree-level, applicant-category and intake-specific requirements. '
+        'If the programme or degree level is unspecified, give only supported general requirements and ask which programme/level the student means. '
+        'Do not combine undergraduate, graduate and research-degree rules into one checklist. '
+        'Include documented academic qualifications, test/language requirements, required documents and deadlines only when applicable. '
+        'Preserve exemptions and conditional language. Mark missing items unverified, never as not required. '
+        'When evidence_partial is true, describe the answer as partial and keep its source link; do not claim to provide every requirement.')
 
     def reason(state):
         calls[0] += 1

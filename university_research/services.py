@@ -126,6 +126,7 @@ def public_from_candidate(candidate):
 
 
 def retrieve(row, question=''):
+    from .relevance import rank_records
     from knowledge.vectors import enabled, embed_texts, MODEL
     from pgvector.django import CosineDistance
     facts = row.facts.exclude(page__provider='claude_direct').select_related('page').order_by('-fetched_at')
@@ -138,18 +139,17 @@ def retrieve(row, question=''):
         except Exception:
             selected = []
     if not selected:
-        tokens = re.findall(r'\w{3,}', question)[:15]
-        query = Q()
-        for token in tokens:
-            query |= Q(topic__icontains=token) | Q(content__icontains=token)
-        selected = list(facts.filter(query)[:10]) if tokens else list(facts[:10])
+        ranked = rank_records(facts, question, [('topic', 4), ('content', 1)])
+        selected = list(ranked.filter(question_relevance__gt=0)[:10]) if question.strip() else list(facts[:10])
     from .agent import normalize
     selected = [fact for fact in selected if fact.page.provider in ('scraper_extracted', 'claude_research') or normalize(fact.source_quote) in normalize(fact.page.content)]
     evidence = {'university': reference(row), 'provider_answer': None, 'facts': [{'topic': f.topic, 'content': f.content,
           'provider': f.page.provider, 'source_url': f.page.url, 'source_title': f.page.title, 'source_quote': f.source_quote, 'fetched_at': f.fetched_at.isoformat()} for f in selected],
         'saved_knowledge': [],
-        'courses': list(row.courses.exclude(page__provider='claude_direct').values('name', 'level', 'duration', 'study_mode', 'tuition', 'currency', 'seats', 'academic_year', 'requirements', 'source_quote', 'page__url', 'fetched_at')[:100]),
-        'intakes': list(row.intakes.exclude(page__provider='claude_direct').values('course_name', 'term', 'year', 'deadline', 'applicant_scope', 'page__url', 'fetched_at')[:30]),
+        'courses': list(rank_records(row.courses.exclude(page__provider='claude_direct'), question,
+            [('name', 8), ('level', 2), ('requirements', 1)]).values('name', 'level', 'duration', 'study_mode', 'tuition', 'currency', 'seats', 'academic_year', 'requirements', 'source_quote', 'page__url', 'fetched_at')[:100]),
+        'intakes': list(rank_records(row.intakes.exclude(page__provider='claude_direct'), question,
+            [('course_name', 8), ('term', 2), ('applicant_scope', 1)]).values('course_name', 'term', 'year', 'deadline', 'applicant_scope', 'page__url', 'fetched_at')[:30]),
         'limits': 'Website coverage is partial. Only documented details are known; empty fields are unknown.'}
     from universities.information import overlay_research
     return overlay_research(row, evidence)

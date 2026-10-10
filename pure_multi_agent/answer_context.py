@@ -33,10 +33,34 @@ def profile_context(profile, question=''):
     return result
 
 
+def evidence_excerpt(text, question, budget=3500):
+    """Select source passages with neighbouring qualifications, retaining order."""
+    if len(text) <= budget:
+        return text
+    from university_research.relevance import question_terms
+    terms = question_terms(question)
+    parts = re.split(r'\n\s*\n|(?<=[.!?])\s+(?=[A-Z])', text)
+    ranked = sorted(range(len(parts)), key=lambda i: sum(t in parts[i].lower() for t in terms), reverse=True)
+    selected, used = set(), 0
+    for index in ranked:
+        for candidate in (index, index - 1, index + 1):
+            if candidate < 0 or candidate >= len(parts) or candidate in selected:
+                continue
+            if used + len(parts[candidate]) <= budget:
+                selected.add(candidate); used += len(parts[candidate])
+    if selected:
+        return '\n[…]\n'.join(parts[i] for i in sorted(selected))
+    # A single enormous paragraph still supplies an explicitly partial excerpt.
+    matches = [m.start() for term in terms for m in re.finditer(re.escape(term), text.casefold())]
+    start = max(0, min(matches) - 300) if matches else 0
+    return ('[…] ' if start else '') + text[start:start + budget].rsplit(' ', 1)[0] + ' […]'
+
+
 def compact_evidence(data, question):
     """Preserve whole records, prioritise the requested subject, bound prompt size."""
     result = dict(data)
-    words = set(re.findall(r'\w{4,}', question.lower())) - {'what', 'which', 'university', 'please', 'about', 'tell'}
+    from university_research.relevance import question_terms
+    words = set(question_terms(question))
     def score(item):
         text = json.dumps(item, default=str).lower()
         return sum(word in text for word in words)
@@ -46,6 +70,13 @@ def compact_evidence(data, question):
             ranked = sorted(unique_records(values), key=score, reverse=True)
             kept, size = [], 0
             for value in ranked[:limit]:
+                if isinstance(value, dict) and len(json.dumps(value, default=str)) > 6000:
+                    value = dict(value)
+                    for field in ('content', 'source_quote', 'requirements', 'description'):
+                        if isinstance(value.get(field), str):
+                            value[field] = evidence_excerpt(value[field], question, 2200)
+                    value['evidence_partial'] = True
+                    value['excerpt_notice'] = 'Selected source excerpts; omitted text may contain additional conditions. Do not call these complete admission requirements.'
                 length = len(json.dumps(value, default=str))
                 if size + length > 12000:
                     continue
@@ -54,18 +85,20 @@ def compact_evidence(data, question):
     # References carry identity, not an entire duplicated catalogue.
     if isinstance(result.get('university'), dict):
         result['university'] = {k:v for k,v in result['university'].items() if k != 'coverage'}
+    if isinstance(result.get('official_website_research'), dict):
+        result['official_website_research'] = compact_evidence(result['official_website_research'], question)
     return result
 
 
 def requested_topic_missing(data, question):
     groups = ((r'fees?|tuition|cost', ('tuition','fees','cost')),
               (r'deadline|intake', ('deadline','intake')),
-              (r'requirements?|eligib', ('requirements','eligibility','admission')),
+              (r'admission|requirements?|eligib', ('requirements','eligibility','admission')),
               (r'scholarship|funding', ('scholarship','funding')))
     for pattern, labels in groups:
         if not re.search(pattern, question, re.I):
             continue
-        records = data.get('facts', []) + data.get('courses', []) + data.get('intakes', [])
+        records = data.get('facts', []) + data.get('courses', []) + data.get('intakes', []) + data.get('saved_knowledge', [])
         covered = False
         for item in records:
             for key, value in item.items():
@@ -96,17 +129,30 @@ def partial_answer(question, evidence, draft='', profile=None):
         return draft.strip()
     courses = evidence.get('courses', []) if isinstance(evidence, dict) else []
     lines = []
-    fields = [('tuition', 'Tuition'), ('currency', 'Currency'), ('academic_year', 'Academic year'), ('requirements', 'Requirements')]
+    admission_question = bool(re.search(r'admission|requirements?|eligib', question, re.I))
+    fields = ([('level', 'Degree level'), ('academic_year', 'Academic year'), ('requirements', 'Requirements')]
+              if admission_question else [('tuition', 'Tuition'), ('currency', 'Currency'), ('academic_year', 'Academic year'), ('requirements', 'Requirements')])
     for course in courses[:3]:
         details = [f'{label}: {course[key]}' for key,label in fields if course.get(key) and str(course[key]).lower() not in ('n/a','null','none','unknown')]
         if details:
-            lines.append('**' + course['name'] + '**\n' + '\n'.join('- ' + item for item in details))
+            source = course.get('page__url') or course.get('source_url')
+            link = '\nSource: ' + source if isinstance(source, str) and source.startswith(('https://', 'http://')) else ''
+            lines.append('**' + course['name'] + '**\n' + '\n'.join('- ' + item for item in details) + link)
     if lines:
+        if admission_question:
+            return '\n\n'.join(lines) + '\n\nThese are partial saved requirements for the programmes named above, not a complete university-wide checklist. Requirements may vary by programme, applicant type and intake; confirm missing conditions with the linked source.'
         return '\n\n'.join(lines) + '\n\nThese are the saved programme details. I could not complete the rest of your answer; dates and amounts apply only to the academic year shown.'
-    facts = evidence.get('facts', []) if isinstance(evidence, dict) else []
-    statements = [fact['content'].strip() for fact in facts if isinstance(fact, dict)
-                  and isinstance(fact.get('content'), str) and len(fact['content']) < 600
-                  and not problems(fact['content'])]
+    facts = evidence.get('facts', []) + evidence.get('saved_knowledge', []) if isinstance(evidence, dict) else []
+    statements = []
+    for fact in facts:
+        if not isinstance(fact, dict) or not isinstance(fact.get('content'), str) or not fact['content'].strip():
+            continue
+        content = evidence_excerpt(fact['content'].strip(), question, 1400)
+        if problems(content):
+            continue
+        source = fact.get('source_url')
+        link = '\nSource: ' + source if isinstance(source, str) and source.startswith(('https://', 'http://')) else ''
+        statements.append('Saved source excerpt:\n' + content + link)
     if statements:
-        return '\n\n'.join(statements[:3]) + '\n\nI could not complete the remaining requested details.'
+        return '\n\n'.join(statements[:3]) + '\n\nThese excerpts are partial, not a complete requirements checklist. I could not complete the remaining requested details.'
     return 'I could not finish preparing this answer. Please retry your question; your conversation is still available.'

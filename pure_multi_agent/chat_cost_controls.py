@@ -21,6 +21,7 @@ def standalone_profile_intent(text):
     """Recognize a whole saved-profile advice request, never a write or follow-up."""
     prefix = r'\s*(?:please\s+)?(?:(?:can|could) you\s+)?'
     patterns = (
+        r'how is my (?:saved |student |academic )?profile(?:\s*\?\s*what should i improve)?',
         r'(?:review|assess|evaluate|analy[sz]e) my (?:saved )?(?:student |academic )?profile',
         r'(?:how can i improve|suggest improvements (?:to|for)) my (?:student |academic )?profile',
         r'(?:what are|identify) (?:the )?(?:strengths and gaps|strengths and weaknesses) in my (?:saved )?profile',

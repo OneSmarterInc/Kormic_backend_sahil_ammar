@@ -4,6 +4,8 @@ import re
 
 def problems(text, *, saved=False):
     issues = []
+    if re.search(r'\b(?:let me|I (?:will|need to|should))\s+(?:check with|ask)\s+the student\b|\bask the student if this is correct\b', text, re.I):
+        issues.append('Address the student directly. Answer the requested review from saved evidence; do not repeat internal verification instructions or promise to ask the student.')
     if re.search(r'</?tool>|"(?:arguments|tool_calls)"\s*:|\b(?:review_student_profile|calculate_study_budget|search_study_resources|save_advising_artifact|university_reply_status|resolve_profile_change|update_student_profile)\b', text):
         issues.append('Return a student-facing answer only, not tool syntax, function names or instructions to invoke tools.')
     if re.search(r'validation error|unsupported numeric claim|tool call was rejected|correct (?:the|your) (?:arguments|tool)|allowed tools:', text, re.I):

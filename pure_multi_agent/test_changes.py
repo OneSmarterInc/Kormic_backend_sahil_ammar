@@ -242,7 +242,7 @@ class DocumentTests(TestCase):
     @override_settings(AGENT_DISTRIBUTED_LIMITS=False)
     def test_explicit_profile_review_reads_fresh_evidence_and_uses_one_answer_call(self):
         from pure_multi_agent.student_graph import build_student_agent
-        self.ctx.update(current_message='Review my academic profile in detail',
+        self.ctx.update(current_message='How is my profile? What should I improve?',
                         profile_action_checked=True, clarification_checked=True)
         def model(messages, tools, **kwargs):
             evidence = [json.loads(m.content) for m in messages if m.type == 'tool']
@@ -250,6 +250,8 @@ class DocumentTests(TestCase):
             self.assertIn('conversation_assumptions', evidence[0])
             self.assertIn('document_availability', evidence[0])
             self.assertTrue(callable(kwargs['response_validator']))
+            with self.assertRaisesRegex(ValueError, 'Address the student directly'):
+                kwargs['response_validator'](AIMessage(content='Let me check with the student if this is correct.'))
             return AIMessage(content='Your saved GPA is 3.4/4.0. Choose a target programme to identify the requirements to check.')
         with mock.patch('pure_multi_agent.model_router.invoke', side_effect=model) as paid:
             agent = build_student_agent(self.ctx, 'Assist the student.', InMemorySaver())
