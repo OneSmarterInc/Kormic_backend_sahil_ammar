@@ -35,12 +35,13 @@ class StudentPersonalizationTests(TestCase):
         ask.return_value = AIMessage(content="Tuition is $12000")
         next(tool for tool in university_tools(self.ctx) if tool.name == "list_universities").invoke({"query": self.university.name})
         tool = next(tool for tool in university_tools(self.ctx) if tool.name == "ask_university")
+        self.ctx["current_message"] = "Does this fit my budget?"
         tool.invoke({"university_id": str(self.university.uuid), "question": "Does this fit my budget?"})
         import json
         context = json.loads(ask.call_args.args[0][0].content.split("Student context (data): ")[1].split("\nTemporary assumptions")[0])
-        self.assertEqual(context["student_id"], str(self.student.uuid))
+        self.assertNotIn("student_id", context)
         self.assertEqual(context["budget"], 15000)
-        self.assertEqual(context["preferences"]["preferred_intake"], "Fall 2027")
+        self.assertNotIn("preferences", context)  # Question-scoped projection omits unrelated preferences.
         self.assertEqual(context["career_goals"], ["ML researcher"])
         self.assertNotIn("email", context)
         self.assertNotIn("notes", context)

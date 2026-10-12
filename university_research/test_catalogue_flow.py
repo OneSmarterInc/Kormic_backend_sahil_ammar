@@ -5,8 +5,8 @@ from university_research.catalogue import save_catalogue
 
 
 def page_fixture():
-    return {'url':'https://example.edu/', 'title':'Example University', 'content':'University information',
-        'evidence_provider':'claude_direct', 'provider_identity':{'country':'IN'},
+    return {'url':'https://example.edu/', 'title':'Example University', 'content':'A research university in India. BSc Physics: INR 100000 per year; 60 seats; academic year 2026-27. Merit scholarships are available. Autumn 2026 intake deadline: July 2026.',
+        'evidence_provider':'scraper_extracted', 'provider_identity':{'country':'IN'},
         'catalogue':{'description':'A research university.',
             'courses':[{'name':'BSc Physics', 'tuition':'INR 100000 per year', 'seats':'60', 'academic_year':'2026-27'}],
             'facts':[{'topic':'Scholarships','content':'Merit scholarships are available.'}],
@@ -16,6 +16,15 @@ def page_fixture():
 class CatalogueFlowTests(TestCase):
     def setUp(self):
         self.row = PublicUniversity.objects.create(identity_key='catalogue-test', name='Example University', website='https://example.edu/')
+
+    def test_model_memory_catalogue_is_rejected_without_writes(self):
+        page = page_fixture()
+        page['evidence_provider'] = 'claude_direct'
+        with self.assertRaisesRegex(ValueError, 'Model-memory'):
+            save_catalogue(self.row, page)
+        self.assertFalse(self.row.pages.exists())
+        self.assertFalse(self.row.courses.exists())
+        self.assertFalse(self.row.facts.exists())
 
     def test_numeric_fees_and_null_seats_save_without_discarding_answer(self):
         page=page_fixture()
@@ -38,45 +47,42 @@ class CatalogueFlowTests(TestCase):
             if len(calls)==1:
                 raise OperationalError('temporary database failure')
             return original(*args,**kwargs)
-        with patch.object(UniversityPage.objects,'update_or_create',side_effect=write), patch('university_research.claude_fallback.Anthropic') as client:
+        with patch.object(UniversityPage.objects,'update_or_create',side_effect=write), patch('pure_multi_agent.model_router.invoke') as client:
             save_catalogue(self.row,page_fixture())
         self.assertEqual(len(calls),2)
         self.assertEqual(self.row.courses.count(),1)
         client.assert_not_called()
 
-    def test_empty_extraction_falls_back_once_saves_then_answers(self):
+    def test_irrelevant_collection_retains_source_and_reports_gap(self):
         from pure_multi_agent.public_adviser import consult
-        source = {'url':self.row.website,'content':'Campus news and events','links':[]}
-        def adviser(ctx, row, question, public_row=None):
-            self.assertEqual(public_row.courses.get().name, 'BSc Physics')
-            return {'answer':'Physics programme details'}
-        with patch('university_research.web.read_page_once', return_value=source) as scrape, \
-             patch('university_research.claude_fallback.search_official_evidence', side_effect=[
-                 {**source,'catalogue':{'coverage_notes':'Only news found'}},page_fixture()]) as research, \
-             patch('pure_multi_agent.registered_adviser._consult', side_effect=adviser):
-            answer=consult({},self.row,'courses, fees and admission timeline')
-        self.assertEqual(answer['answer'],'Physics programme details')
-        scrape.assert_called_once()
-        self.assertEqual(research.call_count,2)
-        self.assertIn('source_page',research.call_args_list[0].kwargs)
-        self.assertNotIn('source_page',research.call_args_list[1].kwargs)
+        source = {'url': self.row.website, 'content': 'Campus news and events', 'links': []}
+        ctx = {}
+        with patch('university_research.web.search_official_site', return_value=[]), \
+             patch('university_research.web.read_page_once', return_value=source), \
+             patch('pure_multi_agent.registered_adviser._consult', return_value={'answer': 'Requirements not verified'}) as adviser:
+            result = consult(ctx, self.row, 'courses and fees')
+        self.assertEqual(result['answer'], 'Requirements not verified')
+        self.assertIn('university_topic_gap', ctx)
+        self.assertFalse(self.row.courses.exists())
+        self.assertTrue(self.row.pages.exists())
+        adviser.assert_called_once()
 
     def test_irrelevant_extraction_uses_fallback(self):
         from pure_multi_agent.public_adviser import useful_catalogue
         self.assertFalse(useful_catalogue({'catalogue':{'description':'Campus news and alumni events'}},'courses and fees'))
         self.assertTrue(useful_catalogue(page_fixture(),'courses and fees'))
 
-    def test_empty_fallback_does_not_save_or_consult(self):
+    def test_failed_collection_keeps_adviser_available_without_inventing_records(self):
         from pure_multi_agent.public_adviser import consult
-        with patch('university_research.web.read_page_once', side_effect=ValueError('blocked')), \
-             patch('university_research.claude_fallback.search_official_evidence', return_value={
-                 'provider_answer':{'text':'Unavailable'},'catalogue':{}}) as research, \
-             patch('pure_multi_agent.registered_adviser._consult') as adviser:
-            with self.assertRaisesRegex(ValueError,'No usable'):
-                consult({},self.row,'courses')
-        research.assert_called_once()
-        adviser.assert_not_called()
+        ctx = {}
+        with patch('university_research.web.search_official_site', return_value=[]), \
+             patch('university_research.web.read_page_once', side_effect=ValueError('blocked')), \
+             patch('pure_multi_agent.registered_adviser._consult', return_value={'answer': 'No verified courses'}) as adviser:
+            consult(ctx, self.row, 'courses')
+        self.assertIn('university_topic_gap', ctx)
+        adviser.assert_called_once()
         self.assertFalse(self.row.pages.exists())
+        self.assertFalse(self.row.courses.exists())
 
     def test_shared_records_are_saved_without_creating_an_enrolled_account(self):
         from university_research import services
@@ -89,43 +95,34 @@ class CatalogueFlowTests(TestCase):
         self.assertIsNone(self.row.registered_university_id)
         self.assertEqual(self.row.courses.get().seats, '60')
         self.assertEqual(self.row.courses.get().duration, 'N/A')
-        self.assertEqual(self.row.pages.get().provider, 'claude_direct')
+        self.assertEqual(self.row.pages.get().provider, 'scraper_extracted')
         self.assertFalse(UniversityKnowledgeEntry.objects.exists())
         self.assertEqual(self.row.coverage['catalogue_profile']['description'], 'A research university.')
         save_catalogue(self.row, page_fixture())
         self.assertEqual(self.row.courses.count(), 1)
-        self.assertEqual(self.row.facts.count(), 1)
+        self.assertEqual(self.row.facts.count(), 2)
 
-    @patch('knowledge.vectors.enabled', return_value=False)
-    def test_scrape_failure_saves_before_common_agent_reads_and_reuses_cache(self, _):
+    def test_saved_catalogue_is_reused_after_source_becomes_unavailable(self):
         from pure_multi_agent.public_adviser import consult
-        def adviser(ctx, canonical, question, public_row=None):
-            self.assertTrue(public_row.coverage['catalogue_saved'])
-            self.assertEqual(public_row.courses.get().tuition, 'INR 100000 per year')
-            self.assertEqual(public_row.coverage['catalogue_profile']['description'], 'A research university.')
-            return {'answer':'Here are the programme details.'}
-        ctx = {'canonical_student_id':'test', 'turn_id':'turn'}
-        with patch('university_research.web.read_page_once', side_effect=ValueError('HTTP 403')) as scrape, \
-             patch('university_research.claude_fallback.search_official_evidence', return_value=page_fixture()) as fallback, \
-             patch('pure_multi_agent.registered_adviser._consult', side_effect=adviser) as agent:
-            consult(ctx, self.row, 'courses')
-            self.row.refresh_from_db()
-            consult(ctx, self.row, 'courses')
-        scrape.assert_called_once()
-        fallback.assert_called_once()
-        self.assertEqual(agent.call_count, 2)
-        self.assertNotIn(str(self.row.pk), ctx['research_after_reply'])
+        save_catalogue(self.row, page_fixture())
+        self.row.refresh_from_db()
+        with patch('university_research.web.read_page_once') as scrape, \
+             patch('pure_multi_agent.registered_adviser._consult', return_value={'answer': 'Saved courses'}) as adviser:
+            consult({}, self.row, 'courses')
+        scrape.assert_not_called()
+        adviser.assert_called_once()
+        self.assertEqual(self.row.courses.get().name, 'BSc Physics')
 
     def test_scraped_catalogue_is_extracted_and_committed_before_consultation(self):
         from pure_multi_agent.public_adviser import consult
         source = {'url':self.row.website, 'content':'BSc Physics. 60 seats.', 'links':[]}
         extracted = {**page_fixture(), 'evidence_provider':'scraper_extracted'}
-        with patch('university_research.web.read_page_once', return_value=source) as scrape, \
-             patch('university_research.claude_fallback.search_official_evidence', return_value=extracted) as extract, \
+        with patch('university_research.web.search_official_site', return_value=[]), patch('university_research.web.read_page_once', return_value=source) as scrape, \
+             patch('university_research.claude_fallback.extract_catalogue_locally', return_value=extracted) as extract, \
              patch('pure_multi_agent.registered_adviser._consult', return_value={'answer':'Details'}) as agent:
             consult({}, self.row, 'courses')
         scrape.assert_called_once()
-        self.assertEqual(extract.call_args.kwargs['source_page'], source)
+        self.assertEqual(extract.call_args.args[2], source)
         self.assertEqual(self.row.pages.get().provider, 'scraper_extracted')
         agent.assert_called_once()
 
@@ -240,7 +237,7 @@ class SeparationTests(TestCase):
         student = StudentProfile.objects.create(name='Alex')
         ctx = {'canonical_student_id':str(student.uuid), 'student_profile':{}, 'turn_id':'turn'}
         def reply(messages, tools, **kwargs):
-            self.assertTrue(kwargs['local_only'])
+            self.assertTrue(kwargs['force_claude'])
             if messages[-1].type == 'human':
                 return AIMessage(content='', tool_calls=[{'id':'read','name':'retrieve_official_information','args':{'query':'courses'}}])
             self.assertIn('INR 100000', messages[-1].content)

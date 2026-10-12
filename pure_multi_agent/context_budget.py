@@ -1,9 +1,4 @@
-"""Conservative Qwen context admission for both local model transports.
-
-The initial estimate is intentionally padded because Ollama has no token-count
-endpoint. After dispatch, callers use Ollama's prompt_eval_count to verify
-the full prompt plus output reserve and retry at a larger window if needed.
-"""
+"""Conservative context admission for bounded evidence requests."""
 
 import json
 import os
@@ -54,13 +49,13 @@ def _tool_payload(tool):
 def select_context(messages, tools=(), *, profile='general', output_tokens=None,
                    format_schema=None, max_context=None, min_context=0):
     if profile not in PROFILE_WINDOWS:
-        raise ValueError('Unknown Qwen request profile')
+        raise ValueError('Unknown inference request profile')
     output = PROFILE_OUTPUT[profile] if output_tokens is None else int(output_tokens)
-    maximum = int(max_context if max_context is not None else os.getenv('KORMIC_QWEN_MAX_CONTEXT', '16384'))
+    maximum = int(max_context if max_context is not None else os.getenv('KORMIC_EVIDENCE_MAX_CONTEXT', os.getenv('KORMIC_QWEN_MAX_CONTEXT', '16384')))
     if output < 1 or maximum < 2048:
-        raise ValueError('Qwen context and output limits must be positive')
+        raise ValueError('Inference context and output limits must be positive')
     # Include serialized roles, tool-call arguments, tool schemas, JSON format,
-    # and room for Ollama's template/special tokens. No source is removed.
+    # and room for provider message framing. No source is removed.
     input_bound = (512 + sum(_bytes(_message_payload(message)) + 32 for message in messages)
                    + sum(_bytes(_tool_payload(tool)) + 64 for tool in tools)
                    + (_bytes(format_schema) if format_schema is not None else 0))
@@ -70,23 +65,13 @@ def select_context(messages, tools=(), *, profile='general', output_tokens=None,
     required = input_estimate + output
     if required > maximum:
         raise ContextBudgetExceeded(
-            f'Estimated Qwen request needs {required} context tokens, '
-            f'above the configured {maximum}. Increase KORMIC_QWEN_MAX_CONTEXT '
+            f'Estimated inference request needs {required} context tokens, '
+            f'above the configured {maximum}. Increase KORMIC_EVIDENCE_MAX_CONTEXT '
             'if the host can support it, or retrieve the relevant source in smaller stages.')
     if min_context > maximum:
-        raise ContextBudgetExceeded('The complete Qwen request cannot be verified inside the configured context maximum.')
+        raise ContextBudgetExceeded('The complete inference request cannot be verified inside the configured context maximum.')
     preferred = min(max(PROFILE_WINDOWS[profile], min_context), maximum)
     window = preferred
     while window < required:
         window = min(window * 2, maximum)
     return ContextBudget(profile, window, output, input_bound, input_estimate)
-
-
-def needs_expansion(budget, prompt_tokens):
-    """Verify Ollama evaluated enough of the prompt to leave output room."""
-    if prompt_tokens is None:
-        if budget.input_bound + budget.num_predict + 128 > budget.num_ctx:
-            raise ContextBudgetExceeded(
-                'Ollama did not report prompt token usage, so this request cannot be verified without risking source truncation.')
-        return False
-    return int(prompt_tokens) + budget.num_predict + 128 >= budget.num_ctx

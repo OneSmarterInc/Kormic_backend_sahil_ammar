@@ -8,7 +8,7 @@ from django.utils import timezone
 from django_api.models import InferenceWaiter, InferenceTenant
 from pure_multi_agent.database_capacity import lease
 from pure_multi_agent.capacity import AgentBusy
-from kormic_backend.ollama_config import QWEN_SLOT_TTL_SECONDS
+from kormic_backend.inference_limits import LEGACY_LOCAL_LEASE_TTL_SECONDS
 
 workload = ContextVar('inference_workload', default=None)
 logger = logging.getLogger(__name__)
@@ -86,7 +86,7 @@ def admission(provider, run, estimate, acquire):
                     if first and first.pk == ticket.pk:
                         attempt = ExitStack()
                         try:
-                            ttl = QWEN_SLOT_TTL_SECONDS if provider == 'qwen' else 600
+                            ttl = LEGACY_LOCAL_LEASE_TTL_SECONDS if provider == 'qwen' else 600
                             attempt.enter_context(lease('inference-tenant:' + provider + ':' + tenant, ttl=ttl))
                             if priority >= 20:
                                 attempt.enter_context(lease('inference-background:' + provider, ttl=ttl))

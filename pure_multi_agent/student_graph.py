@@ -85,7 +85,7 @@ def _reason_impl(state: StudentState, runtime: Runtime[dict]):
         return {'messages': [AIMessage(content=ctx['completed_evidence_answer'])],
                 'active_university': state.get('active_university', {})}
     from pure_multi_agent.turn_policy import classify, select_tools
-    from pure_multi_agent.qwen_context import ContextBudgetExceeded
+    from pure_multi_agent.context_budget import ContextBudgetExceeded
     try:
         intent = classify(ctx, turn_messages(state["messages"]))
     except ContextBudgetExceeded:
@@ -274,11 +274,10 @@ def _reason_impl(state: StudentState, runtime: Runtime[dict]):
             'prose and avoid internal tool names.')
     else:
         prompt += '\nSTUDENT TARGET STUDY (data): ' + compact_json(ctx.get('study_focus', {})) + '. The saved program/major describes current education, not the requested next degree. Answer at the target degree level.'
-    options = {'local_only': True,
+    options = {'force_claude': True,
         'require_tools': False}
     if ctx.get('canonical_student_id'):
         from pure_multi_agent.model_router import advice_options
-        options.pop('local_only', None)
         options.update(advice_options())
     if ctx.get('budget_clarification_turn'):
         from pure_multi_agent.advice_policy import budget_context

@@ -17,7 +17,7 @@ DEFERRED = {
 
 def fit_history(prompt, messages, tools, *, protected_message=None, output_tokens=None):
     """Fit whole recent turns; retain the current turn and checkpoint originals."""
-    from pure_multi_agent.qwen_context import select_context, ContextBudgetExceeded
+    from pure_multi_agent.context_budget import select_context, ContextBudgetExceeded
 
     remaining = list(messages)
     protected_message = protected_message or next(

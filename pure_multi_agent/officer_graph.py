@@ -119,7 +119,7 @@ def _reason(state: MessagesState, runtime: Runtime[dict]):
             'use read_university_record(section="requirements"). For other portal data use '
             'read_portal_tab. For confirmation read university_change_status first. '
             'Do not produce a final answer until current tools have returned.')
-    from pure_multi_agent.qwen_context import ContextBudgetExceeded
+    from pure_multi_agent.context_budget import ContextBudgetExceeded
     try:
         messages = fit_history(prompt, messages, tools)
         current_question = next((message for message in reversed(messages)
@@ -133,7 +133,7 @@ def _reason(state: MessagesState, runtime: Runtime[dict]):
                 protected_message=current_question, output_tokens=output_tokens)]
 
         reply = invoke([SystemMessage(content=prompt), *messages], tools,
-            local_only=True, require_tools=require_evidence, profile='evidence',
+            force_claude=True, require_tools=require_evidence, profile='evidence',
             message_preparer=prepare_model_messages,
             tool_call_validator=lambda call: _validate_consent_call(call, ctx.get('current_message', '')))
     except ContextBudgetExceeded as exc:

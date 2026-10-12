@@ -61,7 +61,7 @@ class GroupedTests(TransactionTestCase):
         self.assertEqual(GitHubRepositoryReport.objects.count(), 5)
 
     def test_oversized_group_splits_without_cutting_evidence(self):
-        from pure_multi_agent.qwen_context import ContextBudgetExceeded
+        from pure_multi_agent.context_budget import ContextBudgetExceeded
         def one_at_a_time(payload):
             repos = json.loads(payload['messages'][0]['content'])['repositories']
             if len(repos) > 1:

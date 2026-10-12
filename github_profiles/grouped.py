@@ -11,7 +11,7 @@ from urllib.parse import quote
 from pydantic import BaseModel, Field, ValidationError
 
 from pure_multi_agent.claude_policy import guard
-from pure_multi_agent.qwen_context import ContextBudgetExceeded
+from pure_multi_agent.context_budget import ContextBudgetExceeded
 from .agent import RepositoryAgent, ANALYSIS_VERSION
 from .errors import ServiceError
 from .inference import Inference, InvalidResponse

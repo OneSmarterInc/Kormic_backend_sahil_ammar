@@ -6,20 +6,10 @@ Capacity exhaustion is backpressure, never an unbounded burst of paid fallback.
 import logging
 from pure_multi_agent.model_usage import measured_invoke
 import json
-from pydantic import ValidationError
-import os
-import time
-from contextlib import contextmanager, ExitStack
 from functools import lru_cache
-from urllib.parse import urlsplit
 
-import httpx
 from langchain_anthropic import ChatAnthropic
-from langchain_ollama import ChatOllama
-from django.conf import settings
 from github_profiles.scheduling import model_slot, provider_blocked, block_provider, CapacityBusy
-from kormic_backend.ollama_config import qwen_keep_alive, QWEN_REQUEST_TIMEOUT_SECONDS
-from pure_multi_agent.qwen_context import select_context, needs_expansion, ContextBudgetExceeded
 from pure_multi_agent.reservations import reservation_estimate, claude_output_allowance
 
 logger = logging.getLogger(__name__)
@@ -58,27 +48,6 @@ def advice_options():
     return {'force_claude': True}
 
 
-@contextmanager
-def qwen_slot(estimate):
-    """Wait briefly for local inference without replaying model/tool execution."""
-    deadline = time.monotonic() + 20
-    while True:
-        stack = ExitStack()
-        try:
-            stack.enter_context(model_slot('qwen', None, estimate))
-        except CapacityBusy:
-            stack.close()
-            if time.monotonic() >= deadline:
-                raise
-            from pure_multi_agent.activity import publish
-            publish('Waiting for the local AI to become available…')
-            time.sleep(1)
-            continue
-        with stack:
-            yield
-        return
-
-
 def provider_messages(messages, provider, model_name):
     """Supply actual dispatch identity, never identity inferred from chat history."""
     from langchain_core.messages import SystemMessage
@@ -103,17 +72,6 @@ def provider_messages(messages, provider, model_name):
     else:
         content = [*blocks, {'type': 'text', 'text': identity}]
     return [SystemMessage(content=content), *conversation]
-
-
-@lru_cache(maxsize=16)
-def qwen(num_ctx=16384, num_predict=2400):
-    base = os.getenv('STUDENT_OLLAMA_BASE_URL', settings.GITHUB_OLLAMA_BASE_URL).rstrip('/')
-    if urlsplit(base).hostname not in settings.GITHUB_OLLAMA_ALLOWED_HOSTS:
-        raise ValueError('Ollama host is not in the configured allowlist')
-    return ChatOllama(model=os.getenv('STUDENT_OLLAMA_MODEL', settings.GITHUB_OLLAMA_MODEL),
-        base_url=base, temperature=0, reasoning=False, num_ctx=num_ctx, num_predict=num_predict,
-        keep_alive=qwen_keep_alive(),
-        client_kwargs={'timeout': httpx.Timeout(QWEN_REQUEST_TIMEOUT_SECONDS, connect=2), 'trust_env': False})
 
 
 @lru_cache(maxsize=4)
@@ -147,32 +105,11 @@ def _validate(reply, tools, *, validate_arguments=True, require_tools=False):
     return reply
 
 
-def _local_repair_instruction(reply, tools, error):
-    """Give the local model actionable schema feedback without executing a tool."""
-    if isinstance(error, ValidationError):
-        details = [{'field': '.'.join(map(str, item['loc'])), 'problem': item['msg']}
-                   for item in error.errors(include_input=False, include_url=False)]
-    else:
-        details = str(error)
-    calls = reply.tool_calls or []
-    names = {call['name'] for call in calls}
-    schemas = {tool.name: tool.args_schema.model_json_schema() for tool in tools if tool.name in names}
-    return ('Your last response failed validation and no tool was executed. Correct it locally. '
-        'Use the exact declared field names and types; do not invent missing facts, scope, or consent. '
-        'If required facts are absent, use a relevant read tool or ask a focused clarification '
-        '(after required retrieval). Never claim a rejected operation succeeded. '
-        'Allowed tools: ' + ', '.join(tool.name for tool in tools) +
-        '\nValidation: ' + json.dumps(details, ensure_ascii=False)[:6000] +
-        '\nRejected calls: ' + json.dumps(calls, ensure_ascii=False)[:6000] +
-        '\nRelevant schemas: ' + json.dumps(schemas, ensure_ascii=False)[:14000])
-
-
 def invoke(messages, tools=(), *, force_claude=False, require_tools=False, json_schema=None, tool_call_validator=None, local_only=False, response_validator=None, single_attempt=False, research=False, profile='general', message_preparer=None):
     # Retain legacy keyword compatibility while enforcing the application policy.
     # local_only must not silently route old callers to Ollama.
     claude_limit = claude_output_allowance(profile)
     estimate = reservation_estimate(messages, tools, profile=profile, format_schema=json_schema)
-    local_busy = False
     if json_schema is not None:
         from langchain_core.messages import SystemMessage
         from pure_multi_agent.chat_cost_controls import compact_json
@@ -195,8 +132,6 @@ def invoke(messages, tools=(), *, force_claude=False, require_tools=False, json_
             reply.content = raw
     response_validator = validate_response
     if provider_blocked('claude'):
-        if local_busy:
-            raise CapacityBusy('Local AI is busy; retry shortly.', 5)
         raise AIServiceUnavailable('The AI service is unavailable. The administrator needs to check the Claude API credentials.')
     with model_slot('claude', None, estimate):
         try:
@@ -243,8 +178,6 @@ def invoke(messages, tools=(), *, force_claude=False, require_tools=False, json_
         except Exception as exc:
             if getattr(exc, 'status_code', None) in (401, 403):
                 block_provider('claude', 60)
-                if local_busy:
-                    raise CapacityBusy('Local AI is busy; retry shortly.', 5) from exc
                 raise AIServiceUnavailable('The AI service is unavailable. The administrator needs to check the Claude API credentials.') from exc
             if getattr(exc, 'status_code', None) in (429, 529):
                 raise CapacityBusy('Claude is busy', 15) from exc

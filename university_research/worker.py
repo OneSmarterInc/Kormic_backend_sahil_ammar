@@ -12,7 +12,7 @@ from pure_multi_agent.capacity import AgentBusy
 from .models import ResearchRun, UniversityPage, UniversityFact, UniversityCourse, UniversityIntake
 from .agent import graph_for
 from pure_multi_agent.model_router import InvalidLocalToolResponse
-from pure_multi_agent.qwen_context import ContextBudgetExceeded
+from pure_multi_agent.context_budget import ContextBudgetExceeded
 
 logger = logging.getLogger(__name__)
 

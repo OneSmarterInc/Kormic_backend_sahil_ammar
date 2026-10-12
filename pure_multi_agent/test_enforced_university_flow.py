@@ -64,7 +64,7 @@ class FlowTests(TestCase):
         with patch('pure_multi_agent.registered_adviser.invoke',return_value=AIMessage(content=answer)) as model:
             result=_consult(self.ctx,self.row,self.ctx['current_message'],public_row=self.row)
         self.assertTrue(result['answer'].startswith(answer)); model.assert_called_once()
-        self.assertTrue(model.call_args.kwargs['local_only'])
+        self.assertTrue(model.call_args.kwargs['force_claude'])
 
     def test_generation_failure_retains_saved_fees_and_is_not_scrape_error(self):
         from pure_multi_agent.registered_adviser import _consult
@@ -132,10 +132,11 @@ class ContextTests(SimpleTestCase):
         model.assert_not_called(); self.assertEqual(intent['route'],'general')
         self.assertEqual(select_tools([type('Tool',(),{'name':'list_universities'})()],intent,ctx),[])
 
-    def test_student_scope_never_dispatches_claude_for_local_failure(self):
+    def test_student_scope_reports_blocked_claude_without_dispatch(self):
         from pure_multi_agent import model_router as router
         @router.student_model_policy
         def request(): return router.invoke([HumanMessage(content='hello')])
-        with patch.object(router,'qwen_slot',return_value=nullcontext()), patch.object(router,'provider_blocked',return_value=False), patch.object(router,'block_provider'), patch.object(router,'qwen',side_effect=RuntimeError('offline')), patch.object(router,'claude') as paid:
-            with self.assertRaises(router.AIServiceUnavailable): request()
+        with patch.object(router, 'provider_blocked', return_value=True), patch.object(router, 'claude') as paid:
+            with self.assertRaises(router.AIServiceUnavailable):
+                request()
         paid.assert_not_called()

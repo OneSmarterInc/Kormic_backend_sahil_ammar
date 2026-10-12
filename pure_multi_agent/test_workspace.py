@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from contextlib import nullcontext
 from django.test import TestCase, override_settings
 from django.contrib.auth.models import User
@@ -40,8 +40,8 @@ class WorkspaceToolsTests(TestCase):
                 response_metadata={'prompt_eval_count': 3000})
         saver = InMemorySaver()
         with patch.object(model_router, 'provider_blocked', return_value=False), \
-             patch.object(model_router, 'qwen_slot', return_value=nullcontext()), \
-             patch.object(model_router, 'qwen'), \
+             patch.object(model_router, 'model_slot', return_value=nullcontext()), \
+             patch.object(model_router, 'claude', return_value=Mock(model='claude-test')), \
              patch.object(model_router, 'measured_invoke', side_effect=respond):
             first = run_turn(str(self.uni.uuid), self.user.pk,
                 'Change the minimum CGPA to 3.7, maximum and scale 4.0, for all applicants.',
@@ -87,7 +87,7 @@ class WorkspaceToolsTests(TestCase):
     def test_graph_supplies_saved_requirements_and_existing_action_tools_to_ai(self):
         calls = []
         def model(messages, tools, **kwargs):
-            from pure_multi_agent.qwen_context import select_context
+            from pure_multi_agent.context_budget import select_context
             select_context(messages, tools, profile='evidence', max_context=16384)
             calls.append(kwargs.get('require_tools'))
             self.assertNotIn('3.5 to 4.0 scale', messages[0].content)

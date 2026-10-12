@@ -31,37 +31,33 @@ class RouterTests(SimpleTestCase):
         p.start(); self.addCleanup(p.stop)
 
     @patch('pure_multi_agent.model_router.claude')
-    @patch('pure_multi_agent.model_router.qwen')
-    def test_qwen_first_and_claude_only_on_failure(self, qwen, claude):
+    def test_claude_is_the_only_inference_provider(self, claude):
         from pure_multi_agent.model_router import invoke
-        qwen.return_value.invoke.return_value = AIMessage(content='Qwen answer')
-        self.assertEqual(invoke([HumanMessage(content='Hello')]).content, 'Qwen answer')
-        claude.assert_not_called()
-        qwen.return_value.invoke.side_effect = httpx.ConnectError('offline')
+        claude.return_value.model = 'claude-test'
         claude.return_value.invoke.return_value = AIMessage(content='Claude answer')
         self.assertEqual(invoke([HumanMessage(content='Hello')]).response_metadata['routing_provider'], 'claude')
+        claude.return_value.invoke.assert_called_once()
 
     @patch('pure_multi_agent.model_router.claude')
-    @patch('pure_multi_agent.model_router.qwen')
-    def test_invalid_tool_schema_falls_back(self, qwen, claude):
+    def test_invalid_tool_schema_is_repaired_once(self, claude):
         from pure_multi_agent.model_router import invoke
         @tool
         def read_record(record_id: int) -> dict:
             """Read a record."""
             return {}
-        qwen.return_value.bind_tools.return_value.invoke.return_value = AIMessage(content='', tool_calls=[{'id': 'a', 'name': 'read_record', 'args': {'record_id': 'invalid'}}])
-        claude.return_value.bind_tools.return_value.invoke.return_value = AIMessage(content='Recovered')
+        claude.return_value.model = 'claude-test'
+        claude.return_value.bind_tools.return_value.invoke.side_effect = [AIMessage(content='', tool_calls=[{'id': 'a', 'name': 'read_record', 'args': {'record_id': 'invalid'}}]), AIMessage(content='Recovered')]
         self.assertEqual(invoke([HumanMessage(content='Hi')], [read_record]).content, 'Recovered')
 
     @patch('pure_multi_agent.model_router.claude')
-    @patch('pure_multi_agent.model_router.qwen')
-    def test_busy_provider_does_not_burst_paid_fallback(self, qwen, claude):
+    def test_busy_provider_does_not_burst_paid_fallback(self, claude):
         from github_profiles.scheduling import CapacityBusy
         from pure_multi_agent.model_router import invoke
-        qwen.return_value.invoke.side_effect = CapacityBusy()
+        claude.return_value.model = 'claude-test'
+        claude.return_value.invoke.side_effect = CapacityBusy()
         with self.assertRaises(CapacityBusy):
             invoke([HumanMessage(content='Hi')])
-        claude.assert_not_called()
+        claude.return_value.invoke.assert_called_once()
 
     def test_source_boundary_rejects_intermediaries_and_local_urls(self):
         from .web import require_institution_site, canonical_url
@@ -78,7 +74,7 @@ class RouterTests(SimpleTestCase):
         self.assertNotEqual(normalize('Tuition is $25,000.'), normalize('Tuition is $20,000.'))
 
     @patch('pure_multi_agent.model_router.claude')
-    def test_claude_bad_arguments_are_returned_to_graph_for_safe_repair(self, claude):
+    def test_repeated_invalid_arguments_are_rejected_before_tools_execute(self, claude):
         from pure_multi_agent.model_router import invoke
         @tool
         def read_record(record_id: int) -> dict:
@@ -86,21 +82,20 @@ class RouterTests(SimpleTestCase):
             return {'id': record_id}
         claude.return_value.bind_tools.return_value.invoke.return_value = AIMessage(content='', tool_calls=[
             {'id': 'repair', 'name': 'read_record', 'args': {'record_id': 'invalid'}}])
-        response = invoke([HumanMessage(content='Read a record')], [read_record], force_claude=True)
-        self.assertEqual(response.tool_calls[0]['id'], 'repair')
-        # The actual tool still rejects it before any business logic executes.
-        with self.assertRaises(ValueError):
-            read_record.invoke(response.tool_calls[0]['args'])
+        from pure_multi_agent.model_router import InvalidToolResponse
+        claude.return_value.model = 'claude-test'
+        with self.assertRaises(InvalidToolResponse):
+            invoke([HumanMessage(content='Read a record')], [read_record], force_claude=True)
+        self.assertEqual(claude.return_value.bind_tools.return_value.invoke.call_count, 2)
 
     @patch('pure_multi_agent.model_router.claude')
-    @patch('pure_multi_agent.model_router.qwen')
-    def test_required_workflow_action_falls_back_when_qwen_only_replies(self, qwen, claude):
+    def test_required_workflow_action_requests_claude_tool_call(self, claude):
         from pure_multi_agent.model_router import invoke
         @tool
         def prepare_change() -> dict:
             """Prepare a change for confirmation."""
             return {}
-        qwen.return_value.bind_tools.return_value.invoke.return_value = AIMessage(content='Please confirm')
+        claude.return_value.model = 'claude-test'
         claude.return_value.bind_tools.return_value.invoke.return_value = AIMessage(content='', tool_calls=[{'id': 'draft', 'name': 'prepare_change', 'args': {}}])
         result = invoke([HumanMessage(content='Prepare changes')], [prepare_change], require_tools=True)
         self.assertEqual(result.tool_calls[0]['name'], 'prepare_change')
@@ -137,10 +132,10 @@ class ResearchTests(TestCase):
         with patch('university_research.web.search_web',return_value=[{'url':website,'title':name,'snippet':name}]):
             found = self.tools()['list_universities'].invoke({'query':name})
         self.assertEqual(found['status'],'web_results_need_resolution')
-        with patch('university_research.web.read_page',side_effect=ValueError('Official page unavailable: HTTP 403')) as scrape, patch('university_research.claude_fallback.search_official_evidence',return_value=page) as fallback:
+        with patch('university_research.web.read_page',return_value=page) as scrape, patch('university_research.claude_fallback.search_official_evidence',return_value=page) as fallback:
             self.tools()['read_university_webpage'].invoke({'url':website})
         self.assertEqual(scrape.call_count,1)
-        fallback.assert_called_once()
+        fallback.assert_not_called()
         identity = self.tools()['identify_university_candidates'].invoke({'search_id':found['search_id'],'candidates':[{'name':name,'website':website,'source_indices':[0],'official_identity_quote':'This paraphrased quote is not in the source'}]})
         self.assertEqual(identity['count'],1)
         self.assertEqual(identity['candidates'][0]['sources'][0]['identity_quote'],cited['content'])
@@ -240,52 +235,15 @@ class ResearchTests(TestCase):
         self.assertFalse(PublicUniversity.objects.exists())
 
     @patch('university_research.claude_fallback.search_official_evidence')
-    @patch('university_research.web.read_page',side_effect=ValueError('HTTP 403'))
-    def test_direct_fallback_one_call_full_answer_and_no_duplicate_research(self, scrape, claude):
-        website='https://example.edu/'
-        answer={'text':'Courses: MSc. Fees: N/A. Seats: N/A. Scholarships: need-based.','sources':[website],'provider':'claude_direct'}
-        claude.return_value={'url':website,'title':'Example University','content':answer['text'],'links':[],
-            'provider_answer':answer,'evidence_provider':'claude_direct','catalogue':{'description':'Example University','courses':[{'name':'MSc Physics','tuition':'USD 10000 per year'}]}}
-        search=UniversitySearch.objects.create(student=self.student,query='Example University',candidates={'results':[{'url':website}]})
-        self.ctx.update(known_web_urls={website},turn_id='direct',current_message='courses fees seats scholarships')
-        tools=self.tools()
-        tools['read_university_webpage'].invoke({'url':website})
-        tools['identify_university_candidates'].invoke({'search_id':str(search.pk),'candidates':[{
-            'name':'Example University','website':website,'source_indices':[0],'official_identity_quote':'Example University'}]})
-        with patch('university_research.web.canonical_url',lambda url:url):
-            selected=tools['select_university_candidate'].invoke({'search_id':str(search.pk),'candidate_index':1})
-        with self.adviser_reply('Physics is offered. Fees are USD 10000 per year.'):
-            evidence=tools['ask_university'].invoke({'university_id':selected['university']['id'],'question':'courses fees seats scholarships'})
-        self.assertIn('Physics',evidence['answer'])
-        self.assertFalse(self.ctx['research_after_reply'])
-        self.assertFalse(self.ctx['university_cache_after_reply'])
-        self.assertTrue(PublicUniversity.objects.get().pages.exists())
-        self.assertFalse(self.ctx['university_source_search_required'])
-        scrape.assert_called_once(); claude.assert_called_once()
-
-    @patch('university_research.claude_fallback.search_official_evidence')
-    def test_successful_heading_only_scrape_delivers_claude_answer_and_terminates(self, claude):
-        from pure_multi_agent.student_graph import _reason
-        from types import SimpleNamespace
-        row=public(name='Example University')
-        uid='public:'+str(row.pk)
-        answer={'text':'**Example University**\n\nCourses: Physics. Fees: USD 10000 per year. Seats: N/A.',
-            'sources':[row.website],'provider':'claude_direct'}
-        claude.return_value={'url':row.website,'title':row.name,'content':answer['text'],'links':[],
-            'provider_answer':answer,'evidence_provider':'claude_direct','catalogue':{'description':'Example University','courses':[{'name':'MSc Physics','tuition':'USD 10000 per year'}]}}
-        self.ctx.update(turn_id='headings',university_resolution_turn='headings',university_candidates=[uid],
-            current_message='courses fees seats',read_web_pages={row.website:{'url':row.website,'title':row.name,'content':'Tuition and Fees 2026-27','links':[]}},
-            university_cache_after_reply={row.website:{'university_id':str(row.pk),'page':{'url':row.website,'title':row.name,'content':'Tuition and Fees 2026-27'}}})
-        with self.adviser_reply('Physics is offered. The university has not provided its seat count.'):
-            self.tools()['ask_university'].invoke({'university_id':uid,'question':'courses fees seats'})
-        with patch('pure_multi_agent.student_graph.build_all_tools',return_value=[]), patch('pure_multi_agent.change_proposals.conversation_state',return_value={}), patch('pure_multi_agent.model_router.invoke') as model:
-            response=_reason({'messages':[]},SimpleNamespace(context={'ctx':self.ctx,'prompt':''}))
-        self.assertEqual(response['messages'][0].content,'Physics is offered. The university has not provided its seat count.')
-        self.assertFalse(self.ctx['research_after_reply'])
-        self.assertFalse(self.ctx['university_source_search_required'])
-        self.assertFalse(self.ctx['university_cache_after_reply'])
-        self.assertEqual(row.courses.get().name,'MSc Physics')
-        model.assert_not_called(); claude.assert_called_once()
+    @patch('university_research.web.read_page', side_effect=ValueError('HTTP 403'))
+    def test_failed_official_read_does_not_manufacture_model_memory_evidence(self, scrape, model):
+        website = 'https://example.edu/'
+        self.ctx.update(known_web_urls={website}, turn_id='read', current_message='courses and fees')
+        with self.assertRaisesRegex(ValueError, 'official page could not be read'):
+            self.tools()['read_university_webpage'].invoke({'url': website})
+        scrape.assert_called_once()
+        model.assert_not_called()
+        self.assertFalse(PublicUniversity.objects.exists())
 
     def test_fetched_official_title_can_verify_identity_without_site_navigation(self):
         search = UniversitySearch.objects.create(student=self.student, query='MIT', candidates={'results':[{'url':'https://www.mit.edu/','title':'Search hint'}]})
@@ -405,12 +363,12 @@ class ResearchTests(TestCase):
             work_once()
         run.refresh_from_db(); row.refresh_from_db()
         self.assertEqual(run.status, 'completed')
-        self.assertEqual(row.courses.get().name, 'MSc Computing')
-        self.assertEqual(row.intakes.get().year, 2027)
-        self.assertEqual(row.facts.count(), 3)
+        self.assertFalse(row.courses.exists())
+        self.assertFalse(row.intakes.exists())
+        self.assertEqual(row.facts.get().content, quote)
         self.assertEqual(row.coverage['embedding_status'], 'lexical_development_mode')
         self.assertEqual(row.pages.get().url, row.website)
-        self.assertEqual(model.call_count, 2)
+        model.assert_not_called()
 
 
     def test_live_official_read_is_saved_without_private_question(self):
@@ -482,7 +440,7 @@ class ResearchTests(TestCase):
     def test_student_graph_uses_tools_and_model_writes_final_answer(self, model):
         from pure_multi_agent.student_graph import build_student_agent
         model.side_effect = [AIMessage(content='', tool_calls=[{'id': 'review', 'name': 'review_student_profile', 'args': {'focus': 'resume'}}]), AIMessage(content='Agent-composed resume advice')]
-        ctx = {**self.ctx, 'memory': {}}
+        ctx = {**self.ctx, 'memory': {}, 'current_message': 'Review my profile', 'turn_intent': {'route': 'profile'}, 'initial_evidence_requested': True}
         result = build_student_agent(ctx, 'Use evidence.', InMemorySaver()).invoke({'messages': [HumanMessage(content='Improve my resume')]}, {'configurable': {'thread_id': str(self.student.uuid)}})
         self.assertEqual(result['messages'][-1].content, 'Agent-composed resume advice')
         self.assertTrue(any(m.type == 'tool' for m in result['messages']))
@@ -505,7 +463,7 @@ class ResearchTests(TestCase):
         from github_profiles.scheduling import CapacityBusy
         saver = InMemorySaver()
         model.side_effect = [AIMessage(content='', tool_calls=[{'id': 'save', 'name': 'save_advising_artifact', 'args': {'kind': 'roadmap', 'title': 'Application plan', 'content': {'steps': ['Build a project']}}}]), CapacityBusy(), AIMessage(content='Your plan is saved.')]
-        with patch('pure_multi_agent.runtime._checkpointer', saver):
+        with patch('pure_multi_agent.runtime._checkpointer', saver), patch('pure_multi_agent.turn_policy.classify', return_value={'route': 'action', 'institutions': [], 'followup': False}):
             with self.assertRaises(ResumeTurnLater) as interrupted:
                 run_turn(str(self.student.uuid), 'Create my plan', raise_errors=True)
             self.assertEqual(AdvisingArtifact.objects.filter(student=self.student).count(), 1)

@@ -8,15 +8,16 @@ from pure_multi_agent.model_router import _validate
 
 
 class SubmissionRepairTests(SimpleTestCase):
-    def test_full_page_budget_exposes_only_submission_and_stays_local(self):
+    def test_full_page_budget_submits_fetched_evidence_without_inference(self):
         from university_research.agent import graph_for
-        from langchain_core.messages import HumanMessage
-        pages={f'https://example.edu/{n}':{'content':'Page','links':[]} for n in range(8)}
-        reply=AIMessage(content='',tool_calls=[{'id':'done','name':'submit_research','args':{'facts':[]}}])
-        with patch('university_research.agent.invoke',return_value=reply) as model:
-            graph_for('https://example.edu/','Example University').invoke({'messages':[HumanMessage(content='Research')],'pages':pages,'draft':{},'result':{},'errors':0})
-        self.assertEqual([t.name for t in model.call_args.args[1]],['submit_research'])
-        self.assertTrue(model.call_args.kwargs['local_only'])
+        pages = {f'https://example.edu/{n}': {'url': f'https://example.edu/{n}',
+                 'content': f'Official campus information for page {n}.', 'links': []} for n in range(8)}
+        with patch('university_research.agent.invoke') as model:
+            result = graph_for('https://example.edu/', 'Example University').invoke(
+                {'messages': [], 'pages': pages, 'draft': {}, 'result': {}, 'errors': 0})
+        model.assert_not_called()
+        self.assertEqual(result['messages'][-1].tool_calls[0]['name'], 'submit_research')
+        self.assertEqual(len(result['messages'][-1].tool_calls[0]['args']['facts']), 8)
 
     def test_missing_arrays_and_gaps_are_repaired_before_execution(self):
         url='https://example.edu/'

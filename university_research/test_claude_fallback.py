@@ -1,57 +1,49 @@
 from types import SimpleNamespace as Obj
-from django.test import SimpleTestCase
 from unittest.mock import patch
-from contextlib import nullcontext
-from university_research.claude_fallback import citation_pages
+from django.test import SimpleTestCase, TestCase
+from university_research.claude_fallback import citation_pages, search_official_evidence
+
 
 class ClaudeEvidenceTests(SimpleTestCase):
-    def test_full_provider_answer_is_retained_separately_from_citation_snippets(self):
-        from university_research.claude_fallback import search_official_evidence
-        text='Fees: $12000. Seats: 100. Scholarships: need-based grants. Housing and amenities: campus facilities.'
-        import json
-        response=Obj(content=[Obj(type='text',text=json.dumps({'name':'Example University','official_website':'https://example.edu/','answer':text}),citations=[])])
-        with patch('university_research.claude_fallback.Anthropic') as client, patch('university_research.claude_fallback.model_slot',return_value=nullcontext()), patch('university_research.claude_fallback.shared_slot',return_value=nullcontext()), patch('university_research.claude_fallback.operation',return_value=nullcontext({})), patch('university_research.claude_fallback.emit'):
-            client.return_value.messages.create.return_value=response
-            result=search_official_evidence('https://example.edu/','fees seats scholarships housing amenities')
-        self.assertEqual(result['provider_answer']['text'],text)
-        self.assertEqual(result['evidence_provider'],'claude_direct')
-        self.assertEqual(result['content'],text)
-        client.return_value.messages.create.assert_called_once()
-        self.assertNotIn('tools',client.return_value.messages.create.call_args.kwargs)
-
     def test_only_provider_citations_on_the_official_domain_are_accepted(self):
-        def citation(url,quote): return Obj(type='web_search_result_location',url=url,cited_text=quote,title='Official source')
-        response=Obj(content=[Obj(type='text',text='Uncited fee 99999',citations=[]), Obj(type='text',citations=[citation('https://www.ox.ac.uk/fees','Official fees excerpt'),citation('https://fake-ox.ac.uk/fees','Fake fee'),citation('https://www.ox.ac.uk.evil.test/fees','Fake fee')])])
-        pages=citation_pages(response,'ox.ac.uk')
-        self.assertEqual(len(pages),1)
-        self.assertEqual(pages[0]['content'],'Official fees excerpt')
-        self.assertEqual(pages[0]['evidence_provider'],'claude_web_search')
+        def citation(url, quote):
+            return Obj(type='web_search_result_location', url=url, cited_text=quote, title='Official source')
+        response = Obj(content=[Obj(type='text', citations=[
+            citation('https://www.ox.ac.uk/fees', 'Official fees excerpt'),
+            citation('https://fake-ox.ac.uk/fees', 'Fake fee'),
+            citation('https://www.ox.ac.uk.evil.test/fees', 'Fake fee')])])
+        pages = citation_pages(response, 'ox.ac.uk')
+        self.assertEqual(len(pages), 1)
+        self.assertEqual(pages[0]['content'], 'Official fees excerpt')
 
 
-class SingleResearchCallTests(SimpleTestCase):
-    def test_same_task_reuses_result_and_blocks_other_domain(self):
-        import json
-        from university_research.claude_fallback import search_official_evidence
-        ctx = {}
-        response = Obj(content=[Obj(type='text', text=json.dumps({'name':'Example University',
-            'official_website':'https://example.edu/', 'answer':'Programmes and fees.', 'catalogue':{'description':'Example'}}))])
-        with patch('university_research.claude_fallback.Anthropic') as client, \
-             patch('university_research.claude_fallback.model_slot', return_value=nullcontext()), \
-             patch('university_research.claude_fallback.shared_slot', return_value=nullcontext()), \
-             patch('university_research.claude_fallback.operation', return_value=nullcontext({})), \
-             patch('university_research.claude_fallback.emit'):
-            client.return_value.messages.create.return_value = response
-            first = search_official_evidence('https://example.edu/', ctx=ctx)
-            self.assertEqual(search_official_evidence('https://example.edu/fees', ctx=ctx), first)
-            with self.assertRaisesRegex(ValueError, 'single Claude'):
-                search_official_evidence('https://another.edu/', ctx=ctx)
-        client.return_value.messages.create.assert_called_once()
+class OfficialEvidenceTests(TestCase):
+    def test_fetched_source_is_retained_without_model_inference(self):
+        source = {'url': 'https://example.edu/fees', 'title': 'Fees',
+                  'content': 'Tuition is $12000 per year.', 'links': []}
+        with patch('university_research.web.search_official_site', return_value=[{'url': source['url']}]), \
+             patch('university_research.web.read_page_once', return_value=source), \
+             patch('pure_multi_agent.model_router.invoke') as model:
+            result = search_official_evidence('https://example.edu/', 'fees')
+        model.assert_not_called()
+        self.assertTrue(result['grounded_in_source'])
+        self.assertEqual(result['url'], source['url'])
+        self.assertEqual(result['catalogue']['facts'][0]['content'], source['content'])
+        self.assertEqual(result['evidence_provider'], 'scraper_extracted')
 
-    def test_readable_page_is_extracted_locally(self):
-        from langchain_core.messages import AIMessage
-        from university_research.claude_fallback import search_official_evidence
-        with patch('pure_multi_agent.model_router.invoke', return_value=AIMessage(content='{"description":"Physics programmes"}')) as model, \
-             patch('university_research.extraction_cache.get_or_extract', side_effect=lambda **kwargs: (kwargs['extract'](), False)):
-            page = search_official_evidence('https://example.edu/', source_page={'url':'https://example.edu/', 'content':'Physics programmes'})
-        self.assertTrue(model.call_args.kwargs['local_only'])
-        self.assertEqual(page['catalogue']['description'], 'Physics programmes')
+    def test_unavailable_sources_never_fall_back_to_model_memory(self):
+        with patch('university_research.web.search_official_site', return_value=[]), \
+             patch('university_research.web.read_page_once', side_effect=ValueError('Unavailable')), \
+             patch('pure_multi_agent.model_router.invoke') as model:
+            with self.assertRaisesRegex(ValueError, 'No official source document'):
+                search_official_evidence('https://example.edu/')
+        model.assert_not_called()
+
+    def test_readable_source_needs_neither_network_nor_model(self):
+        source = {'url': 'https://example.edu/physics', 'content': 'Physics programmes are available.'}
+        with patch('university_research.web.search_official_site') as search, \
+             patch('pure_multi_agent.model_router.invoke') as model:
+            result = search_official_evidence('https://example.edu/', source_page=source)
+        search.assert_not_called()
+        model.assert_not_called()
+        self.assertEqual(result['catalogue']['facts'][0]['content'], source['content'])

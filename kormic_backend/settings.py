@@ -393,6 +393,8 @@ REST_FRAMEWORK = {
         "claim_start_email": "3/min",
         "claim_verify_ip": "20/min",
         "claim_verify_email": "10/min",
+        "claim_confirm_ip": "20/min",
+        "claim_confirm_session": "5/min",
     },
 }
 

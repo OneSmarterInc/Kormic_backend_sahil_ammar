@@ -146,7 +146,7 @@ def _consult(ctx, row, question, public_row=None):
                 profile='evidence', message_preparer=compact_chat_messages, **advice_options())
         except Exception as exc:
             from pure_multi_agent.model_router import AIServiceUnavailable
-            from pure_multi_agent.qwen_context import ContextBudgetExceeded
+            from pure_multi_agent.context_budget import ContextBudgetExceeded
             if isinstance(exc, ContextBudgetExceeded):
                 from langchain_core.messages import AIMessage
                 reply = AIMessage(content=(

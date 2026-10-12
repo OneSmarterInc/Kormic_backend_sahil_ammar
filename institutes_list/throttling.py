@@ -52,3 +52,20 @@ class ClaimVerifyIPThrottle(ClaimRateSettingsMixin, AnonRateThrottle):
 
 class ClaimVerifyEmailThrottle(ClaimEmailRateThrottle):
     scope = "claim_verify_email"
+
+
+class ClaimConfirmIPThrottle(ClaimRateSettingsMixin, AnonRateThrottle):
+    scope = "claim_confirm_ip"
+
+
+class ClaimConfirmSessionThrottle(ClaimRateSettingsMixin, SimpleRateThrottle):
+    scope = "claim_confirm_session"
+
+    def get_cache_key(self, request, view):
+        import hashlib
+        session = str(request.data.get("claim_session") or "").strip()
+        if not session:
+            return None
+        # Keep signed bearer credentials and unbounded user input out of cache keys.
+        identity = hashlib.sha256(session.encode()).hexdigest()
+        return self.cache_format % {"scope": self.scope, "ident": identity}

@@ -1,7 +1,7 @@
 from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
-from pure_multi_agent.qwen_context import ContextBudgetExceeded
+from pure_multi_agent.context_budget import ContextBudgetExceeded
 from university_research.models import PublicUniversity, ResearchRun
 from university_research.worker import work_once
 

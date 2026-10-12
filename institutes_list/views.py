@@ -32,6 +32,8 @@ from django.core.exceptions import ImproperlyConfigured
 from .throttling import (
     ClaimVerifyEmailThrottle,
     ClaimVerifyIPThrottle,
+    ClaimConfirmIPThrottle,
+    ClaimConfirmSessionThrottle,
 )
 
 OTP_TTL_SECONDS = 10 * 60
@@ -805,6 +807,7 @@ def verify_claim(request):
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes([ClaimConfirmIPThrottle, ClaimConfirmSessionThrottle])
 def confirm_claim(request):
     """
     POST /api/claim/confirm/   {"claim_session": ..., "fields": {...}}

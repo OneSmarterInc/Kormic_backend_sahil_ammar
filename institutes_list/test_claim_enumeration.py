@@ -1,7 +1,7 @@
 from unittest import mock
 
 from django.core.cache import cache
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -9,6 +9,7 @@ from institutes.services import register_institute
 from institutes_list.models import ListedStudent, InstituteStudentList
 
 
+@override_settings(INVITE_DELIVERY_MODE="celery")
 class ClaimEnumerationResistanceTests(TestCase):
     def setUp(self):
         cache.clear()

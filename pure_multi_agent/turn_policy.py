@@ -4,7 +4,7 @@ import re
 from typing import Literal
 from pydantic import BaseModel, Field
 from langchain_core.messages import HumanMessage, SystemMessage
-from pure_multi_agent.qwen_context import ContextBudgetExceeded
+from pure_multi_agent.context_budget import ContextBudgetExceeded
 
 
 def public_research_query(question):

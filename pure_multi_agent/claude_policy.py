@@ -4,7 +4,7 @@ import os
 import time
 from uuid import uuid4
 from pure_multi_agent.telemetry import emit, current
-from pure_multi_agent.qwen_context import ContextBudgetExceeded
+from pure_multi_agent.context_budget import ContextBudgetExceeded
 
 
 def model_name():

@@ -12,12 +12,11 @@ class ClaudeRoutingTests(SimpleTestCase):
     def test_legacy_local_only_flag_cannot_dispatch_qwen(self):
         model = Mock(model='claude-test')
         model.invoke.return_value = AIMessage(content='Claude answer')
-        with patch.object(model_router, 'qwen') as local, patch.object(model_router, 'claude', return_value=model), \
+        with patch.object(model_router, 'claude', return_value=model), \
              patch.object(model_router, 'provider_blocked', return_value=False), \
              patch.object(model_router, 'model_slot', return_value=nullcontext()), \
              patch('pure_multi_agent.capacity.model_slot', return_value=nullcontext()):
             reply = model_router.invoke([HumanMessage(content='Hello')], local_only=True)
-        local.assert_not_called()
         self.assertEqual(reply.response_metadata['routing_provider'], 'claude')
 
     def test_invalid_claude_json_is_repaired_once_and_validated(self):
@@ -34,14 +33,13 @@ class ClaudeRoutingTests(SimpleTestCase):
     def test_sdk_never_uses_legacy_local_adapter(self):
         sdk = Mock()
         sdk.create.return_value = SimpleNamespace(id='test', usage=SimpleNamespace(model_dump=lambda: {'input_tokens':10,'output_tokens':2}))
-        with patch('pure_multi_agent.legacy_qwen.create') as local, patch('pure_multi_agent.capacity.model_slot', return_value=nullcontext()), patch('pure_multi_agent.claude_policy.emit'):
+        with patch('pure_multi_agent.capacity.model_slot', return_value=nullcontext()), patch('pure_multi_agent.claude_policy.emit'):
             LimitedMessages(sdk).create(model='old-model', max_tokens=9000, messages=[{'role':'user','content':'Hi'}])
-        local.assert_not_called()
         self.assertTrue(sdk.create.call_args.kwargs['model'].startswith('claude-'))
         self.assertEqual(sdk.create.call_args.kwargs['max_tokens'], 4000)
 
     def test_input_budget_rejects_excess_without_silently_cutting_it(self):
-        from pure_multi_agent.qwen_context import ContextBudgetExceeded
+        from pure_multi_agent.context_budget import ContextBudgetExceeded
         with self.assertRaises(ContextBudgetExceeded):
             prepare_sdk({'messages':[{'role':'user','content':'word ' * 100000}], 'max_tokens':100})
 
@@ -57,7 +55,6 @@ class ClaudeRoutingTests(SimpleTestCase):
         sdk.messages.create.return_value = SimpleNamespace(content=[SimpleNamespace(type='tool_use', name='structured_response', input={'summary':'ok'})])
         with patch('github_profiles.inference.httpx.post') as local, patch('agents.github_agent._get_anthropic_client', return_value=sdk):
             result = Inference().chat([{'role':'user','content':'Analyze'}], {'type':'object'})
-        local.assert_not_called()
         self.assertEqual(result['provider'], 'claude')
 
     def test_research_page_selection_does_not_call_a_model(self):

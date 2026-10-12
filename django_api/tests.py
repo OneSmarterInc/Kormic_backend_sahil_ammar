@@ -581,7 +581,13 @@ class SubResourceHistoryTests(TestCase):
         self.assertEqual(forbidden_resp.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_profile_image_upload_replace_download_delete_and_officer_visibility(self):
-        image1 = SimpleUploadedFile("avatar.png", b"first-image-bytes", content_type="image/png")
+        from io import BytesIO
+        from PIL import Image
+        def png_bytes(color):
+            buffer = BytesIO()
+            Image.new('RGB', (1, 1), color=color).save(buffer, format='PNG')
+            return buffer.getvalue()
+        image1 = SimpleUploadedFile("avatar.png", png_bytes('red'), content_type="image/png")
         upload_resp = self.student.post("/api/profile/image/", {"image": image1}, format="multipart")
         self.assertEqual(upload_resp.status_code, status.HTTP_200_OK)
         self.assertTrue(
@@ -594,7 +600,12 @@ class SubResourceHistoryTests(TestCase):
         download_resp = self.student.get(f"/api/profile/{self.student_id}/image/")
         self.assertEqual(download_resp.status_code, status.HTTP_200_OK)
 
-        # Officers can view any student's picture (dashboard roster use case).
+        # Officers can view only students who have expressed interest.
+        outside_scope = self.officer_wsu.get(f"/api/profile/{self.student_id}/image/")
+        self.assertEqual(outside_scope.status_code, status.HTTP_404_NOT_FOUND)
+        from django_api.models import UniversityInterestEvent
+        UniversityInterestEvent.objects.create(student=StudentProfile.objects.get(uuid=self.student_id),
+            university_id=self.wsu_id, source=UniversityInterestEvent.Source.SEARCHED)
         officer_resp = self.officer_wsu.get(f"/api/profile/{self.student_id}/image/")
         self.assertEqual(officer_resp.status_code, status.HTTP_200_OK)
 
@@ -604,7 +615,7 @@ class SubResourceHistoryTests(TestCase):
         self.assertEqual(forbidden_resp.status_code, status.HTTP_403_FORBIDDEN)
 
         # Re-uploading replaces rather than accumulating, and removes the old file.
-        image2 = SimpleUploadedFile("avatar2.png", b"second-image-bytes", content_type="image/png")
+        image2 = SimpleUploadedFile("avatar2.png", png_bytes('blue'), content_type="image/png")
         self.student.post("/api/profile/image/", {"image": image2}, format="multipart")
         second_path = StudentProfile.objects.get(uuid=self.student_id).profile_image_path
         self.assertNotEqual(first_path, second_path)

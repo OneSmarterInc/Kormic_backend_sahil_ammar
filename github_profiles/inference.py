@@ -6,7 +6,6 @@ from urllib.parse import urlparse
 import httpx
 from django.conf import settings
 from jsonschema import validate, ValidationError
-from kormic_backend.ollama_config import qwen_keep_alive
 
 from .errors import ServiceError
 from .scheduling import CapacityBusy, model_slot
@@ -18,10 +17,8 @@ class InvalidResponse(ServiceError):
 
 
 class Inference:
-    # One instance per sync: an offline Qwen is checked once, not for every repo.
     def __init__(self, run=None):
         self.run = run
-        self.qwen_available = True
         self.providers = set()
         self.unavailable = False
 

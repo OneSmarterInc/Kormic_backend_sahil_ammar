@@ -389,8 +389,8 @@ class ProfileImageUploadAPIView(APIView):
 class ProfileImageDetailAPIView(APIView):
     """
     GET /api/profile/<student_id>/image/ — download the current profile picture.
-    Readable by the owning student or any university officer (dashboard
-    rosters list every student's picture), matching UniversityProfilesListView.
+    Readable by the owning student or a university officer whose university
+    is within the student's interest scope, matching UniversityProfilesListView.
     DELETE /api/profile/<student_id>/image/ — remove it; owner-only.
     """
 

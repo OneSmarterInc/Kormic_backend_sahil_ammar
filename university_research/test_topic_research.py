@@ -40,7 +40,8 @@ class TopicTests(TestCase):
         with patch('pure_multi_agent.registered_adviser.invoke',return_value=AIMessage(content='Saved scholarship details')) as model, \
              patch('agents.student_context.university_context',return_value={}):
             result=_consult(ctx,self.row,'scholarships',public_row=self.row)
-        self.assertEqual(result['answer'],'Saved scholarship details')
+        self.assertTrue(result['answer'].startswith('Saved scholarship details'))
+        self.assertIn('https://example.edu/', result['answer'])
         model.assert_called_once()
         self.assertEqual(model.call_args.args[1],[])
         self.assertTrue(any(m.type=='tool' for m in model.call_args.args[0]))

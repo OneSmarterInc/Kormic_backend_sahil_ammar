@@ -111,7 +111,7 @@ class UniversityResolutionTests(SimpleTestCase):
             _reason({'messages':[HumanMessage(content='Find IIT Bombay courses')]},SimpleNamespace(context={'ctx':ctx,'prompt':''}))
         self.assertEqual([tool.name for tool in model.call_args.args[1]],['list_universities'])
         self.assertTrue(model.call_args.kwargs['require_tools'])
-        self.assertTrue(model.call_args.kwargs['local_only'])
+        self.assertTrue(model.call_args.kwargs['force_claude'])
 
     def test_directory_identity_cannot_skip_evidence_retrieval(self):
         from types import SimpleNamespace
@@ -123,7 +123,7 @@ class UniversityResolutionTests(SimpleTestCase):
             _reason({'messages':[HumanMessage(content='Find courses and fees')]},SimpleNamespace(context={'ctx':ctx,'prompt':''}))
         self.assertEqual([tool.name for tool in model.call_args.args[1]],['ask_university'])
         self.assertTrue(model.call_args.kwargs['require_tools'])
-        self.assertTrue(model.call_args.kwargs['local_only'])
+        self.assertTrue(model.call_args.kwargs['force_claude'])
 
     def test_college_turn_does_not_fetch_github_automatically(self):
         from types import SimpleNamespace

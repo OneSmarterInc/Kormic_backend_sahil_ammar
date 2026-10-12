@@ -47,8 +47,6 @@ jsonschema-specifications==2025.9.1
 kombu==5.6.2
 langchain-anthropic==1.7.2
 langchain-core==1.6.4
-langchain-ollama==1.1.0
-ollama==0.6.2
 ddgs==9.16.0
 primp==2.0.1
 langchain-protocol==0.0.19

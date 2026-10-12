@@ -113,17 +113,19 @@ class DiscoveryContextTests(TestCase):
         from types import SimpleNamespace
         from langchain_core.messages import HumanMessage
         from pure_multi_agent.student_graph import _reason
-        self.ctx['model_steps'] = 1
+        self.ctx.update(model_steps=1, current_message='University of Copenhagen',
+                        turn_intent={'route': 'university'}, university_discovery_pending=True)
         reply = AIMessage(content='', tool_calls=[{'id':'selection', 'name':'choose_university_result', 'args':{'result_number':1}}])
         with patch('pure_multi_agent.model_router.invoke', return_value=reply) as model:
             _reason({'messages':[HumanMessage(content='Old Illinois task')]},
                 SimpleNamespace(context={'ctx':self.ctx,'prompt':'Unrelated profile instructions'}))
-        messages, tools = model.call_args.args
+        selection_call = next(call for call in model.call_args_list if len(call.args) == 2)
+        messages, tools = selection_call.args
         self.assertEqual([t.name for t in tools], ['choose_university_result'])
         self.assertIn('University of Copenhagen', messages[-1].content)
         self.assertNotIn('Old Illinois task', str(messages))
         self.assertNotIn('Unrelated profile', str(messages))
-        validator = model.call_args.kwargs['tool_call_validator']
+        validator = selection_call.kwargs['tool_call_validator']
         with self.assertRaises(ValueError):
             validator({'name':'choose_university_result','args':{'result_number':99}})
         validator(reply.tool_calls[0])

@@ -8,52 +8,29 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 
 from pure_multi_agent.officer_context import prepare, fit_history, DEFERRED, CATALOG, PAGE_CHARS
 from pure_multi_agent.officer_graph import POLICY, _reason
-from pure_multi_agent.qwen_context import select_context, ContextBudgetExceeded
+from pure_multi_agent.context_budget import select_context, ContextBudgetExceeded
 from pure_multi_agent.tools.officer_tools import build_tools
 
 
 class OfficerContextTests(SimpleTestCase):
-    def test_repair_reclaims_old_history_and_keeps_real_question_and_feedback(self):
+    def test_claude_repair_preserves_current_question_and_feedback(self):
+        from unittest.mock import Mock
         from pure_multi_agent import model_router
         question = HumanMessage(content='Change the CGPA requirement to 3.7')
-        history = [HumanMessage(content='Earlier discussion'),
-                   AIMessage(content='Earlier context'), question]
-        _, tools = prepare({}, [], build_tools({}))
-        # Choose old history that fits initially but cannot fit a repair as well.
-        while True:
-            try:
-                select_context([SystemMessage(content=POLICY + CATALOG), *history],
-                               tools, profile='evidence')
-            except ContextBudgetExceeded:
-                history[1] = AIMessage(content=history[1].content[:-2000])
-                break
-            history[1] = AIMessage(content=history[1].content + 'x' * 1000)
-
-        dispatched = []
         invalid = AIMessage(content='', tool_calls=[{'id': 'bad', 'name': 'unknown', 'args': {}}])
-        valid = AIMessage(content='', tool_calls=[{'id': 'read', 'name': 'read_university_record',
-                                                  'args': {'section': 'requirements'}}])
-        def prepare_request(messages, *, output_tokens=None):
-            return [messages[0], *fit_history(messages[0].content, messages[1:], tools,
-                protected_message=question, output_tokens=output_tokens)]
-        def respond(model, messages, *args):
-            dispatched.append(messages)
-            return invalid if len(dispatched) == 1 else valid
+        valid = AIMessage(content='Please clarify the requirement.')
+        model = Mock(model='claude-test')
+        model.invoke.side_effect = [invalid, valid]
         with patch.object(model_router, 'provider_blocked', return_value=False), \
-             patch.object(model_router, 'qwen_slot', return_value=nullcontext()), \
-             patch.object(model_router, 'qwen'), \
-             patch.object(model_router, 'needs_expansion', return_value=False), \
-             patch.object(model_router, '_local_repair_instruction', return_value='Correct the rejected call ' * 250), \
-             patch.object(model_router, 'measured_invoke', side_effect=respond):
-            result = model_router.invoke([SystemMessage(content=POLICY + CATALOG), *history], tools,
-                profile='evidence', local_only=True, message_preparer=prepare_request)
-        self.assertEqual(result.tool_calls[0]['name'], 'read_university_record')
-        self.assertEqual(len(dispatched), 2)
-        self.assertTrue(any(message is history[1] for message in dispatched[0]))
-        self.assertTrue(any(message is question for message in dispatched[1]))
-        self.assertIn('Correct the rejected call', dispatched[1][-1].content)
-        self.assertFalse(any(message is history[1] for message in dispatched[1]))
-        self.assertEqual(len(history), 3)
+             patch.object(model_router, 'model_slot', return_value=nullcontext()), \
+             patch('pure_multi_agent.capacity.model_slot', return_value=nullcontext()), \
+             patch.object(model_router, 'claude', return_value=model):
+            result = model_router.invoke([question])
+        self.assertIs(result, valid)
+        self.assertEqual(model.invoke.call_count, 2)
+        retry_messages = model.invoke.call_args.args[0]
+        self.assertTrue(any(message is question for message in retry_messages))
+        self.assertIn('Unknown model tool', retry_messages[-1].content)
 
     def test_repair_instruction_cannot_displace_the_current_request(self):
         question = HumanMessage(content='CGPA request ' * 2500)
@@ -110,7 +87,7 @@ class OfficerContextTests(SimpleTestCase):
             loader.invoke({'name': 'arbitrary_database_update'})
 
     def test_large_unicode_evidence_is_exactly_retrievable_and_conversation_scoped(self):
-        content = json.dumps({'requirements': '学費 é admission ' * 3000}, ensure_ascii=False)
+        content = json.dumps({'requirements': 'å­¦è²» Ã© admission ' * 3000}, ensure_ascii=False)
         original = ToolMessage(content=content, tool_call_id='requirements', name='read_university_record')
         projected, tools = prepare({}, [original], [])
         preview = json.loads(projected[0].content)
