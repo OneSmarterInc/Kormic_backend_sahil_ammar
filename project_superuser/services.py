@@ -65,6 +65,10 @@ def revoke_all_sessions(user) -> int:
     """
     from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 
+    from accounts.models import Account
+    from django.db.models import F
+
+    Account.objects.filter(user=user).update(session_version=F("session_version") + 1)
     tokens = OutstandingToken.objects.filter(user=user).exclude(blacklistedtoken__isnull=False)
     count = 0
     for token in tokens:

@@ -513,11 +513,12 @@ class SuperuserUserRemoveTOTPTests(TestCase):
         )
         self.assertTrue(login_resp.data["must_enroll_totp"])
 
-    def test_admin_cannot_remove_own_totp(self):
+    def test_admin_can_reset_own_totp_and_must_sign_in_again(self):
         me = self.admin.get("/api/auth/me/").data
         resp = self.admin.post(f"/api/superuser/users/{me['id']}/remove-totp/")
-        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertTrue(TOTPDevice.objects.filter(user_id=me["id"]).exists())
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertFalse(TOTPDevice.objects.filter(user_id=me["id"]).exists())
+        self.assertEqual(self.admin.get("/api/auth/me/").status_code, 401)
 
     def test_remove_totp_for_unknown_user_is_404(self):
         resp = self.admin.post("/api/superuser/users/999999/remove-totp/")

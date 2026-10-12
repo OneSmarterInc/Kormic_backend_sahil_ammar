@@ -15,7 +15,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from accounts.authentication import FaceGatedAuthentication
-from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
+from accounts.tokens import AccessToken, RefreshToken
 
 from accounts.models import Account, StudentFaceChallenge, StudentFaceCredential, StudentFaceCapture, TOTPDevice
 from accounts.face_engine import FaceScanError, measure, similarity

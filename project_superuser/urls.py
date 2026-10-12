@@ -23,6 +23,7 @@ urlpatterns = [
     ),
     path("roster-students/", views.AdminRosterStudentListAPIView.as_view(), name="superuser-roster-students"),
     path("users/", views.AdminUserListAPIView.as_view(), name="superuser-users"),
+    path("users/organizations/", views.AdminOrganizationChoicesAPIView.as_view(), name="superuser-user-organizations"),
     path(
         "users/create-superuser/",
         views.AdminCreateSuperuserAPIView.as_view(),

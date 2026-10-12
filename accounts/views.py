@@ -14,7 +14,7 @@ from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework_simplejwt.tokens import RefreshToken
+from accounts.tokens import RefreshToken
 
 from accounts.db_utils import run_with_retry
 from accounts.email import send_otp_email, send_password_changed_email
@@ -218,6 +218,15 @@ class LoginView(APIView):
                 target_user=existing,
                 target_email=serializer.validated_data["email"],
             )
+            if (existing is not None and not existing.is_active
+                    and existing.check_password(serializer.validated_data['password'])
+                    and (portal is None or Account.objects.filter(
+                        user=existing, role__in=['university', 'department'] if portal == 'university' else [portal],
+                    ).exists())):
+                return Response({
+                    'detail': 'This account is deactivated. Contact your administrator.',
+                    'code': 'account_deactivated',
+                }, status=status.HTTP_403_FORBIDDEN)
             return Response({"detail": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
 
         if _user_has_confirmed_totp(user):

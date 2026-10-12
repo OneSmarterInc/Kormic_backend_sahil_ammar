@@ -62,6 +62,7 @@ class Account(models.Model):
 
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="account")
     role = models.CharField(max_length=20, choices=Role.choices)
+    session_version = models.PositiveIntegerField(default=0)
 
     # Only one of these is populated, depending on role. Real FKs to the
     # integer PKs; the public-facing identifier is the target's `uuid`,

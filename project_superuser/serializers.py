@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
-from django.db import transaction
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import IntegrityError, transaction
+from django.db.models import Q
 from rest_framework import serializers
 
 from accounts.models import Account
@@ -132,6 +134,75 @@ class AdminCreateSuperuserSerializer(serializers.Serializer):
             Account.objects.create(user=user, role=Account.Role.SUPERUSER)
 
         return user
+
+
+class AdminCreateUserSerializer(serializers.Serializer):
+    """Create a separate login with the existing role's full tenant privileges."""
+
+    name = serializers.CharField(max_length=150)
+    email = serializers.EmailField(max_length=150)
+    password = serializers.CharField(write_only=True, trim_whitespace=False)
+    role = serializers.ChoiceField(choices=('superuser', 'university', 'institute'))
+    university_id = serializers.UUIDField(required=False)
+    institute_id = serializers.UUIDField(required=False)
+
+    def validate_email(self, value):
+        value = value.strip().lower()
+        if (User.objects.filter(Q(email__iexact=value) | Q(username__iexact=value)).exists()
+                or StudentProfile.objects.filter(email__iexact=value).exists()):
+            raise serializers.ValidationError('This email is already used by an account or student profile.')
+        return value
+
+    def validate(self, attrs):
+        from institutes.models import Institute
+        from universities.models import University
+
+        role = attrs['role']
+        allowed = {'university': 'university_id', 'institute': 'institute_id'}.get(role)
+        for field in ('university_id', 'institute_id'):
+            if field in attrs and field != allowed:
+                raise serializers.ValidationError({field: 'This organization does not match the selected user type.'})
+        if allowed:
+            if allowed not in attrs:
+                raise serializers.ValidationError({allowed: 'Select an existing organization.'})
+            model = University if role == 'university' else Institute
+            if not model.objects.filter(uuid=attrs[allowed]).exists():
+                raise serializers.ValidationError({allowed: 'The selected organization no longer exists.'})
+        candidate = User(username=attrs['email'], email=attrs['email'], first_name=attrs['name'])
+        try:
+            validate_password(attrs['password'], user=candidate)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({'password': list(exc.messages)}) from exc
+        return attrs
+
+    def create(self, validated_data):
+        from institutes.models import Institute
+        from universities.models import University
+        from project_superuser import services
+        from project_superuser.models import ActivityLog
+
+        email = validated_data['email']
+        role = validated_data['role']
+        try:
+            with transaction.atomic():
+                links = {}
+                if role in ('university', 'institute'):
+                    model = University if role == 'university' else Institute
+                    entity = model.objects.select_for_update().filter(uuid=validated_data[f'{role}_id']).first()
+                    if entity is None:
+                        raise serializers.ValidationError({f'{role}_id': 'The selected organization no longer exists.'})
+                    links[role] = entity
+                user = User.objects.create_user(
+                    username=email, email=email, first_name=validated_data['name'],
+                    password=validated_data['password'],
+                )
+                Account.objects.create(user=user, role=role, **links)
+                services.log_activity(ActivityLog.Action.REGISTERED, actor=self.context['request'].user, target_user=user)
+                return user
+        except IntegrityError as exc:
+            if User.objects.filter(Q(email__iexact=email) | Q(username__iexact=email)).exists():
+                raise serializers.ValidationError({'email': 'An account with this email already exists.'}) from exc
+            raise
 
 
 class AdminEnrollUniversitySerializer(serializers.Serializer):

@@ -6,7 +6,8 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.contrib.auth.password_validation import validate_password
 from django.db import transaction
 from rest_framework import status, serializers
-from django.db.models import Count, Exists, OuterRef, Q
+from django.db.models import Count, Exists, OuterRef, Q, F, Subquery, Value
+from django.db.models.functions import Coalesce, Lower, NullIf
 from django.core.paginator import Paginator
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -26,6 +27,7 @@ from project_superuser.serializers import (
     AdminCreateStudentSerializer,
     AdminUpdateUserSerializer,
     AdminCreateSuperuserSerializer,
+    AdminCreateUserSerializer,
     AdminEnrollInstituteSerializer,
     AdminEnrollUniversitySerializer,
 )
@@ -42,6 +44,43 @@ def _error(message: str, http_status=status.HTTP_400_BAD_REQUEST) -> Response:
 class ListQuery(serializers.Serializer):
     page = serializers.IntegerField(min_value=1, required=False)
     page_size = serializers.IntegerField(min_value=1, max_value=100, default=25)
+
+
+class StudentListQuery(ListQuery):
+    sort = serializers.ChoiceField(
+        choices=('name', 'institution', 'major', 'status', 'totp', 'joined'),
+        default='joined',
+    )
+    direction = serializers.ChoiceField(choices=('asc', 'desc'), default='desc')
+
+
+def _directory_order(queryset, request, fields, default, direction='asc'):
+    """Apply allowlisted, stable ordering before any pagination."""
+    key = request.query_params.get('sort', default)
+    order = request.query_params.get('direction', direction)
+    if key not in fields or order not in {'asc', 'desc'}:
+        raise serializers.ValidationError({'sort': 'Invalid sort field or direction.'})
+    expression = fields[key]
+    if isinstance(expression, str):
+        expression = F(expression)
+    ordering = expression.desc(nulls_last=True) if order == 'desc' else expression.asc(nulls_last=True)
+    return queryset.order_by(ordering, '-pk' if order == 'desc' else 'pk')
+
+
+def _with_directory_admin(queryset, relation, role):
+    # Match the first account shown by serializers; never multiply entity rows.
+    admins = _accounts().filter(**{relation: OuterRef('pk')}, role=role).order_by('created_at', 'pk')
+    return queryset.annotate(
+        _admin_name=Subquery(admins.values('user__first_name')[:1]),
+        _admin_active=Subquery(admins.values('user__is_active')[:1]),
+        _admin_totp=Subquery(admins.values('_totp_enrolled')[:1]),
+    )
+
+
+ENTITY_DIRECTORY_FIELDS = {
+    'name': Lower('name'), 'admin': Lower('_admin_name'),
+    'status': '_admin_active', 'totp': '_admin_totp', 'created': 'created_at',
+}
 
 
 class AuditQuery(serializers.Serializer):
@@ -78,7 +117,7 @@ def _universities():
 def _university_rows(queryset):
     rows = list(queryset)
     officers = {}
-    for account in _accounts().filter(university_id__in=[u.pk for u in rows], role=Account.Role.UNIVERSITY).order_by('created_at'):
+    for account in _accounts().filter(university_id__in=[u.pk for u in rows], role=Account.Role.UNIVERSITY).order_by('created_at', 'pk'):
         officers.setdefault(account.university_id, []).append(account)
     for university in rows:
         university._officers = officers.get(university.pk, [])
@@ -189,7 +228,26 @@ class AdminStudentListCreateAPIView(APIView):
     permission_classes = SUPERUSER_PERMISSIONS
 
     def get(self, request):
-        accounts = _accounts().filter(role=Account.Role.STUDENT).order_by("-created_at", "-pk")
+        query = StudentListQuery(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        sort_fields = {
+            'name': Lower('user__first_name'),
+            'institution': Lower('student_profile__institution'),
+            'major': Lower('student_profile__major'),
+            'status': 'user__is_active',
+            'totp': '_totp_enrolled',
+            'joined': 'user__date_joined',
+        }
+        field = sort_fields[query.validated_data['sort']]
+        descending = query.validated_data['direction'] == 'desc'
+        ordering = (
+            ('-' if descending else '') + field
+            if isinstance(field, str)
+            else field.desc(nulls_last=True) if descending else field.asc(nulls_last=True)
+        )
+        accounts = _accounts().filter(role=Account.Role.STUDENT).order_by(
+            ordering, '-pk' if descending else 'pk',
+        )
 
         search = request.query_params.get("search", "").strip()
         if search:
@@ -281,7 +339,10 @@ class AdminUniversityListCreateAPIView(APIView):
     permission_classes = SUPERUSER_PERMISSIONS
 
     def get(self, request):
-        universities = _universities().order_by("name", "pk")
+        universities = _directory_order(
+            _with_directory_admin(_universities(), 'university_id', Account.Role.UNIVERSITY),
+            request, ENTITY_DIRECTORY_FIELDS, 'name',
+        )
 
         search = request.query_params.get("search", "").strip()
         if search:
@@ -443,7 +504,11 @@ class AdminInstituteListCreateAPIView(APIView):
         institutes = Institute.objects.all()
         if search:
             institutes = institutes.filter(name__icontains=search)
-        paginator = Paginator(institutes.order_by("name", "pk"), page_size)
+        institutes = _directory_order(
+            _with_directory_admin(institutes, 'institute_id', Account.Role.INSTITUTE),
+            request, ENTITY_DIRECTORY_FIELDS, 'name',
+        )
+        paginator = Paginator(institutes, page_size)
         page = paginator.get_page(page_number)
         rows = list(page.object_list)
         admins = _institute_admins_for_page(rows)
@@ -598,6 +663,11 @@ class AdminRosterStudentListAPIView(APIView):
         except (TypeError, ValueError):
             return _error("page and page_size must be positive integers.")
 
+        qs = _directory_order(qs, request, {
+            'name': Lower('full_name'), 'institute': Lower('source_list__institute__name'),
+            'study': Lower(Coalesce(NullIf('program_name', Value('')), 'field_of_study')), 'status': 'status',
+            'account': 'has_account', 'uploaded': 'created_at', 'source': 'source_list_id',
+        }, 'uploaded', 'desc')
         total = qs.count()
         start = (page - 1) * page_size
         page_rows = list(qs[start : start + page_size])
@@ -695,7 +765,11 @@ class AdminUserListAPIView(APIView):
     permission_classes = SUPERUSER_PERMISSIONS
 
     def get(self, request):
-        accounts = _accounts().order_by("-created_at", "-pk")
+        accounts = _directory_order(_accounts(), request, {
+            'name': Lower('user__first_name'), 'role': 'role',
+            'status': 'user__is_active', 'totp': '_totp_enrolled',
+            'joined': 'user__date_joined',
+        }, 'joined', 'desc')
 
         role = request.query_params.get("role", "").strip()
         if role:
@@ -707,6 +781,32 @@ class AdminUserListAPIView(APIView):
 
         accounts, pagination = _page(accounts, request)
         return Response({"users": [_serialize_account(a) for a in accounts], **pagination})
+
+
+    def post(self, request):
+        serializer = AdminCreateUserSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        user = run_with_retry(serializer.save)
+        return Response(_serialize_account(user.account), status=status.HTTP_201_CREATED)
+
+
+class AdminOrganizationChoicesAPIView(APIView):
+    permission_classes = SUPERUSER_PERMISSIONS
+
+    def get(self, request):
+        role = request.query_params.get('role')
+        if role not in {'university', 'institute'}:
+            raise serializers.ValidationError({'role': 'Select university or institute.'})
+        query = ListQuery(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        search = request.query_params.get('search', '').strip()
+        if len(search) > 150:
+            raise serializers.ValidationError({'search': 'Use 150 characters or fewer.'})
+        model = University if role == 'university' else Institute
+        rows = model.objects.filter(name__icontains=search).order_by(Lower('name'), 'pk').values('uuid', 'name', 'country')
+        page = Paginator(rows, 25).get_page(query.validated_data.get('page', 1))
+        return Response({'results': [dict(id=str(row['uuid']), name=row['name'], country=row['country']) for row in page],
+                         'pagination': {'page': page.number, 'has_next': page.has_next(), 'total': page.paginator.count}})
 
 
 class AdminCreateSuperuserAPIView(APIView):
@@ -799,8 +899,8 @@ class AdminUserRemoveTOTPAPIView(APIView):
     re-enter the must_enroll_totp flow on their next login. For when
     someone's lost their authenticator and has no backup codes left --
     there is no self-service equivalent, so this is the only recovery
-    path. A superuser may not remove their own TOTP through this endpoint
-    (same self-protection as the is_active/delete actions above).
+    path. A signed-in, TOTP-verified superuser can also reset their own
+    device from Settings; all sessions are revoked before re-enrollment.
     """
 
     permission_classes = SUPERUSER_PERMISSIONS
@@ -810,8 +910,6 @@ class AdminUserRemoveTOTPAPIView(APIView):
         if account is None:
             return _error("User not found.", status.HTTP_404_NOT_FOUND)
 
-        if account.user_id == request.user.id:
-            return _error("You cannot remove your own TOTP through this endpoint.")
 
         def _do_remove():
             with transaction.atomic():
@@ -863,9 +961,7 @@ class AdminUserRevokeSessionsAPIView(APIView):
     """
     POST /api/superuser/users/<user_id>/revoke-sessions/
     Blacklists every outstanding refresh token for the user (force logout
-    everywhere). Any access token they're currently holding still works
-    until it naturally expires (ACCESS_TOKEN_LIFETIME, 30 min) -- this
-    only stops them getting a new one without logging in again.
+    everywhere). Account session generations also invalidate access tokens.
     """
 
     permission_classes = SUPERUSER_PERMISSIONS

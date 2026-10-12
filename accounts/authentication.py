@@ -9,6 +9,9 @@ class FaceGatedAuthentication(JWTAuthentication):
         if not result:
             return result
         user, token = result
+        from accounts.tokens import session_valid
+        if not session_valid(token):
+            raise AuthenticationFailed("Session revoked. Please sign in again.", code="session_revoked")
         if not required(user) or token.get('face_verified') is True:
             return result
         path = request.path_info

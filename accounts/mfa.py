@@ -19,7 +19,8 @@ def _attempt_key(user_id) -> str:
 
 def create_mfa_session(user_id, portal=None) -> str:
     token = uuid.uuid4().hex
-    cache.set(_token_key(token), {'user_id': user_id, 'portal': portal}, timeout=MFA_TOKEN_TTL)
+    from accounts.tokens import session_version
+    cache.set(_token_key(token), {'user_id': user_id, 'portal': portal, 'session_version': session_version(user_id)}, timeout=MFA_TOKEN_TTL)
     return token
 
 
@@ -30,7 +31,9 @@ def get_user_id_from_mfa_token(token: str):
 def get_mfa_session(token: str):
     value = cache.get(_token_key(token))
     # In-flight tokens from older builds expire naturally after five minutes.
-    return value if isinstance(value, dict) else {'user_id': value, 'portal': None}
+    from accounts.tokens import session_valid
+    session = value if isinstance(value, dict) else {'user_id': value, 'portal': None}
+    return session if session.get('user_id') and session_valid(session) else {}
 
 
 def invalidate_mfa_session(token: str) -> None:
