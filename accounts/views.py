@@ -14,7 +14,7 @@ from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from accounts.tokens import RefreshToken
+from accounts.tokens import RefreshToken, enrollment_token
 
 from accounts.db_utils import run_with_retry
 from accounts.email import send_otp_email, send_password_changed_email
@@ -164,13 +164,12 @@ class RegisterView(APIView):
         # no-refresh access token LoginView issues for a not-yet-enrolled
         # user, so the client can go straight into TOTP enrollment without
         # a separate /login/ call.
-        refresh = RefreshToken.for_user(user)
-
+        access = enrollment_token(user)
         return Response(
             {
                 "message": "Account created. Complete TOTP enrollment to finish setup.",
                 "must_enroll_totp": True,
-                "access": str(refresh.access_token),
+                "access": str(access),
                 "user": serialize_user(user),
             },
             status=status.HTTP_201_CREATED,
@@ -181,10 +180,8 @@ class LoginView(APIView):
     """
     Step 1 of login.
 
-    - No confirmed TOTP device yet: issue a usable access token directly
-      (no refresh token) with must_enroll_totp=True. That access token is
-      only accepted by the TOTP-gate-exempt endpoints (enroll, verify-
-      enrollment, logout, me) until enrollment completes.
+    - No confirmed TOTP device: issue a permanently restricted enrollment
+      token. Only successful enrollment exchanges it for session credentials.
     - Confirmed TOTP device: issue an opaque mfa_token instead of any
       tokens; the client must call /verify-totp/ next.
     """
@@ -244,15 +241,11 @@ class LoginView(APIView):
                 status=status.HTTP_200_OK,
             )
 
-        # This access token permits TOTP enrollment only while face gating is enabled.
-        from accounts.face_auth import required
-        if not required(user):
-            log_activity(ActivityLog.Action.LOGIN_SUCCEEDED, actor=user, target_user=user)
-        refresh = RefreshToken.for_user(user)
+        access = enrollment_token(user)
         return Response(
             {
                 "must_enroll_totp": True,
-                "access": str(refresh.access_token),
+                "access": str(access),
                 "user": serialize_user(user),
             },
             status=status.HTTP_200_OK,
@@ -332,19 +325,31 @@ class TOTPVerifyEnrollmentView(APIView):
 
         def _confirm():
             with transaction.atomic():
+                locked = TOTPDevice.objects.select_for_update().get(pk=device.pk)
+                if locked.confirmed_at or locked.secret != device.secret:
+                    return False
                 device.confirmed_at = timezone.now()
                 device.save(update_fields=["confirmed_at"])
                 TOTPBackupCode.objects.filter(user=request.user).delete()
                 TOTPBackupCode.objects.bulk_create(
                     [TOTPBackupCode(user=request.user, code_hash=hash_backup_code(c)) for c in backup_codes]
                 )
+                return True
 
-        run_with_retry(_confirm)
+        if not run_with_retry(_confirm):
+            return Response({'detail': 'TOTP is already enrolled. Please sign in again.'}, status=400)
 
         from accounts.face_auth import required, pending_response
         data = {"backup_codes": backup_codes}
         if required(request.user):
             data.update(pending_response(request.user, 'student' if request.data.get('portal') == 'student' else None))
+        else:
+            refresh = RefreshToken.for_user(request.user)
+            data.update(access=str(refresh.access_token), refresh=str(refresh),
+                        user=_serialize_user_with_verification(request.user))
+            from project_superuser.models import ActivityLog
+            from project_superuser.services import log_activity
+            log_activity(ActivityLog.Action.LOGIN_SUCCEEDED, actor=request.user, target_user=request.user)
         return Response(data, status=status.HTTP_200_OK)
 
 
@@ -416,13 +421,15 @@ class TOTPLoginVerifyView(APIView):
         def _mark_used():
             with transaction.atomic():
                 if used_backup_code:
-                    used_backup_code.used_at = timezone.now()
-                    used_backup_code.save(update_fields=["used_at"])
+                    if not TOTPBackupCode.objects.filter(pk=used_backup_code.pk, used_at__isnull=True).update(used_at=timezone.now()):
+                        return False
                 else:
                     device.last_used_at = timezone.now()
                     device.save(update_fields=["last_used_at"])
+                return True
 
-        run_with_retry(_mark_used)
+        if not run_with_retry(_mark_used):
+            return Response({'detail': 'Invalid TOTP or backup code.'}, status=400)
 
         clear_totp_failures(user_id)
         invalidate_mfa_session(mfa_token)

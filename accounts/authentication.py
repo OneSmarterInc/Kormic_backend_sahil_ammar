@@ -12,9 +12,13 @@ class FaceGatedAuthentication(JWTAuthentication):
         from accounts.tokens import session_valid
         if not session_valid(token):
             raise AuthenticationFailed("Session revoked. Please sign in again.", code="session_revoked")
+        path = request.path_info
+        if token.get('enrollment_only') is True:
+            if path in {'/api/auth/totp/enroll/', '/api/auth/totp/verify-enrollment/', '/api/auth/logout/', '/api/auth/me/'}:
+                return result
+            raise AuthenticationFailed('Complete two-factor enrollment before continuing.', code='enrollment_required')
         if not required(user) or token.get('face_verified') is True:
             return result
-        path = request.path_info
         # Enrollment access remains limited even after the DB's TOTP flag changes.
         if path in {'/api/auth/totp/enroll/', '/api/auth/totp/verify-enrollment/', '/api/auth/logout/'}:
             return result

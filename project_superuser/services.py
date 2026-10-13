@@ -22,16 +22,52 @@ def _purge_agent_identity(owner_type: str, owner_id: str) -> None:
     AgentIdentity.objects.filter(owner_type=owner_type, owner_id=owner_id).delete()
 
 
-def purge_student_data(student_id: str) -> None:
-    from django_api.models import AgentIdentity, AriaMemory, ChatMessage, IntakeSession, StudentProfile
+class StudentWorkInProgress(Exception):
+    """Deletion must not race a worker that can still write student data."""
 
-    # Cascades ResumeUpload/GitHubAnalysis/LinkedInAnalysis/FitAssessment/
-    # RoadmapVersion, which are real FKs to StudentProfile.
-    StudentProfile.objects.filter(uuid=student_id).delete()
-    AriaMemory.objects.filter(student_id=student_id).delete()
-    IntakeSession.objects.filter(student_id=student_id).delete()
-    ChatMessage.objects.filter(student_id=student_id).delete()
-    _purge_agent_identity(AgentIdentity.OwnerType.STUDENT, student_id)
+
+def purge_student_data(student_id: str) -> None:
+    from django.db import transaction
+    from django_api.models import (
+        AgentAuditLog, AgentIdentity, AgentJob, AriaMemory, ChatMessage,
+        IntakeSession, PendingQuery, StudentProfile,
+    )
+    from agent_queries.models import AgentActivity
+
+    with transaction.atomic():
+        # Admission and worker claiming lock this same row. A worker that has
+        # already started must finish before we promise permanent deletion.
+        StudentProfile.objects.select_for_update().get(uuid=student_id)
+        if AgentJob.objects.filter(student_id=student_id, status='processing').exists():
+            raise StudentWorkInProgress('This student has active processing. Retry deletion after it finishes.')
+        from pure_multi_agent.runtime import reset_conversation
+        reset_conversation(student_id)
+        AgentJob.objects.filter(student_id=student_id).delete()
+        AgentAuditLog.objects.filter(student_id=student_id).delete()
+        PendingQuery.objects.filter(student_id=student_id).delete()
+        AgentActivity.objects.filter(owner_key='student:' + str(student_id)).delete()
+
+        # Real foreign keys cascade documents, GitHub checkpoints and queries.
+        StudentProfile.objects.filter(uuid=student_id).delete()
+        AriaMemory.objects.filter(student_id=student_id).delete()
+        IntakeSession.objects.filter(student_id=student_id).delete()
+        ChatMessage.objects.filter(student_id=student_id).delete()
+        _purge_agent_identity(AgentIdentity.OwnerType.STUDENT, student_id)
+        transaction.on_commit(lambda: _purge_student_files(student_id))
+
+
+def _purge_student_files(student_id: str) -> None:
+    """Delete only the exact UUID-owned folders under the upload roots."""
+    from pathlib import Path
+    from uuid import UUID
+    import shutil
+    from django.conf import settings
+    sid = str(UUID(str(student_id)))
+    for root in {Path(settings.MEDIA_ROOT).resolve(), (settings.BASE_DIR / 'uploads').resolve()}:
+        for folder in ('resumes', 'linkedin', 'chat_attachments', 'queued-documents', 'profile_images'):
+            target = (root / folder / sid).resolve()
+            if target.is_relative_to(root) and target.name == sid and target.is_dir():
+                shutil.rmtree(target)
 
 
 def purge_university_data(university_id: str) -> None:

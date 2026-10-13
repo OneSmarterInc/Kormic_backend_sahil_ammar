@@ -17,6 +17,8 @@ def submit_document(request, kind, files):
         return Response({'message':'Upload at most ten documents at once.'}, status=400)
     sid = str(request.user.account.student_uuid)
     key = 'student:' + sid + ':documents'
+    from pure_multi_agent.job_recovery import expire_overdue_jobs
+    expire_overdue_jobs()
     idem = request.headers.get('Idempotency-Key') or str(uuid.uuid4())
     if len(idem) > 100:
         return Response({'message':'Idempotency-Key is too long.'}, status=400)
@@ -26,6 +28,9 @@ def submit_document(request, kind, files):
         with lease('thread:' + key, ttl=120), lease('queue:admission', ttl=10, wait=2), transaction.atomic():
             AgentQueueGate.objects.get_or_create(pk=1)
             AgentQueueGate.objects.select_for_update().get(pk=1)
+            from django_api.models import StudentProfile
+            if not StudentProfile.objects.select_for_update().filter(uuid=sid).exists():
+                return Response({'message': 'Student profile no longer exists.'}, status=404)
             previous = AgentJob.objects.filter(owner_key=key, idempotency_key=idem).first()
             if previous:
                 return Response(serialize(previous), status=202)

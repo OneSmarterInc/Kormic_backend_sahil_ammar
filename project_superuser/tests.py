@@ -681,9 +681,8 @@ class AuthActivityLoggingTests(TestCase):
 
     def test_full_login_flow_logs_exactly_two_successes_no_premature_ones(self):
         # make_student_client drives the fixture through two *complete*
-        # logins: one right after register (TOTP not enrolled yet, so
-        # that /login/ call issues real tokens directly -- a genuine
-        # success), and one full password+MFA login afterward. Each should
+        # logins: one when initial TOTP enrollment succeeds,
+        # and one full password+MFA login afterward. Each should
         # log exactly one LOGIN_SUCCEEDED; there must be no extra/premature
         # entry logged when the second login's step 1 merely issues an
         # mfa_token (MFA still pending at that point, not yet a success).

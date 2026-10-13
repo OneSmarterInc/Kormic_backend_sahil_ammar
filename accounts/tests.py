@@ -40,6 +40,8 @@ def enroll_and_confirm(client, access_token):
     secret = enroll_resp.data["secret"]
     code = pyotp.TOTP(secret).now()
     verify_resp = client.post("/api/auth/totp/verify-enrollment/", {"code": code}, format="json")
+    if verify_resp.status_code == 200 and verify_resp.data.get('access'):
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {verify_resp.data['access']}")
     return enroll_resp, verify_resp, secret
 
 
@@ -97,7 +99,7 @@ class AuthFlowTests(TestCase):
         access = login(self.client).data["access"]
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
         resp = self.client.get(f"/api/profile/{sid()}/")
-        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_restricted_token_allows_enroll_and_verify_enrollment(self):
         register(self.client)
@@ -152,15 +154,16 @@ class AuthFlowTests(TestCase):
         resp = self.client.post("/api/auth/totp/verify-enrollment/", {"code": spaced_code}, format="json")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
 
-    def test_same_access_token_now_passes_totp_gate_after_enrollment(self):
+    def test_enrollment_exchanges_token_without_upgrading_old_token(self):
         register(self.client)
         access = login(self.client).data["access"]
-        enroll_and_confirm(self.client, access)
-        # Reuse the SAME pre-enrollment token, no re-login.
+        _, confirmed, _ = enroll_and_confirm(self.client, access)
+        # The password-only credential remains restricted permanently.
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
         resp = self.client.get(f"/api/profile/{sid()}/")
-        # Registration now creates the StudentProfile row, so the gate passes
-        # and the (blank) profile is returned.
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {confirmed.data['access']}")
+        resp = self.client.get(f"/api/profile/{sid()}/")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
 
     def test_login_enrolled_user_gets_mfa_token_not_direct_tokens(self):

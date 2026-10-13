@@ -25,6 +25,13 @@ class AccessToken(VersionedToken, BaseAccessToken):
     pass
 
 
+def enrollment_token(user) -> AccessToken:
+    """Password-only credentials never become a full session implicitly."""
+    token = AccessToken.for_user(user)
+    token['enrollment_only'] = True
+    return token
+
+
 class RefreshToken(VersionedToken, BaseRefreshToken):
     def verify(self):
         super().verify()

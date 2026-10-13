@@ -32,16 +32,12 @@ def verify_totp_code(secret: str, code: str, *, user_id=None) -> bool:
     if not code or not code.isdigit() or len(code) != 6:
         return False
 
-    if user_id is not None:
-        replay_key = f"{_TOTP_USED_KEY_PREFIX}{user_id}:{code}"
-        if cache.get(replay_key):
-            return False
-
     if not pyotp.TOTP(secret).verify(code, valid_window=1):
         return False
 
     if user_id is not None:
-        cache.set(replay_key, True, timeout=_TOTP_USED_TTL)
+        replay_key = f"{_TOTP_USED_KEY_PREFIX}{user_id}:{code}"
+        return cache.add(replay_key, True, timeout=_TOTP_USED_TTL)
 
     return True
 

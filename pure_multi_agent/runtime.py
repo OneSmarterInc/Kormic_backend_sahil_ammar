@@ -37,6 +37,10 @@ def _build_checkpointer():
     """
     from django.conf import settings
 
+    if settings.TESTING:
+        from langgraph.checkpoint.memory import InMemorySaver
+        return InMemorySaver()
+
     db = settings.DATABASES["default"]
     engine = db["ENGINE"]
 
@@ -172,17 +176,19 @@ def _persist_context_once(student_id: str, ctx: Dict[str, Any]) -> None:
         if connection.vendor == 'sqlite':
             StudentProfile.objects.filter(uuid=student_id).update(id=F('id'))
         row = StudentProfile.objects.select_for_update().get(uuid=student_id)
+        from pure_multi_agent.job_recovery import boundary
+        boundary()
         _apply_dict_to_profile(row, merge_changes(baseline, ctx['student_profile'], profile_row_to_dict(row)))
         row.save()
 
-    AriaMemory.objects.update_or_create(
-        student_id=key,
-        defaults={
-            "important_points": ctx["memory"].get("important_points", [])[-50:],
-            "universities_discussed": ctx["memory"].get("universities_discussed", []),
-            "github_profiles_analyzed": ctx["memory"].get("github_profiles_analyzed", []),
-        },
-    )
+        AriaMemory.objects.update_or_create(
+            student_id=key,
+            defaults={
+                "important_points": ctx["memory"].get("important_points", [])[-50:],
+                "universities_discussed": ctx["memory"].get("universities_discussed", []),
+                "github_profiles_analyzed": ctx["memory"].get("github_profiles_analyzed", []),
+            },
+        )
 
 
 def _extract_reply_text(result: Dict[str, Any]) -> str:

@@ -32,8 +32,14 @@ def execute_agent_job(self, job_id):
         from pure_multi_agent.inference_admission import tenant_key
         with lease('workflow:' + tenant_key(job.owner_key), limit=2, ttl=settings.AGENT_JOB_TIMEOUT + 60), lease("thread:" + job.owner_key, ttl=settings.AGENT_JOB_TIMEOUT + 60):
             token = uuid.uuid4()
-            if not AgentJob.objects.filter(pk=job_id, status="queued").update(status="processing", started_at=timezone.now(), heartbeat_at=timezone.now(), execution_token=token):
-                return
+            with transaction.atomic():
+                if job.student_id:
+                    from django_api.models import StudentProfile
+                    if not StudentProfile.objects.select_for_update().filter(uuid=job.student_id).exists():
+                        AgentJob.objects.filter(pk=job_id).delete()
+                        return
+                if not AgentJob.objects.filter(pk=job_id, status="queued").update(status="processing", started_at=timezone.now(), heartbeat_at=timezone.now(), execution_token=token):
+                    return
             try:
                 from pure_multi_agent.inference_admission import workload_scope
                 with track(job_id, token), workload_scope(job.owner_key, 10 if job.kind in ('resume','linkedin') else 0):

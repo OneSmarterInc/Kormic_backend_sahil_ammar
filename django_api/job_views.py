@@ -24,6 +24,8 @@ def job_status(request, job_id=None):
             rows = rows.filter(owner_key=key + (':student:' + subject if subject else ''))
     else:
         rows = AgentJob.objects.filter(student_id=str(account.student_uuid), university_id='') if job_id else AgentJob.objects.filter(owner_key=key)
+    from pure_multi_agent.job_recovery import expire_overdue_jobs
+    expire_overdue_jobs(rows.filter(pk=job_id) if job_id else rows)
     job = rows.filter(pk=job_id).first() if job_id else rows.filter(status__in=["queued", "processing"]).first()
     if job is None and job_id is None:
         latest = rows.order_by("-created_at").first()
@@ -51,4 +53,11 @@ def agent_activity(request):
         key = 'university:' + str(account.university_uuid)
     else:
         return Response({'message': 'Not found.'}, status=404)
+    rows = AgentJob.objects.filter(owner_key=key)
+    from pure_multi_agent.job_recovery import expire_overdue_jobs
+    expire_overdue_jobs(rows)
+    job = rows.filter(status='queued').first()
+    if job:
+        data = serialize(job)
+        return Response({'status': 'queued', 'label': data['label'], 'updated_at': job.created_at.isoformat()})
     return Response(read_activity(key))

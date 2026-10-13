@@ -18,6 +18,22 @@ class ExecutionLost(RuntimeError):
     pass
 
 
+def expire_overdue_jobs(rows=None) -> int:
+    """Request-safe expiry also works when all workers and beat are offline."""
+    rows = AgentJob.objects.all() if rows is None else rows
+    now = timezone.now()
+    expired = rows.filter(status='queued', created_at__lt=now - timedelta(seconds=settings.AGENT_QUEUE_TIMEOUT)).update(
+        status='failed', execution_token=None, completed_at=now,
+        error='The response could not start before the queue deadline. Please retry or contact your administrator.')
+    # Never replay an uncertain action from an HTTP request. Fence the old
+    # worker; normal recovery handles resumable work before this hard deadline.
+    expired += rows.filter(status='processing', started_at__lt=now - timedelta(seconds=settings.AGENT_JOB_TIMEOUT + 120)).filter(
+        Q(heartbeat_at__isnull=True) | Q(heartbeat_at__lt=now - timedelta(seconds=90))).update(
+            status='failed', execution_token=None, completed_at=now,
+            error='Processing stopped responding. Check saved changes before retrying.')
+    return expired
+
+
 def boundary(ctx=None, keys=(), phase='unsafe'):
     current = execution.get()
     if current is None:

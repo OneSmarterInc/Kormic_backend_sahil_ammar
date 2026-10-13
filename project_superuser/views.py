@@ -312,7 +312,10 @@ class AdminStudentDetailAPIView(APIView):
                 account.user.delete()
                 services.purge_student_data(student_id)
 
-        run_with_retry(_do_delete)
+        try:
+            run_with_retry(_do_delete)
+        except services.StudentWorkInProgress as exc:
+            return _error(str(exc), status.HTTP_409_CONFLICT)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

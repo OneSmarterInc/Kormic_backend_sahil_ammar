@@ -5,7 +5,7 @@ courses/awards, and never shares one award's criteria with another award.
 """
 import hashlib
 import re
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from django.db import transaction
 from django.utils import timezone
@@ -36,6 +36,21 @@ def specific_name(name):
     if 'scholarship' in normalized and re.search(r'notification|opportunities|requests?|academic component|details|programs$', normalized):
         return False
     return True
+
+
+def is_program_navigation(name: str) -> bool:
+    """Reject calls to action, not qualifications such as RN to BSN."""
+    return bool(re.search(r'^(?:see|view|explore|learn|read|discover|browse|visit|apply|request|find|back to)\b|\bprogram(?:me)? page\s*[>→»]*$', clean(name), re.I))
+
+
+def canonical_program_url(base: str, href: str) -> str:
+    parts = urlsplit(urljoin(base, href))
+    if parts.scheme not in {'http', 'https'} or not parts.hostname or parts.username:
+        return ''
+    # Catalog query strings and named program anchors can identify distinct
+    # programs. Strip only generic tabs within a program page.
+    fragment = '' if parts.fragment.casefold() in {'overview', 'admissions', 'curriculum', 'requirements'} else parts.fragment
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip('/') or '/', parts.query, fragment))
 
 
 def text(node):
@@ -97,19 +112,39 @@ def extract_document(main, source_url):
             department = text(following) if following else ''
             break
     if re.search(r'program|degree|catalog|course', path):
+        # A degree's own page is stronger evidence than the wording of a link
+        # pointing to it. Do not fetch arbitrary links during extraction.
+        level_match = re.search(r'/(bachelors?|masters?|doctoral|phd)/[^/]+', path)
+        if level_match and title and specific_name(title) and not is_program_navigation(title):
+            level = 'Undergraduate' if level_match[1].startswith('bachelor') else 'Graduate' if level_match[1].startswith('master') else 'Doctoral'
+            add('academics', title, {'name': title, 'level': level}, {'name': title, 'level': source_url})
+            entities[-1]['program_url'] = canonical_program_url(source_url, source_url)
+            entities[-1]['program_detail'] = True
         for anchor in main.find_all('a', href=True):
             label = text(anchor)
+            if is_program_navigation(label):
+                continue
+            destination = canonical_program_url(source_url, anchor['href'])
+            if not destination:
+                continue
             offering = anchor.find_parent(class_='program-level-section') is not None
             if not offering and not re.search(r'\b(?:B\.?A\.?|B\.?S\.?|BACS|BSCS|BSN|BSW|BFA|MAcc|M\.?S\.?|M\.?A\.?|MBA|MFA|MPH|Ph\.?D\.?|Ed\.?D\.?|Minor|Certificate)\b', label, re.I):
                 continue
             if len(label) > 220 or not specific_name(label) or (not offering and not re.search(r'preview_program|program|catalog|degree|bachelor|master|minor|certificate|phd', anchor['href'], re.I)):
                 continue
-            name = re.sub(r'\s*\([A-Z0-9-]+\)\s*$', '', label)
+            # Only explicit catalog-style codes are removed. Qualification and
+            # pathway suffixes (MBA, BSN, RN-BSN) remain part of the title.
+            code = re.search(r'\(([A-Z0-9]+-[A-Z0-9]+)\)\s*$', label)
+            qualifications = {'RN', 'BSN', 'MSN', 'DNP', 'BS', 'BA', 'BBA', 'MBA', 'MA', 'MS', 'PHD', 'EDD', 'MPH', 'BSW', 'MSW', 'BFA', 'MFA'}
+            if code and all(part in qualifications for part in code.group(1).split('-')):
+                code = None
+            name = label[:code.start()].strip() if code else label
             prior = anchor.find_previous(['h2', 'h3', 'h4'])
             level = text(prior) if prior and text(prior).lower() in {'undergraduate', 'graduate', 'combined', 'doctoral'} else ''
-            code = re.search(r'\(([A-Z0-9-]+)\)\s*$', label)
             add('academics', name, {'name': name, 'level': level, 'department': department,
                 'program_code': code.group(1) if code else ''}, {'name': label, 'department': department, 'level': level})
+            if destination and re.search(r'program|degree|catalog|bachelor|master|minor|certificate|phd', urlsplit(destination).path, re.I):
+                entities[-1]['program_url'] = destination
 
     # A scholarship is a named heading, with its scope ending at the next peer
     # heading. Eligibility and renewal rules never spill into the following award.
@@ -200,8 +235,25 @@ def save_entities(university_id, entities):
     count = 0
     for entity in entities:
         kind, name = entity['kind'], entity['name']
+        if kind == 'academics' and is_program_navigation(name):
+            continue
         key = identity(kind, name)
         row = UniversityKnowledgeEntry.objects.filter(university_id=str(university.uuid), details___information_entity_key=key).first()
+        program_url = entity.get('program_url')
+        if row is None and program_url:
+            candidates = list(UniversityKnowledgeEntry.objects.filter(university_id=str(university.uuid),
+                details___information_program_url=program_url))
+            # Directory labels alone cannot establish that two different
+            # offerings sharing a URL are the same program.
+            candidates = [candidate for candidate in candidates if entity.get('program_detail')
+                          or candidate.details.get('_information_preferred_source')
+                          or clean(candidate.details.get('name')).casefold() == clean(name).casefold()]
+            level = clean(entity['values'].get('level')).casefold()
+            if level:
+                candidates = [candidate for candidate in candidates if not candidate.details.get('level')
+                              or clean(candidate.details['level']).casefold() == level]
+            if len(candidates) == 1:
+                row = candidates[0]
         if row is None:
             row = UniversityKnowledgeEntry.objects.filter(university_id=str(university.uuid),
                 details__information_type=kind, details__name__iexact=name,
@@ -213,25 +265,53 @@ def save_entities(university_id, entities):
         previous = dict(row.details or {})
         snapshots = dict(previous.get('_information_source_values', {}))
         snapshots[entity['source_url']] = entity['values']
-        values = {'information_type': kind}
-        multi = {'eligibility', 'renewal_criteria', 'notes', 'award_tiers', 'amount', 'deadline'}
-        for fields in snapshots.values():
-            for field, value in fields.items():
-                if field not in values:
-                    values[field] = value
-                elif field in multi and value not in values[field]:
-                    values[field] += '\n\n' + value
-        sources = dict(previous.get('_information_field_sources', {}))
-        for field, value in entity['values'].items():
-            sources[field] = {'url': entity['source_url'], 'quote': entity['evidence'].get(field, entity['evidence'].get('scope', value))}
+        evidence = dict(previous.get('_information_source_evidence', {}))
+        evidence[entity['source_url']] = entity['evidence']
+        preferred = entity['source_url'] if entity.get('program_detail') else previous.get('_information_preferred_source')
+        values, sources, conflicts = merge_source_values(kind, snapshots, evidence, preferred)
         row.details = {**values, '_information_entity_key': key, '_information_source_values': snapshots,
             '_information_category': 'campus' if kind == 'housing' else kind,
-            '_information_field_sources': sources, '_information_extracted_at': timezone.now().isoformat()}
+            '_information_field_sources': sources, '_information_source_evidence': evidence,
+            '_information_conflicts': conflicts, '_information_preferred_source': preferred,
+            '_information_program_url': program_url or previous.get('_information_program_url', ''),
+            '_information_extracted_at': timezone.now().isoformat()}
+        row.topic = values.get('name', name)
         row.content = '\n'.join(f"{field.replace('_', ' ').title()}: {value}" for field, value in values.items() if value and field != 'information_type')
         row.source_url = entity['source_url']
         row.save()
         count += 1
     return count
+
+
+def merge_source_values(
+    kind: str,
+    snapshots: dict[str, dict[str, str]],
+    evidence: dict | None = None,
+    preferred: str | None = None,
+) -> tuple[dict, dict, dict]:
+    """Select values and evidence together; retain disagreements for review."""
+    values, sources, conflicts = {'information_type': kind}, {}, {}
+    evidence = evidence or {}
+    multi = {'eligibility', 'renewal_criteria', 'notes', 'award_tiers', 'amount', 'deadline'}
+    ordered = list(snapshots)
+    if preferred in ordered:
+        ordered.remove(preferred)
+        ordered.insert(0, preferred)
+    for url in ordered:
+        for field, value in snapshots[url].items():
+            if not value:
+                continue
+            item = {'url': url, 'quote': evidence.get(url, {}).get(field, value)}
+            if field not in values:
+                values[field], sources[field] = value, item
+            elif value != values[field]:
+                if field in multi:
+                    if value not in values[field].split('\n\n'):
+                        values[field] += '\n\n' + value
+                        sources[field].setdefault('additional_sources', []).append(item)
+                else:
+                    conflicts.setdefault(field, []).append({**item, 'value': value})
+    return values, sources, conflicts
 
 
 def ingest_document(university_id, document, source_url):

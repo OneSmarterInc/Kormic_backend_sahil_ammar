@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from django.conf import settings
+from django.db import transaction
 from django.db.models import Exists, F, OuterRef, Subquery
 from django.db.models.functions import JSONObject
 
@@ -129,11 +130,14 @@ def load_profile_data(student_id: str) -> Dict[str, Any]:
     return profile_row_to_dict(profile)
 
 
+@transaction.atomic
 def save_profile_data(student_id: str, data: Dict[str, Any]) -> str:
     data = dict(data or {})
     data["student_id"] = student_id
 
-    profile, _ = StudentProfile.objects.get_or_create(uuid=student_id)
+    profile, _ = StudentProfile.objects.select_for_update().get_or_create(uuid=student_id)
+    from pure_multi_agent.job_recovery import boundary
+    boundary()
     _apply_dict_to_profile(profile, data)
     profile.save()
 

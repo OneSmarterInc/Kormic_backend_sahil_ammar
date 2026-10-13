@@ -49,6 +49,13 @@ def owner_key(request, university_id=None, subject_student_id=None):
 
 def serialize(job):
     data = {"job_id": str(job.pk), "status": job.status, "poll_after_ms": 1500}
+    if job.status == 'queued':
+        data['expires_at'] = (job.created_at + timedelta(seconds=settings.AGENT_QUEUE_TIMEOUT)).isoformat()
+        data['label'] = ('Still queued; processing has not started. The service may be busy or unavailable.'
+                         if (timezone.now() - job.created_at).total_seconds() > 30
+                         else 'Queued — waiting for an available worker…')
+    elif job.status == 'processing' and job.started_at:
+        data['expires_at'] = (job.started_at + timedelta(seconds=settings.AGENT_JOB_TIMEOUT + 120)).isoformat()
     data['recovery_attempts'] = job.recovery_attempts
     if job.kind in ('resume', 'linkedin'):
         from pure_multi_agent.document_progress import public_progress
@@ -105,6 +112,8 @@ def submit(request, university_id=None, message_id=None, subject_student_id=None
 def _submit(request, university_id=None, message_id=None, subject_student_id=None,
             *, idempotency_key, check_limit=True):
     key = owner_key(request, university_id, subject_student_id)
+    from pure_multi_agent.job_recovery import expire_overdue_jobs
+    expire_overdue_jobs()
     idem = idempotency_key
     if len(idem) > 100:
         return Response({"message": "Idempotency-Key is too long."}, status=400)
@@ -132,6 +141,11 @@ def _submit(request, university_id=None, message_id=None, subject_student_id=Non
             if not AgentQueueGate.objects.filter(pk=1).update(id=F("id")):
                 AgentQueueGate.objects.get_or_create(pk=1)
             AgentQueueGate.objects.select_for_update().get(pk=1)
+            student_id = str(subject_student_id or '') if university_id else str(request.user.account.student_uuid)
+            if student_id:
+                from django_api.models import StudentProfile
+                if not StudentProfile.objects.select_for_update().filter(uuid=student_id).exists():
+                    return Response({'message': 'Student profile no longer exists.'}, status=404)
             previous = AgentJob.objects.filter(owner_key=key, idempotency_key=idem).first()
             if previous:
                 return Response(serialize(previous), status=200 if previous.status == "completed" else 202)
@@ -139,7 +153,6 @@ def _submit(request, university_id=None, message_id=None, subject_student_id=Non
                 return Response({"message": "A response is already in progress. Wait for it before sending or editing."}, status=409)
             if AgentJob.objects.filter(status__in=ACTIVE).count() >= settings.AGENT_QUEUE_CAPACITY:
                 return Response({"message": "Chat is at capacity. Please retry shortly."}, status=429, headers={"Retry-After": "5"})
-            student_id = str(subject_student_id or '') if university_id else str(request.user.account.student_uuid)
             if message_id:
                 target = ChatMessage.objects.filter(pk=message_id, student_id=student_id, channel="agent", sender="user").first()
                 if target is None:
@@ -169,6 +182,8 @@ def guarded_history(fn):
         if request.method == "GET":
             return fn(request, *args, **kwargs)
         key = owner_key(request, kwargs.get("university_id"), kwargs.get('student_id'))
+        from pure_multi_agent.job_recovery import expire_overdue_jobs
+        expire_overdue_jobs(AgentJob.objects.filter(owner_key=key))
         try:
             with lease("thread:" + key, ttl=900):
                 if AgentJob.objects.filter(owner_key=key, status__in=ACTIVE).exists():
