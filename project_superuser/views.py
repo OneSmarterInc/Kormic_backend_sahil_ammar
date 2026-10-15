@@ -4,6 +4,7 @@ from typing import Any, Dict
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth.models import User
 from django.db import transaction
 from rest_framework import status, serializers
 from django.db.models import Count, Exists, OuterRef, Q, F, Subquery, Value
@@ -861,6 +862,10 @@ class AdminUserDetailAPIView(APIView):
 
         def _do_update():
             with transaction.atomic():
+                # Read the latest state under lock so concurrent admin changes
+                # cannot use an obsolete active flag.
+                account.user = User.objects.select_for_update().get(pk=account.user_id)
+                was_active = account.user.is_active
                 fields = []
                 profile_fields = {}
                 if "name" in changes:
@@ -880,6 +885,9 @@ class AdminUserDetailAPIView(APIView):
                     StudentProfile.objects.filter(pk=account.student_profile_id).update(**profile_fields)
                 if "email" in changes or changes.get("is_active") is False:
                     services.revoke_all_sessions(account.user)
+                if changes.get("is_active") is True and not was_active:
+                    from accounts.mfa import clear_totp_failures
+                    transaction.on_commit(lambda: clear_totp_failures(account.user_id))
         run_with_retry(_do_update)
         return Response(_serialize_account(account))
 

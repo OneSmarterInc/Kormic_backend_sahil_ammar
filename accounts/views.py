@@ -197,9 +197,13 @@ class LoginView(APIView):
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        # Resolve the stored login name from the email, including legacy mixed-case
+        # accounts. Django's default username lookup is case-sensitive.
+        email_matches = list(User.objects.filter(email__iexact=serializer.validated_data['email']).only('username')[:2])
+        login_name = email_matches[0].username if len(email_matches) == 1 else serializer.validated_data['email']
         user = authenticate(
             request,
-            username=serializer.validated_data["email"],
+            username=login_name,
             password=serializer.validated_data["password"],
         )
 
@@ -416,7 +420,7 @@ class TOTPLoginVerifyView(APIView):
         if not is_valid:
             record_totp_failure(user_id)
             log_activity(ActivityLog.Action.LOGIN_FAILED, target_user=user)
-            return Response({"detail": "Invalid TOTP or backup code."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": "Invalid or already-used authenticator code. Wait for the next code, or use an unused backup code."}, status=status.HTTP_400_BAD_REQUEST)
 
         def _mark_used():
             with transaction.atomic():
@@ -521,8 +525,8 @@ class ForgotPasswordView(APIView):
 
         user = User.objects.filter(email__iexact=email, is_active=True).first()
         if user is not None:
-            otp = issue_otp(user.id)
-            send_otp_email(user, otp, ttl_minutes=OTP_TTL // 60)
+            from accounts.reset_delivery import request_reset_delivery
+            request_reset_delivery(user)
             log_activity(ActivityLog.Action.PASSWORD_RESET_REQUESTED, target_user=user)
 
         return Response({"detail": _FORGOT_PASSWORD_GENERIC_MESSAGE}, status=status.HTTP_200_OK)

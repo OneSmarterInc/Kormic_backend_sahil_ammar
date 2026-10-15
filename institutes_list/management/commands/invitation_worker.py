@@ -44,6 +44,8 @@ class Command(BaseCommand):
             worked = work_once()
             worked = deliver_claim_code() or worked
             worked = deliver_push() or worked
+            from accounts.reset_delivery import retry_reset_deliveries
+            retry_reset_deliveries.run()
             if options["once"]:
                 return
             if not worked:

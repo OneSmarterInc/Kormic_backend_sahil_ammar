@@ -60,12 +60,17 @@ def start_cooldown(email: str) -> None:
     cache.set(_cooldown_key(email), True, timeout=OTP_RESEND_COOLDOWN)
 
 
-def issue_otp(user_id) -> str:
+def issue_otp(user_id, *, code: str | None = None) -> str:
     """Generates a fresh OTP, replacing any still-pending one, and resets the attempt counter."""
-    otp = generate_otp()
+    otp = code if code is not None else generate_otp()
     cache.set(_otp_key(user_id), hash_otp(otp), timeout=OTP_TTL)
     cache.delete(_attempt_key(user_id))
     return otp
+
+
+def is_current_otp(user_id, otp_hash: str) -> bool:
+    current = cache.get(_otp_key(user_id))
+    return isinstance(current, str) and secrets.compare_digest(current, otp_hash)
 
 
 def is_otp_locked(user_id) -> bool:

@@ -9,6 +9,16 @@ from pure_multi_agent.tasks import execute_agent_job
 
 @override_settings(AGENT_QUEUE_BACKEND='database', AGENT_DISTRIBUTED_LIMITS=True, AGENT_CAPACITY_BACKEND='database')
 class DocumentQueueTests(TestCase):
+    def test_name_mismatch_is_returned_to_app_and_staged_file_is_cleaned(self):
+        from django_api.services import ResumeIdentityError
+        job = AgentJob.objects.create(owner_key='student:00000000-0000-4000-8000-000000000001:documents', student_id='00000000-0000-4000-8000-000000000001', kind='resume', idempotency_key='mismatch')
+        with patch('pure_multi_agent.document_jobs.run_document', side_effect=ResumeIdentityError('The CV name does not match.')), patch('pure_multi_agent.document_jobs.cleanup_staging') as cleanup:
+            execute_agent_job.run(str(job.pk))
+        job.refresh_from_db()
+        self.assertEqual(job.status, 'failed')
+        self.assertEqual(job.error, 'The CV name does not match.')
+        cleanup.assert_called_once()
+
     def setUp(self):
         StudentProfile.objects.create(uuid='00000000-0000-4000-8000-000000000001')
 

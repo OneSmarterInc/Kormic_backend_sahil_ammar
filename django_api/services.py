@@ -1072,7 +1072,7 @@ def merge_resume_data_into_profile(student_id: str, extracted_data: Dict[str, An
     }
 
     for key, value in (extracted_data or {}).items():
-        if key in {'agent_trace', 'schema_version', 'warnings', 'document_sha256'}:
+        if key in {'name', 'agent_trace', 'schema_version', 'warnings', 'document_sha256'}:
             continue
         if value in [None, "", [], {}]:
             continue
@@ -1087,13 +1087,17 @@ def merge_resume_data_into_profile(student_id: str, extracted_data: Dict[str, An
     profile["evidence"]["resume"] = extracted_data
     profile.setdefault('field_sources', {}).update({field_map.get(k, k): 'resume'
         for k, v in extracted_data.items() if v not in (None, '', [], {})
-        and k not in {'agent_trace', 'schema_version', 'warnings', 'document_sha256'}})
+        and k not in {'name', 'agent_trace', 'schema_version', 'warnings', 'document_sha256'}})
     generate_summary(profile)
     save_profile_data(student_id, profile)
     return profile
 
 
 from pure_multi_agent.telemetry import traced_operation
+
+
+class ResumeIdentityError(UploadValidationError):
+    """Safe, actionable CV rejection that can also be returned by queue workers."""
 
 
 @traced_operation('CV Agent')
@@ -1113,6 +1117,12 @@ def parse_resume(student_id: str, uploaded_file) -> Dict[str, Any]:
     report('saving')
     with transaction.atomic():
         student = StudentProfile.objects.select_for_update().get(uuid=student_id)
+        from django_api.resume_identity import validate_resume_name
+        try:
+            validate_resume_name(student.name, extracted_data.get('name'))
+        except ValueError as exc:
+            file_path.unlink(missing_ok=True)
+            raise ResumeIdentityError(str(exc)) from exc
         updated_profile = merge_resume_data_into_profile(student_id, extracted_data)
         resume_row = ResumeUpload.objects.create(
             student=student,

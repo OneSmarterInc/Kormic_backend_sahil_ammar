@@ -34,7 +34,7 @@ class UploadSecurityTests(TestCase):
 
     @mock.patch("agents.resume_parser.ResumeParserAgent")
     def test_resume_path_is_stored_relative_to_media_root(self, mock_parser):
-        mock_parser.return_value.parse.return_value = {"skills": ["Python"]}
+        mock_parser.return_value.parse.return_value = {"name": "Upload Security", "skills": ["Python"]}
         upload = SimpleUploadedFile("resume.pdf", b"test-resume", content_type="application/pdf")
         response = self.client.post("/api/profile/resume/", {"file": upload}, format="multipart")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -48,17 +48,17 @@ class UploadSecurityTests(TestCase):
         user = get_user_model().objects.get(email='upload-security@example.com')
         original_email = user.email
         parser.return_value.parse.return_value = {
-            'name': 'Resume Name', 'email': 'resume@example.test', 'skills': ['Python'],
+            'name': 'Upload Resume', 'email': 'resume@example.test', 'skills': ['Python'],
             'projects': [{'title': 'Atlas', 'description': 'Search application', 'technologies': ['Python']}],
             'schema_version': 1, 'agent_trace': [{'tool': 'finish_resume', 'result': {'complete': True}}],
         }
         response = self.client.post('/api/profile/resume/', {'file': SimpleUploadedFile('resume.pdf', b'test', content_type='application/pdf')}, format='multipart')
         self.assertEqual(response.status_code, 200)
         profile = StudentProfile.objects.get(uuid=self.student_id)
-        self.assertEqual(profile.name, 'Resume Name')
+        self.assertEqual(profile.name, 'Upload Security')
         self.assertEqual(profile.email, 'resume@example.test')
         self.assertEqual(profile.projects[0]['title'], 'Atlas')
-        self.assertEqual(profile.extra_data['field_sources']['name'], 'resume')
+        self.assertNotEqual(profile.extra_data.get('field_sources', {}).get('name'), 'resume')
         self.assertEqual(ResumeUpload.objects.get(student=profile).extracted_data['schema_version'], 1)
         user.refresh_from_db()
         self.assertEqual(user.email, original_email)

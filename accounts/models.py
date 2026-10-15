@@ -3,6 +3,18 @@ from django.contrib.auth.models import User
 from django.db import models
 
 
+class PasswordResetDelivery(models.Model):
+    """Retryable reset delivery. No plaintext reset codes or mail bodies at rest."""
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    nonce = models.UUIDField(default=uuid.uuid4)
+    otp_hash = models.CharField(max_length=64)
+    expires_at = models.DateTimeField()
+    available_at = models.DateTimeField(db_index=True)
+    sent_at = models.DateTimeField(null=True)
+    attempts = models.PositiveIntegerField(default=0)
+    last_error = models.CharField(max_length=100, blank=True)
+
+
 class StudentFaceCredential(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='face_credential')
     encrypted_template = models.BinaryField()

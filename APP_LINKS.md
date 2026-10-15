@@ -15,12 +15,20 @@ the same Django route. The Student Expo repository owns native
 link registration and the in-app claim flow. An email scanner opening the fallback
 does not send OTPs or claim an account.
 
+For an app-first installation, leave `STUDENT_WEB_CLAIM_URL` empty: browsers then
+receive the installation-help page with an explicit `Open Kormic Student` button
+whose custom-scheme URL preserves the invitation token. Verified OS links still
+open the installed app directly. Never use `app.yourdomain.com` or
+`student.yourdomain.com`; these are unrelated real domains, and validation rejects
+them. An explicit `CLAIM_PAGE_URL` takes precedence over the frontend API origin.
+
 ## Deploy the domain before sending invitations
 
 1. Point `app.kormic.ai` DNS at the backend reverse proxy. Provision its HTTPS
    certificate (for example with Certbot's Nginx plugin). Install
    `deploy/app-links.nginx.conf` once the certificate exists; run `nginx -t` and
-   reload Nginx. Add `app.kormic.ai` to `DJANGO_ALLOWED_HOSTS`, preserving existing
+   reload Nginx. The supplied upstream is port 8400 for the existing Supervisor
+   deployment; confirm it before installing on another host. Add `app.kormic.ai` to `DJANGO_ALLOWED_HOSTS`, preserving existing
    API hosts. Keep the association document routes on Django; redirect only the
    claim page to the web frontend using `STUDENT_WEB_CLAIM_URL`. Configure
    any CDN/WAF to allow unauthenticated association requests without challenges.
@@ -94,9 +102,10 @@ Invitations are multipart HTML/plain text, sent as Kormic using the configured
 the same invitation code is in the button URL and a separate code box. The later
 six-digit email verification code is separate. Opening a link never sends an OTP.
 
-Use IONOS SMTP with `EMAIL_MODE=prod`, `EMAIL_HOST=smtp.ionos.com`, `EMAIL_PORT=587`,
-`EMAIL_USE_TLS=true`, and `EMAIL_USE_SSL=false`. Set the mailbox credentials and
-an authorized `DEFAULT_FROM_EMAIL` address. Restart the API and delivery workers
+Use the actual mailbox provider with `EMAIL_MODE=prod`. The verified
+`info@kormic.ai` configuration uses `EMAIL_HOST=mail.privateemail.com`,
+`EMAIL_PORT=587`, `EMAIL_USE_TLS=true`, and `EMAIL_USE_SSL=false`. Set the mailbox
+credentials and an authorized `DEFAULT_FROM_EMAIL` address. Restart the API and delivery workers
 after environment changes. Authentication alone does not confirm inbox delivery.
 
 - **Production:** `INVITE_DELIVERY_MODE=celery`, `CELERY_TASK_ALWAYS_EAGER=false`,

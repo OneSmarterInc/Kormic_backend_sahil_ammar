@@ -19,7 +19,8 @@ def send_otp_email(user: User, otp: str, *, ttl_minutes: int) -> None:
         "email -- your password will not be changed.\n\n"
         "-- Kormic Commons"
     )
-    _send(subject, message, user.email)
+    # Reset delivery must report failure so its persisted outbox can retry.
+    _send(subject, message, user.email, raise_errors=True)
 
 
 def send_password_changed_email(user: User) -> None:
@@ -35,11 +36,14 @@ def send_password_changed_email(user: User) -> None:
     _send(subject, message, user.email)
 
 
-def _send(subject: str, message: str, to_email: str) -> None:
+def _send(subject: str, message: str, to_email: str, *, raise_errors: bool = False) -> None:
     try:
-        send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [to_email], fail_silently=False)
+        if send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [to_email], fail_silently=False) != 1:
+            raise RuntimeError("Mail backend did not accept the message.")
     except Exception:
         # Never let an email-provider outage 500 the request, and never let
         # the caller distinguish "sent" from "failed to send" -- that alone
         # could confirm whether an account exists. Log for ops and move on.
         logger.exception("Failed to send email to %s", to_email)
+        if raise_errors:
+            raise

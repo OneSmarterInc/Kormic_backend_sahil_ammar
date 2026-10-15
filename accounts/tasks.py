@@ -1,4 +1,7 @@
+"""Tasks imported by Celery autodiscovery."""
 from celery import shared_task
+
+from accounts.reset_delivery import retry_reset_deliveries  # noqa: F401
 
 
 @shared_task(ignore_result=True)

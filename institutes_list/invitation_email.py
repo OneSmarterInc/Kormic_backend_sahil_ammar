@@ -10,7 +10,12 @@ def claim_link(token, base_url=None):
     value = (settings.CLAIM_PAGE_URL if base_url is None else base_url).strip()
     try:
         parts = urlsplit(value)
+        hostname = (parts.hostname or "").lower()
+        # Template domains are real third-party hosts, not safe placeholders:
+        # forwarding an invitation there exposes its token and cannot open our app.
+        placeholder = hostname == "yourdomain.com" or hostname.endswith(".yourdomain.com")
         valid = (parts.scheme in ("https", "http") and parts.hostname
+                 and not placeholder
                  and not parts.username and not parts.password
                  and parts.path in ("/claim", "/claim/") and not parts.fragment
                  and not any(ord(c) < 33 for c in value))

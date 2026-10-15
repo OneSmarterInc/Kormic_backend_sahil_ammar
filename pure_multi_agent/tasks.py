@@ -24,6 +24,7 @@ def execute_agent_job(self, job_id):
     from django_api.models import AgentJob, ChatMessage
     from pure_multi_agent.capacity import lease, AgentBusy, ResumeTurnLater
     from pure_multi_agent.jobs import run
+    from django_api.services import ResumeIdentityError
     recover()
     job = AgentJob.objects.filter(pk=job_id).first()
     if not job or job.status != "queued":
@@ -96,6 +97,14 @@ def execute_agent_job(self, job_id):
                 if settings.AGENT_QUEUE_BACKEND != 'database':
                     queue = 'agent_documents' if job.kind in ('resume', 'linkedin') else 'agent_chat'
                     execute_agent_job.apply_async(args=[str(job_id)], countdown=exc.delay, queue=queue, retry=False)
+            except ResumeIdentityError as exc:
+                updated = AgentJob.objects.filter(pk=job_id, status="processing", execution_token=token).update(
+                    status="failed", completed_at=timezone.now(), error=str(exc), execution_token=None,
+                )
+                if updated:
+                    from pure_multi_agent.document_jobs import cleanup_staging
+                    cleanup_staging(job)
+                logger.info("resume_name_rejected job=%s", job_id)
             except Exception:
                 logger.exception("Agent job %s failed", job_id)
                 AgentJob.objects.filter(pk=job_id, status="processing", execution_token=token).update(status="failed", completed_at=timezone.now(),

@@ -29,6 +29,19 @@ class InvitationLinksTests(SimpleTestCase):
             with self.subTest(url=url), self.assertRaises(ImproperlyConfigured):
                 claim_link("example", url)
 
+    def test_placeholder_domains_cannot_receive_invitation_tokens(self):
+        for host in ("yourdomain.com", "app.yourdomain.com", "student.yourdomain.com"):
+            with self.subTest(host=host), self.assertRaises(ImproperlyConfigured):
+                claim_link("private-token", f"https://{host}/claim")
+
+    @override_settings(STUDENT_WEB_CLAIM_URL="https://student.yourdomain.com/claim")
+    def test_placeholder_redirect_falls_back_to_app_button_with_prefilled_token(self):
+        response = self.client.get("/claim?token=abc%2B123")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("Location", response)
+        self.assertContains(response, "kormicstudent://claim?token=abc%2B123")
+        self.assertNotContains(response, "student.yourdomain.com")
+
     @override_settings(STUDENT_WEB_CLAIM_URL="https://student.example/claim")
     def test_browser_bridge_preserves_code_without_sending_mail(self):
         response = self.client.get("/claim?token=abc%2B123")

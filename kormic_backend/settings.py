@@ -36,7 +36,9 @@ if KORMIC_PUBLIC_URL:
             or _public_parts.username or 'YOUR_' in KORMIC_PUBLIC_URL):
         raise ImproperlyConfigured('Frontend .env KORMIC_API_ORIGIN_PUBLIC must be a public HTTPS origin without a path.')
     os.environ['GITHUB_OAUTH_REDIRECT_URI'] = KORMIC_PUBLIC_URL + '/api/auth/github/callback/'
-    os.environ['CLAIM_PAGE_URL'] = KORMIC_PUBLIC_URL + '/claim'
+    # Preserve the configured mobile App Links host. The API origin is only
+    # a fallback for installations without an explicit invitation URL.
+    os.environ.setdefault('CLAIM_PAGE_URL', KORMIC_PUBLIC_URL + '/claim')
 
 # Inference uses Claude only. Ollama settings remain for retired adapter compatibility.
 GITHUB_OLLAMA_BASE_URL = os.getenv("GITHUB_OLLAMA_BASE_URL", "http://127.0.0.1:11434")
@@ -511,6 +513,10 @@ AGENT_RETENTION_RESTORE_TESTED_BACKUP_ID = os.environ.get("AGENT_RETENTION_RESTO
 AGENT_RETENTION_RESTORE_TESTED_AT = os.environ.get("AGENT_RETENTION_RESTORE_TESTED_AT", "").strip()
 
 CELERY_BEAT_SCHEDULE = {
+    "retry-password-reset-email": {
+        "task": "accounts.reset_delivery.retry_reset_deliveries",
+        "schedule": 30.0,
+    },
     "cleanup-expired-face-challenges": {"task": "accounts.tasks.cleanup_face_challenges", "schedule": 3600.0},
     "cleanup-public-collection-jobs": {
         "task": "university_research.tasks.cleanup_collection_jobs", "schedule": 3600.0,
