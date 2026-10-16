@@ -113,6 +113,17 @@ class FaceAuthenticationTests(TestCase):
         self.assertNotIn('access', result.data)
         self.assertEqual(bytes(StudentFaceCredential.objects.get(user=self.user).encrypted_template), stored)
 
+    def test_subject_cannot_change_after_the_first_accepted_frame(self):
+        scan = self.start()
+        self.assertEqual(self.step(scan, 0).status_code, 200)
+        other = [0.0, 1.0] + [0.0] * 510
+        result = self.step(scan, 1, vector=other)
+        self.assertEqual(result.status_code, 400)
+        self.assertIn('Face did not match', result.data['detail'])
+        scan.refresh_from_db()
+        self.assertEqual(scan.step, 1)
+        self.assertFalse(StudentFaceCredential.objects.filter(user=self.user).exists())
+
     def test_replay_across_challenges_is_rejected(self):
         scan = self.start()
         self.assertEqual(self.step(scan, 0, capture='identical-capture').status_code, 200)

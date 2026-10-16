@@ -82,12 +82,30 @@ def detect(image):
         intersection = overlap.prod(axis=1)
         area = (boxes[:, 2:] - boxes[:, :2] + 1).prod(axis=1)
         order = rest[intersection / (area[current] + area[rest] - intersection) < 0.4]
-    if len(keep) != 1:
-        raise FaceScanError('Only one person may appear in the camera.')
-    bbox = boxes[keep[0]] / scale
-    if min(bbox[2:] - bbox[:2]) < 80:
+    selected = primary_face(boxes[keep] / scale, image.size)
+    return points[keep[selected]] / scale
+
+
+def primary_face(boxes: np.ndarray, image_size: tuple[int, int]) -> int:
+    """Select a clear foreground subject; never choose among comparable faces.
+
+    Smaller faces behind the subject are harmless. The largest face must be
+    centered and more than twice the area of every other detected face. Identity
+    continuity across accepted frames is still checked by FaceStepView.
+    """
+    width, height = image_size
+    clipped = np.clip(boxes, [0, 0, 0, 0], [width, height, width, height])
+    sizes = np.maximum(0, clipped[:, 2:] - clipped[:, :2])
+    areas = sizes.prod(axis=1)
+    selected = int(np.argmax(areas))
+    if min(sizes[selected]) < 80:
         raise FaceScanError('Move closer to the camera.')
-    return points[keep[0]] / scale
+    center = (clipped[selected, :2] + clipped[selected, 2:]) / 2
+    if not (0.2 <= center[0] / width <= 0.8 and 0.15 <= center[1] / height <= 0.85):
+        raise FaceScanError('Keep your face inside the oval, near the center of the camera.')
+    if any(area >= areas[selected] * 0.5 for i, area in enumerate(areas) if i != selected):
+        raise FaceScanError('Move closer and keep your face in the oval, away from other nearby faces.')
+    return selected
 
 
 def embedding(image, points):
@@ -116,7 +134,17 @@ def embedding(image, points):
 _inference_lock = threading.Lock()
 
 
-def measure(encoded):
+def pose_matches(yaw: float, action: str) -> bool:
+    if action == 'center':
+        return abs(yaw) < 0.16
+    if action == 'left':
+        return yaw > 0.18
+    if action == 'right':
+        return yaw < -0.18
+    return False
+
+
+def measure(encoded, *, action: str | None = None):
     with _inference_lock:
         image = decode(encoded)
         points = detect(image)
@@ -124,6 +152,9 @@ def measure(encoded):
         if eye_distance < 15:
             raise FaceScanError('Move closer to the camera.')
         yaw = float((points[2, 0] - (points[0, 0] + points[1, 0]) / 2) / eye_distance)
+        # Wrong-pose frames need guidance, not an expensive ArcFace inference.
+        if action is not None and not pose_matches(yaw, action):
+            raise FaceScanError('Follow the requested head movement, then try again.')
         return yaw, embedding(image, points)
 
 

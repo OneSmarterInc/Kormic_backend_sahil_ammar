@@ -72,12 +72,28 @@ manually. Both Celery beat and the default-queue worker must run in deployment.
 
 ## Required physical-device acceptance checks
 
+The detector selects the largest centered face and ignores other faces below
+half its visible area. Comparable faces still require repositioning. Existing
+identity matching checks the selected subject against the first accepted frame
+and the enrolled template. Wrong-pose frames skip recognition inference and
+return movement guidance. These geometry thresholds require device testing in
+crowded scenes as well as quiet backgrounds.
+
+Student APK 0.1.6 adds optional spoken prompts, vibration on server acceptance,
+a green confirmation, saved progress during positioning retries, and disables
+shutter flashes. Deploy the backend update and restart the web workers, then
+install the updated APK. This change needs no database migration or new models.
+
 - New account: TOTP → face enrollment → profile/CV/GitHub setup.
 - Existing account: TOTP → same-person success; different-person refusal.
 - Camera denial, offline/timeout, expired scan, repeated capture, replayed
   challenge and repeated tap must not unlock the account.
 - Check left/right instructions on front cameras, glasses, lighting and head
   turns. Ensure each supported Android device returns captures below 2 megapixels.
+- Confirm that each accepted turn is audible and produces a short vibration,
+  including when looking away; check muted guidance and background/resume.
+- Move a smaller background face around the frame, then introduce a similarly
+  sized nearby face. Only the clearly dominant subject should continue scanning.
 - Test printed photos, screen photos and recorded video attacks, and calibrate
   matching on a representative consented test set.
 

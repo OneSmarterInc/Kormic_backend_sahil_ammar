@@ -18,7 +18,7 @@ from accounts.authentication import FaceGatedAuthentication
 from accounts.tokens import AccessToken, RefreshToken
 
 from accounts.models import Account, StudentFaceChallenge, StudentFaceCredential, StudentFaceCapture, TOTPDevice
-from accounts.face_engine import FaceScanError, measure, similarity
+from accounts.face_engine import FaceScanError, measure, pose_matches, similarity
 from accounts.face_models import MODEL_HASHES
 
 
@@ -130,10 +130,9 @@ class FaceStepView(FaceBase):
                 return Response({'detail': 'Use a fresh camera capture for each step.'}, status=400)
             scan.attempts += 1
             try:
-                yaw, vector = measure(image)
                 action = scan.sequence[scan.step]
-                pose_ok = abs(yaw) < 0.16 if action == 'center' else yaw > 0.18 if action == 'left' else yaw < -0.18
-                if not pose_ok:
+                yaw, vector = measure(image, action=action)
+                if not pose_matches(yaw, action):
                     raise FaceScanError('Follow the requested head movement, then try again.')
                 credential = StudentFaceCredential.objects.filter(user=request.user).first()
                 if credential and credential.model_sha256 != MODEL_HASHES['w600k_r50.onnx']:
@@ -150,7 +149,10 @@ class FaceStepView(FaceBase):
                     scan.finished_at = now
                     scan.encrypted_reference = b''
                 scan.save(update_fields=['attempts', 'finished_at', 'encrypted_reference'])
-                return Response({'detail': str(exc)}, status=403 if scan.finished_at else 400)
+                detail = str(exc)
+                if scan.finished_at:
+                    detail += ' This scan has ended. Restart the scan.'
+                return Response({'detail': detail}, status=403 if scan.finished_at else 400)
             except (RuntimeError, OSError, ValueError):
                 return Response({'detail': 'Face verification is unavailable. Please retry later.'}, status=503)
             StudentFaceCapture.objects.create(user=request.user, digest=capture_hash)
