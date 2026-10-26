@@ -10,6 +10,16 @@ from django.views.decorators.http import require_POST
 
 from .models import CSPReport
 
+# Exact production aliases verified in Vercel and via HTTP on 2026-10-26.
+# Never allow *.vercel.app: it includes deployments owned by other tenants.
+ALLOWED_DOCUMENT_HOSTS = frozenset({
+    "platform.kormic.ai",
+    "kormicfrontendammarsahil-kpkx.vercel.app",
+    "kormic-frontend-institutes.vercel.app",
+    "kormic-frontend-university.vercel.app",
+    "kormic-frontend-superuser.vercel.app",
+})
+
 MAX_BYTES = 16384
 DIRECTIVES = frozenset((
     "default-src", "script-src", "script-src-elem", "script-src-attr",
@@ -77,7 +87,7 @@ def collect(request):
         document = report.get("document-uri", report.get("documentURL"))
         try:
             url = urlsplit(document) if isinstance(document, str) else None
-            if not url or url.scheme != "https" or url.netloc != "platform.kormic.ai":
+            if not url or url.scheme != "https" or url.netloc not in ALLOWED_DOCUMENT_HOSTS:
                 continue
         except ValueError:
             continue

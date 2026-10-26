@@ -23,9 +23,26 @@ CATEGORY_TO_GROUP_SLUG = {
     "support": KnowledgeGroup.Slug.CAMPUS_LIFE,
 }
 
+# Discovery rows may contain the classifier's display label rather than its
+# rules key. Preserve those stored labels while resolving their review group.
+CATEGORY_LABEL_TO_KEY = {
+    "admissions & application": "admissions",
+    "international students & visa": "international",
+    "programs & academics": "programs",
+    "fees, tuition & financial aid": "fees",
+    "housing, dining & campus life": "campus_life",
+    "student support services": "support",
+    "careers & internships": "careers",
+    "deadlines & academic calendar": "deadlines",
+    "forms, documents & downloads": "documents",
+    "contact & help": "contact",
+}
+
 
 def group_slug_for_category(category: Optional[str]) -> str:
     """Best-guess KnowledgeGroup slug for a discovery category, defaulting
     to ADMISSIONS for an unrecognized or missing category -- same fallback
     universities.knowledge_groups.classify_group_slug uses."""
-    return CATEGORY_TO_GROUP_SLUG.get(str(category or "").strip().lower(), KnowledgeGroup.Slug.ADMISSIONS)
+    key = str(category or "").strip().lower()
+    key = CATEGORY_LABEL_TO_KEY.get(key, key)
+    return CATEGORY_TO_GROUP_SLUG.get(key, KnowledgeGroup.Slug.ADMISSIONS)

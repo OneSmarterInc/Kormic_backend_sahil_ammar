@@ -12,6 +12,23 @@ Do not run that alternative alongside Supervisor on the existing host.
 
 ## CSP report-only observation
 
+The collector accepts HTTPS documents from these exact production hosts, verified
+against Vercel project domains and public HTTP responses on October 26, 2026:
+
+- `platform.kormic.ai` - all four unified portals.
+- `kormicfrontendammarsahil-kpkx.vercel.app` - the same four portals.
+- `kormic-frontend-institutes.vercel.app` - standalone institute portal.
+- `kormic-frontend-university.vercel.app` - standalone university portal.
+- `kormic-frontend-superuser.vercel.app` - standalone administrator portal.
+
+Both unified hosts serve the report-only header and collector URL. The three
+standalone hosts were still serving portal HTML but had no report-only header;
+configure reporting there or redirect them to the corresponding unified portal
+before claiming observation coverage. The collector allowlist alone does not
+make browsers send reports. Arbitrary Vercel previews are intentionally excluded.
+Update the exact allowlist and regression tests when production aliases change.
+
+
 Deploy the collector before publishing the frontend reporting header. After the
 reviewed code is present on AWS, use the production web environment:
 
@@ -44,7 +61,7 @@ Reports can be spoofed and must be reproduced before changing the policy.
 
 Keep `Content-Security-Policy-Report-Only` throughout observation **and afterward**.
 Do not automatically enable enforcement after seven days. Change the header to
-`Content-Security-Policy` only after the user explicitly approves enforcement and
+`Content-Security-Policy` only after Vikram approves enforcement in writing and
 legitimate violations have been addressed. This collector creates no Celery jobs
 and does not change authentication.
 

@@ -247,7 +247,9 @@ class UniversityKnowledgeBase:
 
     def _normalize_key(self, topic: str, content: str) -> tuple[str, str]:
         topic_key = " ".join(str(topic or "").lower().split())
-        content_key = " ".join(str(content or "").lower().split())[:500]
+        # Different rates or conditions can occur well past the page introduction.
+        # Prefix equality is not evidence that the whole source is unchanged.
+        content_key = " ".join(str(content or "").lower().split())
         return topic_key, content_key
 
     def _find_duplicate(self, topic: str, content: str) -> Optional[KnowledgeEntry]:

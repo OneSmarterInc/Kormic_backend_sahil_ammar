@@ -73,9 +73,16 @@ def prepare(ctx, messages, all_tools):
             continue
         # Old tool output remains retrievable; keep call/result pairing intact.
         preview = content[:PAGE_CHARS] if index == latest else ''
+        focused = False
+        if index == latest and message.name == 'search_university_knowledge':
+            from pure_multi_agent.evidence_preview import focused_preview
+            excerpt = focused_preview(content, ctx.get('current_message', ''), PAGE_CHARS)
+            if excerpt:
+                preview, focused = excerpt, True
         projected.append(message.model_copy(update={'content': compact_json({
             'evidence_id': reference, 'total_characters': len(content),
-            'content': preview, 'next_offset': len(preview),
+            'content': preview, 'next_offset': 0 if focused else len(preview),
+            'question_focused': focused,
             'instruction': 'Partial evidence. Use read_officer_evidence for remaining text before '
                            'making exhaustive claims. Do not infer absent facts from this preview.',
         })}))

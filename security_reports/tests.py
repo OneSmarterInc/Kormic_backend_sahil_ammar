@@ -31,10 +31,41 @@ class CollectorTests(TestCase):
         self.assertEqual(row.blocked_origin, "https://cdn.example.com")
         self.assertNotIn("SECRET", str(list(CSPReport.objects.values())))
 
+    def test_verified_production_aliases_accept_all_four_portal_paths(self):
+        # Keep this independent of the production constant so accidental removal
+        # of an alias fails the regression test.
+        hosts = (
+            "platform.kormic.ai",
+            "kormicfrontendammarsahil-kpkx.vercel.app",
+            "kormic-frontend-institutes.vercel.app",
+            "kormic-frontend-university.vercel.app",
+            "kormic-frontend-superuser.vercel.app",
+        )
+        for host in hosts:
+            for path in ("/student/login", "/university/", "/institute/", "/superuser/"):
+                with self.subTest(host=host, path=path):
+                    before = sum(CSPReport.objects.values_list("count", flat=True))
+                    response = self.send({**self.report, "document-uri": f"https://{host}{path}"})
+                    self.assertEqual(response.status_code, 204)
+                    self.assertEqual(sum(CSPReport.objects.values_list("count", flat=True)), before + 1)
+
+    def test_untrusted_aliases_and_origins_are_not_recorded(self):
+        for origin in (
+            "https://attacker.vercel.app",
+            "https://platform.kormic.ai.attacker.example",
+            "https://kormicfrontendammarsahil-kpkx.vercel.app.attacker.example",
+            "https://attacker@platform.kormic.ai",
+            "https://platform.kormic.ai:8443",
+            "http://platform.kormic.ai",
+        ):
+            with self.subTest(origin=origin):
+                self.assertEqual(self.send({**self.report, "document-uri": origin + "/"}).status_code, 204)
+        self.assertFalse(CSPReport.objects.exists())
+
     def test_modern_batch(self):
         response = self.client.post("/api/security/csp-report/", json.dumps([{
             "type": "csp-violation", "body": {
-                "documentURL": "https://platform.kormic.ai/",
+                "documentURL": "https://kormicfrontendammarsahil-kpkx.vercel.app/student/login",
                 "effectiveDirective": "script-src", "blockedURL": "inline",
             },
         }]), content_type="application/reports+json")

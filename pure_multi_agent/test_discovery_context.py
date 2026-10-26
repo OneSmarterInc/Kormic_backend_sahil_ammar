@@ -1,3 +1,4 @@
+import socket
 from unittest.mock import patch
 from django.test import TestCase
 from langchain_core.messages import AIMessage
@@ -5,6 +6,14 @@ from django_api.models import StudentProfile
 from university_research.models import UniversitySearch, PublicUniversity
 from pure_multi_agent.tools.university_tools import build_tools
 from pure_multi_agent.model_router import _validate
+
+
+def public_university_dns(hostname, port, *args, **kwargs):
+    """Fixture DNS only; keep the real public-address validation in place."""
+    if hostname != 'www.ku.dk':
+        raise AssertionError(f'Unexpected DNS lookup: {hostname}')
+    return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP,
+             '', ('93.184.216.34', port or 0))]
 
 
 class DiscoveryContextTests(TestCase):
@@ -16,7 +25,8 @@ class DiscoveryContextTests(TestCase):
         with patch('university_research.web.search_web', return_value=[{'url':self.url,'title':'University of Copenhagen','snippet':'Search snippet'}]):
             self.search = self.tools['list_universities'].invoke({'query':'University of Copenhagen'})
 
-    def test_candidate_without_cached_page_fetches_official_identity_before_selection(self):
+    @patch('url_discovery.domain_policy.socket.getaddrinfo', side_effect=public_university_dns)
+    def test_candidate_without_cached_page_fetches_official_identity_before_selection(self, dns):
         args = {'candidates':[{'name':'University of Copenhagen','website':self.url,'country':'DK','address':'Copenhagen'}]}
         identify = self.tools['identify_university_candidates']
         _validate(AIMessage(content='',tool_calls=[{'id':'call','name':identify.name,'args':args}]), [identify])
@@ -33,6 +43,7 @@ class DiscoveryContextTests(TestCase):
         claude.assert_not_called()
         selected = self.tools['select_university_candidate'].invoke({'candidate_index':1})
         self.assertTrue(selected['university']['id'].startswith('public:'))
+        dns.assert_any_call('www.ku.dk', None)
 
     def test_unseen_website_is_rejected_without_fetching(self):
         with patch('university_research.web.read_page_once') as read:
@@ -64,10 +75,12 @@ class DiscoveryContextTests(TestCase):
         read.assert_not_called()
 
 
-    def test_numbered_result_resolves_without_nested_model_arguments(self):
+    @patch('url_discovery.domain_policy.socket.getaddrinfo', side_effect=public_university_dns)
+    def test_numbered_result_resolves_without_nested_model_arguments(self, dns):
         with patch('university_research.web.read_page_once', return_value={'url':self.url, 'title':'University of Copenhagen - University of Copenhagen', 'content':'University of Copenhagen', 'links':[]}) as read:
             result = self.tools['choose_university_result'].invoke({'result_number':1})
         self.assertEqual(result['university']['name'], 'University of Copenhagen')
+        dns.assert_any_call('www.ku.dk', None)
         read.assert_called_once()
 
     def test_invalid_number_is_recoverable_without_fetch(self):
