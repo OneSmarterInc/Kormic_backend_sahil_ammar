@@ -641,7 +641,8 @@ CLAIM_PAGE_URL = os.getenv("CLAIM_PAGE_URL", "").strip()
 INVITE_DELIVERY_MODE = os.getenv("INVITE_DELIVERY_MODE", "celery").strip().lower()
 if INVITE_DELIVERY_MODE not in ("celery", "database"):
     raise ImproperlyConfigured("INVITE_DELIVERY_MODE must be celery or database")
-STUDENT_WEB_CLAIM_URL = os.getenv("STUDENT_WEB_CLAIM_URL", "").strip()
+STUDENT_WEB_CLAIM_URL = (os.getenv("STUDENT_WEB_CLAIM_URL", "").strip()
+                         or "https://platform.kormic.ai/student/claim")
 
 # Served on app.kormic.ai by the dedicated proxy in deploy/app-links.nginx.conf.
 # Use the Play app-signing certificate (not merely the upload certificate).

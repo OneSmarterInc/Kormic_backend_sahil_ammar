@@ -1,6 +1,7 @@
 # Production student invitation links
 
-Canonical invitation URL: `https://app.kormic.ai/claim?token=...`.
+Web-first invitation URL: `https://platform.kormic.ai/student/claim?token=...`.
+Existing `https://app.kormic.ai/claim?token=...` links remain supported.
 `CLAIM_PAGE_URL` is a backend/Celery setting containing the **student frontend /
 deep-link URL**, not the Django API URL (such as `https://backend.kormic.ai/api`).
 It belongs in the backend environment, not in portal frontend environment files.
@@ -9,16 +10,22 @@ claim page without a query string or fragment; the backend appends the token.
 
 Django serves both association documents and a browser redirect. The unified
 frontend must be deployed to serve the student claim form. Set
-`STUDENT_WEB_CLAIM_URL=https://<your-student-web-host>/claim` when the app-link
+`STUDENT_WEB_CLAIM_URL=https://platform.kormic.ai/student/claim` when the app-link
 host routes `/claim` to Django. This URL must point to the frontend, not back to
 the same Django route. The Student Expo repository owns native
 link registration and the in-app claim flow. An email scanner opening the fallback
 does not send OTPs or claim an account.
 
-For an app-first installation, leave `STUDENT_WEB_CLAIM_URL` empty: browsers then
-receive the installation-help page with an explicit `Open Kormic Student` button
-whose custom-scheme URL preserves the invitation token. Verified OS links still
-open the installed app directly. Never use `app.yourdomain.com` or
+An unset or blank `STUDENT_WEB_CLAIM_URL` now defaults to the web claim form.
+After email verification, profile confirmation and password creation, desktop
+browsers go to `/student/login`. Mobile browsers offer app sign-in or web sign-in.
+No registration token is persisted by this flow; security enrollment remains
+required after sign-in. Deploy the new student web build before the backend.
+The native sign-in handoff uses `kormicstudent://login` and requires an updated
+APK; web sign-in remains available when the app is absent or older.
+Verified OS links still open the installed app directly. Use the web-first
+`CLAIM_PAGE_URL` for new emails if every device should begin in the browser.
+Never use `app.yourdomain.com` or
 `student.yourdomain.com`; these are unrelated real domains, and validation rejects
 them. An explicit `CLAIM_PAGE_URL` takes precedence over the frontend API origin.
 
@@ -62,7 +69,7 @@ them. An explicit `CLAIM_PAGE_URL` takes precedence over the frontend API origin
    updated configuration. An OTA JavaScript update cannot change native intent
    filters or iOS entitlements. Complete the device checks in that repository's
    `APP_LINKS.md` before pilot sign-off.
-7. Set `CLAIM_PAGE_URL=https://app.kormic.ai/claim` in the production backend and
+7. Set `CLAIM_PAGE_URL=https://platform.kormic.ai/student/claim` in the production backend and
    **Celery worker** environment, then restart both. New invite emails use that
    URL. Do not include a query string or fragment in this setting. Keep invitation
    sending disabled/unconfigured until the domain and fallback work.
@@ -71,9 +78,10 @@ them. An explicit `CLAIM_PAGE_URL` takes precedence over the frontend API origin
 
 If the app is installed and OS association succeeds, HTTPS opens its claim screen.
 Otherwise Django redirects to `STUDENT_WEB_CLAIM_URL`, preserving the invitation
-code so the browser displays the same claim form as the app. Without this setting,
-the legacy installation-help page remains available with an explicit
-`kormicstudent://claim?token=...` button. After installing, students must reopen
+code so the browser displays the same claim form as the app. A missing or blank
+setting now uses `https://platform.kormic.ai/student/claim`. The legacy
+installation-help page is retained only when an explicitly invalid configuration
+cannot be redirected safely or would loop. After installing, students must reopen
 the email link; this is not deferred deep linking. Manual token entry remains
 available. The app still performs email OTP verification; links do not authenticate
 the student. Custom schemes are a convenience fallback, not a verified identity.

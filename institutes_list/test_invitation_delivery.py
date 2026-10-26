@@ -15,6 +15,25 @@ from institutes_list.management.commands.invitation_worker import work_once
 
 
 class InvitationLinksTests(SimpleTestCase):
+    def test_student_claim_path_supported_but_other_paths_rejected(self):
+        for path in ("/student/claim", "/student/claim/"):
+            self.assertEqual(claim_link("demo", "https://platform.kormic.ai" + path),
+                             "https://platform.kormic.ai" + path + "?token=demo")
+        for path in ("/student/login", "/student/claim/extra", "/api/claim", "/student/../claim"):
+            with self.subTest(path=path), self.assertRaises(ImproperlyConfigured):
+                claim_link("demo", "https://platform.kormic.ai" + path)
+
+    @override_settings(STUDENT_WEB_CLAIM_URL="https://platform.kormic.ai/student/claim")
+    @patch("institutes_list.tasks.send_claim_otp_email_task.delay")
+    def test_web_invitation_redirect_keeps_token_and_does_not_send_code(self, send):
+        response = self.client.get("/claim?token=demo%2Bcode")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"],
+                         "https://platform.kormic.ai/student/claim?token=demo%2Bcode")
+        self.assertEqual(response["Cache-Control"], "no-store")
+        self.assertEqual(response["Referrer-Policy"], "no-referrer")
+        send.assert_not_called()
+
     @override_settings(EMAIL_MODE="prod", CLAIM_PAGE_URL="http://localhost:5173/claim")
     def test_live_smtp_can_use_the_configured_local_claim_url(self):
         validate_delivery_url()

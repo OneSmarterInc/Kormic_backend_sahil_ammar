@@ -17,7 +17,7 @@ def claim_link(token, base_url=None):
         valid = (parts.scheme in ("https", "http") and parts.hostname
                  and not placeholder
                  and not parts.username and not parts.password
-                 and parts.path in ("/claim", "/claim/") and not parts.fragment
+                 and parts.path in ("/claim", "/claim/", "/student/claim", "/student/claim/") and not parts.fragment
                  and not any(ord(c) < 33 for c in value))
         if parts.scheme == "http" and parts.hostname not in ("localhost", "127.0.0.1", "10.0.2.2"):
             valid = False
@@ -25,7 +25,7 @@ def claim_link(token, base_url=None):
         if not valid:
             raise ValueError()
     except ValueError:
-        raise ImproperlyConfigured("CLAIM_PAGE_URL must be the public HTTPS student portal /claim URL (HTTP localhost is supported only for local testing).") from None
+        raise ImproperlyConfigured("CLAIM_PAGE_URL must be the public HTTPS student portal /claim or /student/claim URL (HTTP localhost is supported only for local testing).") from None
     query = [(key, val) for key, val in parse_qsl(parts.query, keep_blank_values=True) if key != "token"]
     query.append(("token", token))
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ""))
