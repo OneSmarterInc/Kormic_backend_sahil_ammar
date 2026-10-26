@@ -16,7 +16,7 @@ class DiscoveryContextTests(TestCase):
         with patch('university_research.web.search_web', return_value=[{'url':self.url,'title':'University of Copenhagen','snippet':'Search snippet'}]):
             self.search = self.tools['list_universities'].invoke({'query':'University of Copenhagen'})
 
-    def test_exact_failed_payload_reads_page_and_resolves_without_claude(self):
+    def test_candidate_without_cached_page_fetches_official_identity_before_selection(self):
         args = {'candidates':[{'name':'University of Copenhagen','website':self.url,'country':'DK','address':'Copenhagen'}]}
         identify = self.tools['identify_university_candidates']
         _validate(AIMessage(content='',tool_calls=[{'id':'call','name':identify.name,'args':args}]), [identify])
@@ -27,6 +27,8 @@ class DiscoveryContextTests(TestCase):
         self.assertEqual(result['count'], 1)
         self.assertEqual(result['search_id'], self.search['search_id'])
         self.assertEqual(result['candidates'][0]['sources'][0]['identity_quote'], 'University of Copenhagen')
+        self.assertEqual(result['candidates'][0]['sources'][0]['url'], self.url)
+        self.assertFalse(PublicUniversity.objects.exists())
         read.assert_called_once_with(self.url)
         claude.assert_not_called()
         selected = self.tools['select_university_candidate'].invoke({'candidate_index':1})
@@ -74,13 +76,16 @@ class DiscoveryContextTests(TestCase):
         self.assertEqual(result['allowed_result_numbers'], [1])
         read.assert_not_called()
 
-    def test_exhausted_schema_retries_return_message_not_failed_job(self):
+    def test_invalid_discovery_response_returns_recoverable_message_without_tool_execution(self):
         from types import SimpleNamespace
         from pure_multi_agent.student_graph import _reason
-        from pure_multi_agent.model_router import InvalidLocalToolResponse
-        with patch('pure_multi_agent.model_router.invoke', side_effect=InvalidLocalToolResponse('bad shape')):
+        from pure_multi_agent.model_router import InvalidToolResponse
+        with patch('pure_multi_agent.model_router.invoke', side_effect=InvalidToolResponse('bad shape')):
             result = _reason({'messages':[]}, SimpleNamespace(context={'ctx':{'model_steps':1,'university_discovery_pending':True}, 'prompt':''}))
         self.assertIn('could not be processed', result['messages'][0].content)
+        self.assertFalse(result['messages'][0].tool_calls)
+        self.assertIn('official website', result['messages'][0].content)
+        self.assertFalse(PublicUniversity.objects.exists())
 
 
     def test_search_display_groups_pages_and_excludes_directories(self):

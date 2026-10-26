@@ -513,7 +513,7 @@ class SubResourceHistoryTests(TestCase):
 
     @mock.patch("agents.resume_parser.ResumeParserAgent")
     def test_resume_upload_history_accumulates_without_overwriting_files(self, MockParser):
-        MockParser.return_value.parse.return_value = {"skills": ["Python"]}
+        MockParser.return_value.parse.return_value = {"name": "Dave", "skills": ["Python"]}
 
         file1 = SimpleUploadedFile("resume.pdf", b"first-version", content_type="application/pdf")
         file2 = SimpleUploadedFile("resume.pdf", b"second-version", content_type="application/pdf")
@@ -531,7 +531,7 @@ class SubResourceHistoryTests(TestCase):
 
     @mock.patch("agents.resume_parser.ResumeParserAgent")
     def test_resume_download_scoped_to_owner_and_delete_removes_it(self, MockParser):
-        MockParser.return_value.parse.return_value = {"skills": ["Python"]}
+        MockParser.return_value.parse.return_value = {"name": "Dave", "skills": ["Python"]}
         file1 = SimpleUploadedFile("resume.pdf", b"resume-bytes", content_type="application/pdf")
         self.student.post("/api/profile/resume/", {"file": file1}, format="multipart")
         resume_id = ResumeUpload.objects.get(student__uuid=self.student_id).id

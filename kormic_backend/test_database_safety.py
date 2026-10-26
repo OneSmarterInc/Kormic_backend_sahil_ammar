@@ -27,6 +27,7 @@ class ProductionDatabaseGuardTests(SimpleTestCase):
             {
                 "DJANGO_DEBUG": "false",
                 "DB_ENGINE": "",
+                "DJANGO_SECRET_KEY": "database-guard-test-only-secret-not-for-production",
                 "POSTGRES_PASSWORD": "",
             },
         )
@@ -38,6 +39,7 @@ class ProductionDatabaseGuardTests(SimpleTestCase):
             {
                 "DJANGO_DEBUG": "false",
                 "DB_ENGINE": "sqlite",
+                "DJANGO_SECRET_KEY": "database-guard-test-only-secret-not-for-production",
                 "POSTGRES_PASSWORD": "not-used",
             },
         )
@@ -49,6 +51,7 @@ class ProductionDatabaseGuardTests(SimpleTestCase):
             {
                 "DJANGO_DEBUG": "false",
                 "DB_ENGINE": "postgresql",
+                "DJANGO_SECRET_KEY": "database-guard-test-only-secret-not-for-production",
                 "POSTGRES_PASSWORD": "",
             },
         )

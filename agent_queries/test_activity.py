@@ -27,12 +27,14 @@ class ActivityTests(TestCase):
 
     @patch('pure_multi_agent.model_router.invoke')
     def test_promise_review_requires_real_consultation(self, invoke):
-        invoke.return_value = AIMessage(content='', tool_calls=[{'name': 'completion_decision',
-            'args': {'complete': False, 'next_action': 'Call ask_university for admission requirements.'}, 'id': 'audit'}])
+        invoke.return_value = AIMessage(content='{"complete": false, "next_action": "Call ask_university for admission requirements."}')
         result = review_completion([HumanMessage(content='What are their admission requirements?')],
             AIMessage(content="I'll ask their agent and let you know."))
         self.assertFalse(result['complete'])
-        self.assertTrue(invoke.call_args.kwargs['require_tools'])
+        self.assertEqual(result['next_action'], 'Call ask_university for admission requirements.')
+        self.assertEqual(invoke.call_args.kwargs['json_schema']['required'], ['complete', 'next_action'])
+        self.assertEqual(invoke.call_args.kwargs['profile'], 'routing')
+        self.assertNotIn('require_tools', invoke.call_args.kwargs)
 
     @patch('pure_multi_agent.registered_adviser.invoke')
     @patch('pure_multi_agent.tools.university_tools._university_evidence')

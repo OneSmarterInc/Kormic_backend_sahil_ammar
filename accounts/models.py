@@ -7,7 +7,6 @@ class PasswordResetDelivery(models.Model):
     """Retryable reset delivery. No plaintext reset codes or mail bodies at rest."""
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     nonce = models.UUIDField(default=uuid.uuid4)
-    otp_hash = models.CharField(max_length=64)
     expires_at = models.DateTimeField()
     available_at = models.DateTimeField(db_index=True)
     sent_at = models.DateTimeField(null=True)

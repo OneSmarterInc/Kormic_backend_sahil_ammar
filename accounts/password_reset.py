@@ -68,9 +68,10 @@ def issue_otp(user_id, *, code: str | None = None) -> str:
     return otp
 
 
-def is_current_otp(user_id, otp_hash: str) -> bool:
+def is_current_otp(user_id, otp: str) -> bool:
+    """Check a code against the active cache entry without consuming it."""
     current = cache.get(_otp_key(user_id))
-    return isinstance(current, str) and secrets.compare_digest(current, otp_hash)
+    return isinstance(current, str) and secrets.compare_digest(current, hash_otp(otp))
 
 
 def is_otp_locked(user_id) -> bool:

@@ -5,15 +5,29 @@ import uuid
 from datetime import timedelta
 
 from celery import shared_task
+from django.contrib.auth.models import User
 from django.db.models import F
 from django.utils import timezone
 from django.utils.crypto import salted_hmac
 
 from accounts.email import send_otp_email
 from accounts.models import PasswordResetDelivery
-from accounts.password_reset import OTP_TTL, hash_otp, is_current_otp, issue_otp
+from accounts.password_reset import OTP_TTL, is_current_otp, issue_otp
 
 logger = logging.getLogger(__name__)
+
+
+@shared_task(ignore_result=True)
+def request_password_reset(email: str) -> None:
+    """Resolve eligibility and persist delivery outside the HTTP request path."""
+    user = User.objects.filter(email__iexact=email, is_active=True).first()
+    if user is None:
+        return
+    request_reset_delivery(user)
+    from project_superuser.models import ActivityLog
+    from project_superuser.services import log_activity
+
+    log_activity(ActivityLog.Action.PASSWORD_RESET_REQUESTED, target_user=user)
 
 
 def delivery_code(user_id: int, nonce: uuid.UUID) -> str:
@@ -23,9 +37,9 @@ def delivery_code(user_id: int, nonce: uuid.UUID) -> str:
 
 def request_reset_delivery(user) -> None:
     nonce = uuid.uuid4()
-    otp = issue_otp(user.pk, code=delivery_code(user.pk, nonce))
+    issue_otp(user.pk, code=delivery_code(user.pk, nonce))
     now = timezone.now()
-    job = PasswordResetDelivery.objects.create(user=user, nonce=nonce, otp_hash=hash_otp(otp),
+    job = PasswordResetDelivery.objects.create(user=user, nonce=nonce,
         expires_at=now + timedelta(seconds=OTP_TTL), available_at=now)
     # Preserve immediate delivery; a failed attempt remains durable for the worker.
     deliver(job.pk)
@@ -38,11 +52,12 @@ def deliver(job_id: int) -> None:
     if not pending.update(available_at=now + timedelta(seconds=60), attempts=F('attempts') + 1):
         return
     job = PasswordResetDelivery.objects.select_related('user').get(pk=job_id)
-    if job.expires_at <= now or not job.user.is_active or not is_current_otp(job.user_id, job.otp_hash):
+    otp = delivery_code(job.user_id, job.nonce)
+    if job.expires_at <= now or not job.user.is_active or not is_current_otp(job.user_id, otp):
         job.delete()
         return
     try:
-        send_otp_email(job.user, delivery_code(job.user_id, job.nonce),
+        send_otp_email(job.user, otp,
             ttl_minutes=max(1, math.ceil((job.expires_at - now).total_seconds() / 60)))
     except Exception as exc:
         # Exception class only: provider responses may contain recipient details.

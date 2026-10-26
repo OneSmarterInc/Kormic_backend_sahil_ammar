@@ -1,4 +1,3 @@
-@'
 
 \# Git Push Safety Policy
 
@@ -287,6 +286,3 @@ NEVER INFER PUSH PERMISSION.
 
 
 ONLY PUSH WHEN EXPLICITLY AUTHORIZED FOR THAT SPECIFIC PUSH.
-
-'@ | Set-Content -Encoding UTF8 CLAUDE.md
-

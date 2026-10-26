@@ -511,9 +511,6 @@ class ForgotPasswordView(APIView):
     throttle_scope = "password_reset"
 
     def post(self, request):
-        from project_superuser.models import ActivityLog
-        from project_superuser.services import log_activity
-
         serializer = ForgotPasswordSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data["email"].strip().lower()
@@ -521,13 +518,19 @@ class ForgotPasswordView(APIView):
         if is_resend_throttled(email):
             return Response({"detail": _FORGOT_PASSWORD_GENERIC_MESSAGE}, status=status.HTTP_200_OK)
 
+        # Queue every submitted address. Looking up the user or creating its
+        # outbox row here would expose account existence through response time.
+        from accounts.reset_delivery import request_password_reset
+        try:
+            request_password_reset.delay(email)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning('Password-reset request could not be queued')
+            return Response(
+                {"detail": "Password reset is temporarily unavailable. Please try again."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         start_cooldown(email)
-
-        user = User.objects.filter(email__iexact=email, is_active=True).first()
-        if user is not None:
-            from accounts.reset_delivery import request_reset_delivery
-            request_reset_delivery(user)
-            log_activity(ActivityLog.Action.PASSWORD_RESET_REQUESTED, target_user=user)
 
         return Response({"detail": _FORGOT_PASSWORD_GENERIC_MESSAGE}, status=status.HTTP_200_OK)
 

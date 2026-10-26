@@ -9,6 +9,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from accounts.models import Account, PasswordResetDelivery
+from accounts.password_reset import hash_otp, is_current_otp, issue_otp, verify_otp
 from accounts.reset_delivery import delivery_code, retry_reset_deliveries
 
 
@@ -62,3 +63,45 @@ class ResetDeliveryTests(TestCase):
         with patch('accounts.email.send_mail', return_value=0):
             self.request_code()
         self.assertIsNone(PasswordResetDelivery.objects.get().sent_at)
+
+    def test_current_otp_checks_code_without_consuming_cache_entry(self):
+        code = issue_otp(self.user.pk, code='012345')
+        self.assertTrue(is_current_otp(self.user.pk, code))
+        self.assertFalse(is_current_otp(self.user.pk, '999999'))
+        self.assertFalse(is_current_otp(self.user.pk, hash_otp(code)))
+        self.assertTrue(verify_otp(self.user.pk, code))
+        self.assertFalse(is_current_otp(self.user.pk, code))
+
+    def test_retry_discards_consumed_or_missing_cached_code(self):
+        for consume in (True, False):
+            with self.subTest(consume=consume):
+                cache.clear()
+                with patch('accounts.email.send_mail', side_effect=OSError('offline')):
+                    self.request_code()
+                job = PasswordResetDelivery.objects.get()
+                code = delivery_code(job.user_id, job.nonce)
+                if consume:
+                    self.assertTrue(verify_otp(self.user.pk, code))
+                else:
+                    cache.delete(f'pwreset:otp:{self.user.pk}')
+                PasswordResetDelivery.objects.filter(pk=job.pk).update(
+                    available_at=timezone.now() - timedelta(seconds=1),
+                )
+                with patch('accounts.email.send_mail') as send:
+                    retry_reset_deliveries.run()
+                send.assert_not_called()
+                self.assertFalse(PasswordResetDelivery.objects.filter(pk=job.pk).exists())
+
+    def test_expired_delivery_is_discarded_even_with_cached_code(self):
+        with patch('accounts.email.send_mail', side_effect=OSError('offline')):
+            self.request_code()
+        job = PasswordResetDelivery.objects.get()
+        self.assertTrue(is_current_otp(self.user.pk, delivery_code(job.user_id, job.nonce)))
+        PasswordResetDelivery.objects.filter(pk=job.pk).update(
+            expires_at=timezone.now() - timedelta(seconds=1),
+            available_at=timezone.now() - timedelta(seconds=1),
+        )
+        with patch('accounts.email.send_mail') as send:
+            retry_reset_deliveries.run()
+        send.assert_not_called()
+        self.assertFalse(PasswordResetDelivery.objects.filter(pk=job.pk).exists())

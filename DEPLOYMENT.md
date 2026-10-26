@@ -10,7 +10,45 @@ Docker Compose is an alternative deployment, documented in
 [deploy/DOCKER_COMPOSE.md](deploy/DOCKER_COMPOSE.md) and [deploy/AWS.md](deploy/AWS.md).
 Do not run that alternative alongside Supervisor on the existing host.
 
-## Services and configuration
+## CSP report-only observation
+
+Deploy the collector before publishing the frontend reporting header. After the
+reviewed code is present on AWS, use the production web environment:
+
+```bash
+cd /var/www/Kormic_backend_sahil_ammar
+./venv/bin/python manage.py migrate security_reports --noinput
+sudo supervisorctl restart kormic:kormic-web
+curl --fail-with-body -i https://backend.kormic.ai/api/security/csp-report/ \
+  -H 'Content-Type: application/csp-report' \
+  --data '{"csp-report":{"document-uri":"https://platform.kormic.ai/","effective-directive":"script-src","blocked-uri":"https://csp-smoke-test.invalid"}}'
+./venv/bin/python manage.py csp_report_summary --days 7
+```
+
+Expect HTTP 204 and a `csp-smoke-test.invalid` counter. This synthetic counter is
+a health check, not a browser violation. Publish the frontend report-only header
+only after this check passes. Verify it with `curl -I https://platform.kormic.ai/`
+and trigger a controlled inline-script violation in a test browser session to
+confirm browser delivery, then verify its counter. Record that timestamp as the
+start of the seven full days; code creation or a curl check alone does not start
+the observation period. Inspect counters daily and exercise all four portal
+flows. Missing reports alone do not establish that the collector is healthy.
+
+The endpoint accepts legacy CSP reports and Reporting API batches, bounds payloads
+to 16 KiB and batches to 20 entries, and uses the shared Redis cache to allow
+120 requests per minute globally. Cache failure returns 503; excess requests
+return 429. Monitor those status codes in Nginx logs because reports may be lost
+during failures or throttling. Daily aggregates retain only date, directive,
+blocked origin and count, without raw payloads, paths, queries, IPs or samples.
+Reports can be spoofed and must be reproduced before changing the policy.
+
+Keep `Content-Security-Policy-Report-Only` throughout observation **and afterward**.
+Do not automatically enable enforcement after seven days. Change the header to
+`Content-Security-Policy` only after the user explicitly approves enforcement and
+legitimate violations have been addressed. This collector creates no Celery jobs
+and does not change authentication.
+
+## Service status
 
 ```bash
 cd /var/www/Kormic_backend_sahil_ammar
@@ -48,9 +86,12 @@ Crawler installation is covered in [docs/crawlee.md](docs/crawlee.md).
 
    If the branches diverge or files are modified, reconcile the deployment changes
    explicitly. Do not reset the server checkout or force a merge to hide differences.
-3. Install the reviewed dependencies and apply migrations with the web environment:
+3. After jobs drain, stop the application group before applying the password-reset
+   schema change: old processes still refer to the removed `otp_hash` column.
+   Install dependencies and migrate with the web environment:
 
    ```bash
+   sudo supervisorctl stop 'kormic:*'
    ./venv/bin/python -m pip install -r requirements.txt
    ./venv/bin/python manage.py migrate --noinput
    ./venv/bin/python manage.py check_backend_ready
@@ -59,10 +100,10 @@ Crawler installation is covered in [docs/crawlee.md](docs/crawlee.md).
    Stop if any command fails. Readiness checks migration history, physical
    `AgentJob` columns and the production signing-key length. Never fake a migration
    or suppress a database error to make readiness pass.
-4. Once readiness passes and jobs have drained, restart the application group:
+4. Once readiness passes, start the application group on the new code:
 
    ```bash
-   sudo supervisorctl restart 'kormic:*'
+   sudo supervisorctl start 'kormic:*'
    sudo supervisorctl status
    ```
 

@@ -120,6 +120,7 @@ else:
 # Application definition
 
 INSTALLED_APPS = [
+    'security_reports',
     "corsheaders",
     'django.contrib.admin',
     'django.contrib.auth',

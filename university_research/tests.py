@@ -215,8 +215,17 @@ class ResearchTests(TestCase):
     def test_discovery_cannot_claim_official_status_from_snippets(self):
         search = UniversitySearch.objects.create(student=self.student, query='Example', candidates={'results': [{'url': 'https://example.edu/', 'title': 'Example University'}]})
         candidate = {'name': 'Example University', 'website': 'https://example.edu/', 'source_indices': [0], 'official_identity_quote': 'Welcome to Example University'}
-        result = self.tools()['identify_university_candidates'].invoke({'search_id': str(search.pk), 'candidates': [candidate]})
+        # Identification now fetches missing evidence automatically. A search
+        # snippet alone still cannot establish identity when the fetched page
+        # contains no matching institution name.
+        with patch('university_research.web.read_page_once', return_value={
+                'url': 'https://example.edu/', 'title': 'Home', 'content': 'Welcome', 'links': [],
+             }) as read, \
+             patch('university_research.claude_fallback.search_official_evidence', side_effect=ValueError('No official evidence')):
+            result = self.tools()['identify_university_candidates'].invoke({'search_id': str(search.pk), 'candidates': [candidate]})
         self.assertIn('error', result)
+        read.assert_called_once_with('https://example.edu/')
+        self.assertFalse(PublicUniversity.objects.exists())
         self.ctx['read_web_pages'] = {'https://example.edu/': {'url': 'https://example.edu/', 'title': 'Example University', 'content': 'Welcome to Example University'}}
         result = self.tools()['identify_university_candidates'].invoke({'search_id': str(search.pk), 'candidates': [candidate]})
         self.assertEqual(result['count'], 1)

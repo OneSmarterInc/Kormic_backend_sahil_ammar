@@ -43,6 +43,35 @@ Do not use port `8030` for this backend.
 
 ## Local Development
 
+### Password reset delivery
+
+Password-reset requests enqueue the same Celery task for every submitted email.
+Account lookup, delivery-row creation, audit logging, and SMTP run in the worker,
+so those operations cannot disclose account existence through HTTP timing.
+Production must use `CELERY_TASK_ALWAYS_EAGER=false` and a running worker consuming
+the default Celery queue. Deploy/restart workers with the new task before updating
+web processes. Broker failures return a generic 503 and allow retry without a
+resend cooldown. Local tests deliberately use eager execution.
+
+### Backend tests
+
+After installing `requirements.txt`, use the test runner in the same virtual
+environment with local/test settings (`DJANGO_DEBUG=true`, `DB_ENGINE=sqlite`,
+`EMAIL_MODE=dev`):
+
+```bash
+python scripts/test.py --noinput
+```
+
+The runner installs `requirements-scaling-test.txt` (including `fakeredis[lua]`)
+before running Django's full suite. Celery uses an in-memory broker/result store
+and eager tasks so tests cannot publish to a broker inherited from `.env`.
+It also accepts test labels, for example
+`python scripts/test.py accounts.test_reset_delivery --noinput`. CI and container
+test environments must install both requirement files, or use this runner after
+installing the runtime requirements. Behavior changes and their regression-test
+updates must be committed together.
+
 ### Direct local run with SQLite
 
 ```bat

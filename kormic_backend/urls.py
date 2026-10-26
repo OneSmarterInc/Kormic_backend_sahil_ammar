@@ -3,6 +3,7 @@ from django.http import JsonResponse
 from django.urls import include, path
 
 from django_api.schema_views import StudentProfileSchemaAPIView
+from security_reports.views import collect as collect_csp_report
 from kormic_backend.app_links import android_assetlinks, apple_app_site_association, claim_landing
 
 
@@ -14,6 +15,7 @@ def health_check(request):
 
 
 urlpatterns = [
+    path('api/security/csp-report/', collect_csp_report, name='csp-report'),
     path('.well-known/assetlinks.json', android_assetlinks),
     path('.well-known/apple-app-site-association', apple_app_site_association),
     path('claim', claim_landing),
