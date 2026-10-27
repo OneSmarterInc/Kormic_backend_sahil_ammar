@@ -72,3 +72,20 @@ class KeywordRetrievalTests(TestCase):
                 results = UniversityKnowledgeBase(str(self.uni.uuid), lazy=lazy).search(
                     'Who helps newly admitted international students find housing?', limit=5)
                 self.assertEqual(results[0].db_id, housing.pk)
+
+    def test_effective_tuition_policy_beats_generic_programme_guarantee(self):
+        for i in range(12):
+            UniversityKnowledgeEntry.objects.create(university_id=str(self.uni.uuid),
+                topic='Master tuition', source_type='manual', confidence=1,
+                content='Master tuition Fall 2026 tuition guarantee locked through graduation. ' * 4,
+                source_url=f'https://example.edu/programme/{i}')
+        policy = UniversityKnowledgeEntry.objects.create(university_id=str(self.uni.uuid),
+            topic='Tuition changes', source_type='scraped', confidence=0.55,
+            content='Tuition changes effective Fall 2026. Master tuition $690 per credit. '
+                    'Tuition guarantee for master students lasts three years (9 terms).',
+            source_url='https://example.edu/tuition-changes-fall-2026')
+        self.kb.reload()
+        results = self.kb.search('What is master tuition for Fall 2026, including changes?', limit=5)
+        self.assertEqual(results[0].db_id, policy.pk)
+        # A dated policy must not be promoted for a different requested year.
+        self.assertNotEqual(self.kb.search('master tuition Fall 2027', limit=5)[0].db_id, policy.pk)

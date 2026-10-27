@@ -10,6 +10,23 @@ from pure_multi_agent.test_student_gate2 import StudentGateTwoTests
 
 
 class FinancialPeriodTests(TestCase):
+    def test_tuition_guarantee_rejects_unlimited_marketing_claim(self):
+        from pure_multi_agent.financial_periods import tuition_guarantee_problems
+        question = 'What is master tuition for Fall 2026?'
+        self.assertTrue(tuition_guarantee_problems(
+            'The tuition guarantee locks your rate through graduation as long as you stay enrolled.', question))
+        self.assertFalse(tuition_guarantee_problems(
+            'The tuition guarantee lasts three years (9 terms). Existing students retain their rate '
+            'for up to three additional years beginning Fall 2026.', question))
+        self.assertFalse(tuition_guarantee_problems(
+            'The guarantee no longer lasts through graduation.', question))
+
+
+    def test_fallback_does_not_repeat_unlimited_guarantee(self):
+        from pure_multi_agent.financial_periods import financial_quote
+        self.assertEqual(financial_quote(
+            'Tuition $690 per credit locked through graduation.', r'tuition'), '')
+
     def test_flat_fee_table_returns_only_deposit_row_with_conditions(self):
         from pure_multi_agent.financial_periods import financial_reference_answer
         table = ('Application fee $40 F-1 International Student Enrollment Term Confirmation Deposit '
@@ -91,6 +108,34 @@ class FinancialPeriodTests(TestCase):
 @override_settings(UNIVERSITY_VECTOR_SEARCH=False)
 class FinancialEscalationTests(DatabaseTestCase):
     setUp = StudentGateTwoTests.setUp
+
+    def test_tuition_answer_validator_requires_bounded_guarantee(self):
+        from pure_multi_agent.registered_adviser import _consult
+        url = 'https://www.franklin.edu/tuition-fee-changes-fall-2026'
+        evidence = {'facts': [{'content':
+            'Fall 2026 tuition for new master students is $690 per credit. Tuition guarantee changes: '
+            'master students lock their rate for three years (9 terms). Current students retain their '
+            'rate for up to three additional years beginning Fall 2026.', 'source_url': url}]}
+        answer = ('For Fall 2026, new master students pay $690 per credit. The tuition guarantee lasts '
+                  'three years (9 terms). Current master students retain their rate for up to three '
+                  'additional years beginning Fall 2026. Source: ' + url)
+
+        def generate(*args, **kwargs):
+            with self.assertRaisesRegex(ValueError, 'through graduation'):
+                kwargs['response_validator'](AIMessage(content=
+                    'Tuition is $690 per credit. The tuition guarantee locks the rate through graduation. Source: ' + url))
+            reply = AIMessage(content=answer)
+            kwargs['response_validator'](reply)
+            return reply
+
+        with patch('pure_multi_agent.tools.university_tools._university_evidence', return_value=evidence), \
+             patch('pure_multi_agent.registered_adviser.invoke', side_effect=generate), \
+             patch('agents.student_context.university_context', return_value={}):
+            result = _consult(dict(self.ctx), self.school,
+                'What is master tuition for Fall 2026 and how long is the tuition guarantee?')
+        self.assertIn(answer, result['answer'])
+        self.assertFalse(result['pending'])
+
 
     def test_unsupported_old_year_recovers_current_cited_rate_without_escalating(self):
         from pure_multi_agent.registered_adviser import _consult

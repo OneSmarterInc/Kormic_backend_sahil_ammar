@@ -159,7 +159,7 @@ def _consult(ctx, row, question, public_row=None):
                 f"{comparison['score']} is {comparison['relation']} the documented range "
                 f"{comparison['low']}–{comparison['high']}. "
                 'Preserve the source applicant scope and all other admission conditions; this is not an admission guarantee.')
-        from pure_multi_agent.financial_periods import financial_period_context, normalize_period
+        from pure_multi_agent.financial_periods import financial_period_context, normalize_period, tuition_guarantee_problems
         financial = financial_period_context(question, evidence_bundle)
         if financial:
             instruction += '\nFinancial source-period assessment (server): ' + compact_json(financial)
@@ -167,6 +167,14 @@ def _consult(ctx, row, question, public_row=None):
                             'Earlier conversation answers may be outdated; do not repeat their years or rates '
                             'unless independently supported here. When a matching rate is verified, '
                             'answer with that period and its source conditions without adding historical comparisons.')
+            instruction += ('\nFor tuition guarantees, prefer the applicable effective-date policy over older '
+                            'programme marketing. State the documented time limit, distinguish new from '
+                            'currently enrolled students, and preserve the start term for existing students. '
+                            'Do not infer a guarantee through graduation from a per-credit rate. '
+                            'Do not say no changes were found if the effective-date policy was not retrieved. '
+                            'If asked about guarantee terms or effective-date changes and these are missing, '
+                            'request university clarification for the missing terms while answering verified parts. '
+                            'Keep fees separate from tuition and preserve trimester versus semester wording.')
             if financial['requires_confirmation'] and public_row is None and not pending:
                 request_university_clarification.invoke({'unanswered_question': question})
             instruction += '\nActual escalation state: ' + compact_json(pending)
@@ -177,6 +185,7 @@ def _consult(ctx, row, question, public_row=None):
             from pure_multi_agent.answer_checks import violations
             from pure_multi_agent.response_contract import problems as presentation_problems
             problems = violations(reply.content, evidence_bundle, student, question=question) + presentation_problems(reply.content)
+            problems += tuition_guarantee_problems(reply.content, question)
             if general_policy and (needs_clarification(reply.content) or re.search(r'\bescalat\w*\b', reply.content, re.I)):
                 problems.append('The loaded general admissions policy supports this GPA-range question. Answer it with its documented conditions and citation instead of claiming a missing policy or escalation.')
             if pending.get('department') == 'money' and re.search(

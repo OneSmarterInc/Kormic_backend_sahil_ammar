@@ -523,6 +523,18 @@ class UniversityKnowledgeBase:
             ids = {entry.db_id for entry in policies}
             results = (policies + [entry for entry in results if entry.db_id not in ids])[:limit]
 
+        # Effective-date tuition policies outrank generic programme advertising.
+        # Only promote records matching a year the user actually requested.
+        requested_years = set(re.findall(r'\b20\d{2}\b', query))
+        if requested_years and 'tuition' in query_words:
+            policies = [entry for entry in matches
+                        if requested_years & set(re.findall(r'\b20\d{2}\b', entry.content))
+                        and re.search(r'tuition', entry.content, re.I)
+                        and re.search(r'guarantee', entry.content, re.I)
+                        and re.search(r'change|effective|beginning', entry.content, re.I)]
+            ids = {entry.db_id for entry in policies}
+            results = (policies + [entry for entry in results if entry.db_id not in ids])[:limit]
+
         for entry in results:
             entry.times_used += 1
 

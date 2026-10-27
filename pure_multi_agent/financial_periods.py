@@ -48,7 +48,8 @@ def financial_quote(passage: str, topic: str) -> str:
     return next((part.strip() for part in re.split(r'\n+|(?<=[.!?])\s+(?=[A-Z])', passage)
                  if re.search(topic, part, re.I)
                  and re.search(r'[$€£]\s*\d|\b\d[\d,]*\s*(?:USD|dollars)\b', part, re.I)
-                 and len(part.strip()) <= 450), '')
+                 and len(part.strip()) <= 450
+                 and not tuition_guarantee_problems(part, 'tuition')), '')
 
 
 def financial_period_context(question: str, evidence: dict, *, today=None) -> dict:
@@ -155,3 +156,17 @@ def financial_reference_answer(assessment: dict) -> str:
             'This published rate is reference information, not a verified current charge:\n\n'
             + '\n\n'.join(references)
             + '\n\nThe university needs to confirm the applicable amount and payment conditions.')
+
+
+def tuition_guarantee_problems(answer: str, question: str) -> list[str]:
+    """Do not turn a tuition rate guarantee into an unlimited promise."""
+    if not re.search(r'\btuition\b', question, re.I):
+        return []
+    problems = []
+    for sentence in re.split(r'(?<=[.!?])\s+|\n+', answer):
+        if not re.search(r'guarantee|lock(?:ed|s)?|rate', sentence, re.I):
+            continue
+        if re.search(r'(?:through|until)\s+(?:your\s+)?graduation|entire\s+(?:degree|program)', sentence, re.I):
+            if not re.search(r'\b(?:does not|is not|not guaranteed|no longer|rather than|instead of|cannot)\b', sentence, re.I):
+                problems.append('Do not promise a tuition lock through graduation. State the source-supported duration and cohort, or say the applicable guarantee needs university confirmation.')
+    return problems
