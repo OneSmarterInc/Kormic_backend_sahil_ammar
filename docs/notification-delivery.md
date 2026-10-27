@@ -1,5 +1,7 @@
 # Student and query notifications
 
+Ordinary chatbot replies no longer create notifications. Existing notification history is retained. Query and human-answer notifications remain enabled.
+
 - A newly created student account produces an inbox event and email for active platform superusers. Updating or logging into an existing account does not repeat it.
 - Institute claim completion also emails the institute accounts that already receive the claim inbox event.
 - Student questions notify the linked university account and staff assigned to the question's specific knowledge group by email and in-app. University questions notify the linked student by email and in-app. Unrelated departments and universities receive neither.

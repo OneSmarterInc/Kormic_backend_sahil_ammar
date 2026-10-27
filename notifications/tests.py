@@ -123,27 +123,25 @@ class NotificationServiceTests(TestCase):
         self.student, self.student_id = make_student_client(email="svc1@example.com")
 
     @mock.patch("notifications.services.send_push_notification_task.delay")
-    def test_notify_agent_reply_queues_push_without_touching_chat(self, mock_delay):
+    def test_notify_agent_reply_does_not_notify_or_touch_chat(self, mock_delay):
         from notifications.services import notify_agent_reply
 
         before = ChatMessage.objects.count()
         log = notify_agent_reply(student_id=self.student_id, agent_name="Nova", reply="Here is your roadmap.")
 
-        self.assertIsNotNone(log)
-        self.assertEqual(log.event_type, NotificationLog.EventType.AGENT_REPLY)
-        self.assertEqual(log.title, "Nova replied")
-        self.assertEqual(log.body, "Here is your roadmap.")
-        mock_delay.assert_called_once_with(log.id)
+        self.assertIsNone(log)
+        self.assertFalse(NotificationLog.objects.filter(event_type='agent_reply').exists())
+        mock_delay.assert_not_called()
         self.assertEqual(ChatMessage.objects.count(), before)  # log_chat_turn already wrote it, not our job
 
     @mock.patch("notifications.services.send_push_notification_task.delay")
-    def test_notify_agent_reply_truncates_long_body(self, mock_delay):
+    def test_long_chatbot_reply_does_not_notify(self, mock_delay):
         from notifications.services import notify_agent_reply
 
         long_reply = "x" * 500
         log = notify_agent_reply(student_id=self.student_id, agent_name="Nova", reply=long_reply)
-        self.assertEqual(len(log.body), 120)
-        self.assertTrue(log.body.endswith("..."))
+        self.assertIsNone(log)
+        mock_delay.assert_not_called()
 
     @mock.patch("notifications.services.send_push_notification_task.delay")
     def test_notify_agent_reply_unknown_student_returns_none(self, mock_delay):
@@ -382,16 +380,15 @@ class AgentChatNotificationTests(TestCase):
 
     @mock.patch("notifications.services.send_push_notification_task.delay")
     @mock.patch("pure_multi_agent.runtime.run_turn")
-    def test_agent_chat_queues_notification_after_reply(self, mock_run_turn, mock_delay):
+    def test_agent_chat_returns_reply_without_notification(self, mock_run_turn, mock_delay):
         mock_run_turn.return_value = ("Nova", "Sure, here's the info you asked for.")
 
         resp = self.student.post("/api/chat/agent/", {"message": "Tell me about MIT"}, format="json")
 
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        log = NotificationLog.objects.get(account__student_profile__uuid=self.student_id)
-        self.assertEqual(log.event_type, NotificationLog.EventType.AGENT_REPLY)
-        self.assertIn("Sure, here's the info", log.body)
-        mock_delay.assert_called_once_with(log.id)
+        self.assertEqual(resp.data['reply'], "Sure, here's the info you asked for.")
+        self.assertFalse(NotificationLog.objects.filter(account__student_profile__uuid=self.student_id).exists())
+        mock_delay.assert_not_called()
 
     @mock.patch("notifications.services.send_push_notification_task.delay")
     @mock.patch("pure_multi_agent.runtime.run_turn")

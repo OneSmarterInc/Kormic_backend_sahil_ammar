@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 
 from accounts.permissions import IsTOTPEnrolled, get_account
 from notifications.models import NotificationLog, PushToken
+from notifications.activity import SECTIONS, section_filter, unread_sections
 
 #  keep the page small so one poll can't pull a large backlog (and a large `data`
 # blob per row) in a single response.
@@ -190,6 +191,7 @@ class NotificationListView(APIView):
         return Response({
             "results": [_serialize_notification(log) for log in logs],
             "unread_count": unread_count,
+            "unread_sections": unread_sections(account),
             "pagination": {
                 "page": page,
                 "page_size": page_size,
@@ -208,6 +210,29 @@ class NotificationUnreadCountView(APIView):
             return Response({"error": "No account associated with this user."}, status=status.HTTP_403_FORBIDDEN)
         count = NotificationLog.objects.filter(account=account, dismissed_at__isnull=True, read_at__isnull=True).count()
         return Response({"unread_count": count})
+
+
+class NotificationSectionReadView(APIView):
+    permission_classes = [IsAuthenticated, IsTOTPEnrolled]
+
+    def post(self, request):
+        account = get_account(request)
+        if account is None:
+            return Response({'error': 'No account.'}, status=403)
+        section = request.data.get('section')
+        try:
+            before_id = int(request.data.get('before_id', 0))
+            query_id = int(request.data.get('query_id', 0))
+        except (ValueError, TypeError):
+            return Response({'error': 'Invalid notification identifiers.'}, status=400)
+        if section not in SECTIONS or before_id <= 0 or (section == 'queries' and not query_id):
+            return Response({'error': 'Specify the viewed section and query.'}, status=400)
+        rows = NotificationLog.objects.filter(account=account, dismissed_at__isnull=True, read_at__isnull=True,
+                                              pk__lte=before_id).filter(section_filter(section))
+        if section == 'queries':
+            rows = rows.filter(data__query_id=query_id)
+        rows.update(read_at=timezone.now())
+        return Response({'unread_sections': unread_sections(account)})
 
 
 class NotificationMarkReadView(APIView):

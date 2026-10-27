@@ -153,30 +153,12 @@ def notify_superusers(
 
 
 def notify_agent_reply(*, student_id: str, agent_name: str, reply: str) -> Optional[NotificationLog]:
-    """
-    Fire after a live agent_chat turn. The ChatMessage rows for this turn are
-    already written by log_chat_turn() in django_api/views.py -- this only
-    queues the push, so the student is notified even if they backgrounded or
-    closed the app while the reply was being generated.
-    """
-    from django_api.services import as_uuid
+    """Ordinary chatbot replies stay in chat without creating notifications.
 
-    if not as_uuid(student_id):
-        return None
-    from django_api.services import as_uuid
-    if not as_uuid(student_id):
-        return
-    account = Account.objects.filter(student_profile__uuid=student_id).first()
-    if account is None:
-        return None
-
-    return _queue_push(
-        account=account,
-        event_type=NotificationLog.EventType.AGENT_REPLY,
-        title=f"{agent_name or 'Your agent'} replied",
-        body=_truncate(reply) or "New message from your agent.",
-        data={"type": "agent_reply"},
-    )
+    Keep the entry point compatible with existing chat workers. Human query
+    answers use a separate notification path and remain enabled.
+    """
+    return None
 
 
 def send_agent_message(
