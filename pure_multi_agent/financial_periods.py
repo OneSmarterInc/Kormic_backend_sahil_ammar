@@ -73,7 +73,11 @@ def financial_period_context(question: str, evidence: dict, *, today=None) -> di
                         current = False
                     records.append({'period': period[0] if period else 'undated',
                                     'matches_requested_period': current,
-                                    'source_url': fact.get('source_url', '')})
+                                    'source_url': fact.get('source_url', ''),
+                                    'quote': next((part.strip() for part in re.split(r'\n+|(?<=[.!?])\s+(?=[A-Z])', passage)
+                                        if re.search(topic, part, re.I)
+                                        and re.search(r'[$€£]\s*\d|\b\d[\d,]*\s*(?:USD|dollars)\b', part, re.I)
+                                        and len(part.strip()) <= 1200), '')})
         visit(data.get('official_website_research'))
 
     visit(evidence)
@@ -85,3 +89,28 @@ def financial_period_context(question: str, evidence: dict, *, today=None) -> di
             '(or not confirmed for the requested period), and undated rates as unverified. '
             'Show the supported amount and citation as reference, not a current charge. '
             'The university must confirm the current/requested rate. Never use a fetch date as the rate year.'}
+
+
+def financial_reference_answer(assessment: dict) -> str:
+    """Recover only literal cited rate passages, never a rejected model draft."""
+    if not assessment.get('requires_confirmation'):
+        return ''
+    references = []
+    seen = set()
+    for rate in sorted(assessment.get('rates', []), key=lambda row: row['period'], reverse=True):
+        quote, url, period = rate.get('quote'), rate.get('source_url'), rate['period']
+        if not quote or not url or (quote, url, period) in seen:
+            continue
+        seen.add((quote, url, period))
+        # Preserve the source wording as quotation, not generated advice.
+        quote = re.sub(r'([\\`*_{}\[\]<>])', r'\\\1', quote)
+        label = 'Undated source — current applicability unverified' if period == 'undated' else f'Published for {period} — not confirmed for the current/requested period'
+        references.append(f'**{label}**\n\n> {quote}\n\nSource: {url}')
+        if len(references) == 2:
+            break
+    if not references:
+        return ''
+    return ('I cannot confirm the current/requested rate from the available records. '
+            'These published rates are provided only as historical or other-period reference:\n\n'
+            + '\n\n'.join(references)
+            + '\n\nThe university needs to confirm the applicable amount and payment conditions.')

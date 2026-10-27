@@ -10,6 +10,11 @@ from pure_multi_agent.test_student_gate2 import StudentGateTwoTests
 
 
 class FinancialPeriodTests(TestCase):
+    def test_reference_recovery_never_uses_uncited_or_truncated_text(self):
+        from pure_multi_agent.financial_periods import financial_reference_answer
+        self.assertEqual(financial_reference_answer({'requires_confirmation': True,
+            'rates': [{'period': '2025–2026', 'quote': 'Deposit $2,000', 'source_url': ''}]}), '')
+
     def test_equivalent_year_labels_are_accepted(self):
         from pure_multi_agent.financial_periods import normalize_period
         self.assertEqual(normalize_period('2025 – 26'), normalize_period('2025-2026'))
@@ -50,6 +55,38 @@ class FinancialPeriodTests(TestCase):
 @override_settings(UNIVERSITY_VECTOR_SEARCH=False)
 class FinancialEscalationTests(DatabaseTestCase):
     setUp = StudentGateTwoTests.setUp
+
+    def test_rejected_financial_prose_preserves_cited_rate_and_pending_query(self):
+        from pure_multi_agent.registered_adviser import _consult
+        from pure_multi_agent.model_router import InvalidToolResponse
+        from agent_queries.models import AgentQuery, AgentConversationMessage
+        from universities.models import KnowledgeGroup
+        KnowledgeGroup.objects.create(university=self.school, slug='money')
+        url = 'https://www.franklin.edu/fees'
+        evidence = {'facts': [{'content': '2025–2026 F-1 new-student deposit $2,000, non-refundable, applied directly to first term tuition.', 'source_url': url}]}
+
+        def reject(*args, **kwargs):
+            try:
+                raise ValueError('The query was routed to Money, not Admissions.')
+            except ValueError as cause:
+                raise InvalidToolResponse('Invalid after correction') from cause
+
+        with patch('pure_multi_agent.tools.university_tools._university_evidence', return_value=evidence), \
+             patch('pure_multi_agent.registered_adviser.invoke', side_effect=reject), \
+             patch('agents.student_context.university_context', return_value={}), \
+             patch('agent_queries.services.notify_query') as notify:
+            for _ in range(2):
+                result = _consult(dict(self.ctx), self.school, 'What is the current F-1 new-student deposit?')
+        for term in ('$2,000', '2025–2026', 'non-refundable', 'applied directly to first term tuition', url,
+                     'Money department', 'pending a university response'):
+            self.assertIn(term, result['answer'])
+        self.assertNotIn('Please retry', result['answer'])
+        self.assertTrue(result['pending'])
+        self.assertEqual(len(result['sources']), 1)
+        self.assertEqual(AgentQuery.objects.count(), 1)
+        notify.assert_called_once()
+        error = AgentConversationMessage.objects.filter(kind='error').first()
+        self.assertEqual(error.metadata['validation_reason'], 'The query was routed to Money, not Admissions.')
 
     def test_current_rate_answer_does_not_create_an_escalation(self):
         from agent_queries.models import AgentQuery

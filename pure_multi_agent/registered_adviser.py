@@ -212,7 +212,7 @@ def _consult(ctx, row, question, public_row=None):
                 require_tools=not retrieved[0], response_validator=validate_answer,
                 profile='evidence', message_preparer=compact_chat_messages, **advice_options())
         except Exception as exc:
-            from pure_multi_agent.model_router import AIServiceUnavailable
+            from pure_multi_agent.model_router import AIServiceUnavailable, InvalidToolResponse
             from pure_multi_agent.context_budget import ContextBudgetExceeded
             if isinstance(exc, ContextBudgetExceeded):
                 from langchain_core.messages import AIMessage
@@ -235,11 +235,15 @@ def _consult(ctx, row, question, public_row=None):
                 message = 'I could not finish preparing this answer. Please retry.'
                 if not pending:
                     message += ' No university clarification was requested.'
+                elif financial:
+                    from pure_multi_agent.financial_periods import financial_reference_answer
+                    message = financial_reference_answer(financial) or message
                 reply = AIMessage(content=message)
             else:
                 reply = AIMessage(content=partial_answer(question, evidence_bundle, getattr(exc, 'draft', ''), student))
             record('university_agent', 'Answer generation was incomplete.',
-                   kind='error', metadata={'stage':'generation','error_type':type(exc).__name__})
+                   kind='error', metadata={'stage':'generation','error_type':type(exc).__name__,
+                       'validation_reason': str(exc.__cause__)[:1000] if isinstance(exc, InvalidToolResponse) and isinstance(exc.__cause__, ValueError) else ''})
         if public_row is None and not reply.tool_calls and isinstance(reply.content, str) and needs_clarification(reply.content) and not pending:
             request_university_clarification.invoke({'unanswered_question': question})
         return {'messages': [reply]}
