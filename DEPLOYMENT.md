@@ -36,6 +36,9 @@ verification on the unified portal and record the recheck timestamp separately.
 Retiring legacy sites does not prove seven days of observation are complete and
 does not retroactively establish coverage for those sites.
 
+For school knowledge loading, ten-question verification, and demo contact/claim
+setup, use [the school import runbook](docs/demo/franklin-import-runbook.md).
+
 
 Deploy the collector before publishing the frontend reporting header. After the
 reviewed code is present on AWS, use the production web environment:
