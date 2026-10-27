@@ -67,21 +67,15 @@ def notify_query(query, *, answered=False):
         f"{conv.university.name} has a question" if to_student else ("Student answer received" if answered else "Agent query needs your answer"))
     body = query.answer if answered else query.question
     if to_student:
-        account = Account.objects.filter(role="student", student_profile=conv.student).first()
+        account = Account.objects.filter(role="student", student_profile=conv.student, user__is_active=True).first()
         if account:
             log = notify_account(account=account, event_type="pending_query_resolved" if answered else "university_query",
-                title=title[:255], body=body, data=payload)
-            def push_after_commit():
-                try:
-                    from notifications.tasks import send_push_notification_task
-                    send_push_notification_task.delay(log.id)
-                except Exception:
-                    import logging
-                    logging.getLogger(__name__).exception("Push unavailable for query %s; durable inbox notification remains", query.pk)
-            transaction.on_commit(push_after_commit)
+                title=title[:255], body=body, data=payload, queue_email=True)
+            from notifications.models import PushDelivery
+            PushDelivery.objects.get_or_create(notification=log)
     else:
         notify_university(str(conv.university.uuid), event_type="pending_query_resolved" if answered else "university_query",
-            title=title, body=body, data=payload)
+            title=title, body=body, data=payload, queue_email=True, group_id=query.group_id)
 
 
 @transaction.atomic

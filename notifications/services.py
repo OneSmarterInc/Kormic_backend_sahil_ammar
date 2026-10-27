@@ -31,6 +31,7 @@ def notify_account(
     body: str,
     data: Optional[Dict[str, Any]] = None,
     queue_push: bool = False,
+    queue_email: bool = False,
 ) -> NotificationLog:
     """Create one durable, account-scoped notification.
 
@@ -46,6 +47,9 @@ def notify_account(
         body=_truncate(body),
         data=data or {},
     )
+    if queue_email and account.user.is_active and account.user.email:
+        from notifications.models import EmailDelivery
+        EmailDelivery.objects.create(notification=log)
     if queue_push:
         from django.conf import settings
         if settings.AGENT_QUEUE_BACKEND == 'database':
@@ -82,18 +86,22 @@ def notify_university(
     title: str,
     body: str,
     data: Optional[Dict[str, Any]] = None,
+    queue_email: bool = False,
+    group_id: int | None = None,
 ) -> list[NotificationLog]:
     logs = []
-    for account in Account.objects.filter(
-        role=Account.Role.UNIVERSITY,
-        university__uuid=university_id,
-    ):
+    from django.db.models import Q
+    recipients = Q(role=Account.Role.UNIVERSITY)
+    if group_id:
+        recipients |= Q(role=Account.Role.DEPARTMENT, departments__pk=group_id)
+    for account in Account.objects.filter(recipients, university__uuid=university_id, user__is_active=True).select_related('user').distinct():
         logs.append(notify_account(
             account=account,
             event_type=event_type,
             title=title,
             body=body,
             data=data,
+            queue_email=queue_email,
         ))
     return logs
 
@@ -110,6 +118,7 @@ def notify_institute(
     for account in Account.objects.filter(
         role=Account.Role.INSTITUTE,
         institute__uuid=institute_id,
+        user__is_active=True,
     ):
         logs.append(notify_account(
             account=account,
@@ -117,6 +126,7 @@ def notify_institute(
             title=title,
             body=body,
             data=data,
+            queue_email=event_type == NotificationLog.EventType.STUDENT_CLAIMED,
         ))
     return logs
 
@@ -127,15 +137,17 @@ def notify_superusers(
     title: str,
     body: str,
     data: Optional[Dict[str, Any]] = None,
+    queue_email: bool = False,
 ) -> list[NotificationLog]:
     logs = []
-    for account in Account.objects.filter(role=Account.Role.SUPERUSER):
+    for account in Account.objects.filter(role=Account.Role.SUPERUSER, user__is_active=True).select_related('user'):
         logs.append(notify_account(
             account=account,
             event_type=event_type,
             title=title,
             body=body,
             data=data,
+            queue_email=queue_email,
         ))
     return logs
 

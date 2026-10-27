@@ -83,3 +83,12 @@ class PushDelivery(models.Model):
     available_at = models.DateTimeField(default=timezone.now)
     attempts = models.PositiveIntegerField(default=0)
     receipts = models.JSONField(default=dict, blank=True)
+
+
+class EmailDelivery(models.Model):
+    """One retryable email per inbox event; delivery never blocks the request."""
+    notification = models.OneToOneField(NotificationLog, on_delete=models.CASCADE)
+    available_at = models.DateTimeField(default=timezone.now, db_index=True)
+    attempts = models.PositiveIntegerField(default=0)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.CharField(max_length=100, blank=True)

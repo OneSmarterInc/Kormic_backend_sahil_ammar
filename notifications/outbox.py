@@ -6,6 +6,13 @@ from .tasks import send_push_notification_task, check_push_receipts_task
 
 
 def work_once():
+    from .email_delivery import work_once as deliver_email
+    emailed = deliver_email()
+    pushed = _push_work_once()
+    return emailed or pushed
+
+
+def _push_work_once():
     now = timezone.now()
     eligible = PushDelivery.objects.filter(available_at__lte=now, attempts__lt=4)
     job = eligible.order_by('available_at', 'pk').first()
