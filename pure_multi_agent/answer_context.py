@@ -43,6 +43,8 @@ def evidence_excerpt(text, question, budget=3500):
     ranked = sorted(range(len(parts)), key=lambda i: sum(t in parts[i].lower() for t in terms), reverse=True)
     selected, used = set(), 0
     for index in ranked:
+        if not any(term in parts[index].lower() for term in terms):
+            continue
         for candidate in (index, index - 1, index + 1):
             if candidate < 0 or candidate >= len(parts) or candidate in selected:
                 continue
@@ -51,8 +53,8 @@ def evidence_excerpt(text, question, budget=3500):
     if selected:
         return '\n[…]\n'.join(parts[i] for i in sorted(selected))
     # A single enormous paragraph still supplies an explicitly partial excerpt.
-    matches = [m.start() for term in terms for m in re.finditer(re.escape(term), text.casefold())]
-    start = max(0, min(matches) - 300) if matches else 0
+    offsets = range(0, max(1, len(text) - budget + 1), max(1, budget // 3))
+    start = max(offsets, key=lambda offset: sum(term in text[offset:offset + budget].casefold() for term in terms))
     return ('[…] ' if start else '') + text[start:start + budget].rsplit(' ', 1)[0] + ' […]'
 
 

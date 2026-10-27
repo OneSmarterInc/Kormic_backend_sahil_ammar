@@ -410,6 +410,8 @@ class UniversityKnowledgeBase:
         - source priority
         - usage score
         """
+        from university_research.relevance import retrieval_question
+        query = retrieval_question(query)
         # Cached agents must not retain pre-edit content between student turns.
         if not self.lazy:
             self.reload()
@@ -421,14 +423,17 @@ class UniversityKnowledgeBase:
         from knowledge.vectors import search_ids
         vector_ids = search_ids(self.university_id, query, limit=limit)
         if self.lazy:
-            from django.db.models import Q
+            from django.db.models import Q, Case, When, Value, IntegerField
             from django_api.models import UniversityKnowledgeEntry
             candidates = Q(pk__in=vector_ids)
+            relevance = Value(0, output_field=IntegerField())
             for word in query_words[:16]:
                 term = word[:max(4, len(word) - 3)] if len(word) >= 6 else word
                 candidates |= Q(topic__icontains=term) | Q(content__icontains=term)
+                relevance += Case(When(topic__icontains=term, then=Value(3)), default=Value(0), output_field=IntegerField())
+                relevance += Case(When(content__icontains=term, then=Value(1)), default=Value(0), output_field=IntegerField())
             base = UniversityKnowledgeEntry.objects.filter(university_id=self.university_id).defer("embedding")
-            ids = list(base.filter(candidates).order_by("-confidence", "pk").values_list("pk", flat=True)[:128])
+            ids = list(base.filter(candidates).annotate(relevance=relevance).order_by("-relevance", "-confidence", "-pk").values_list("pk", flat=True)[:128])
             self.entries = []
             self._load_from_db(base.filter(pk__in=set(ids + vector_ids)))
 

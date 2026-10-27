@@ -1,5 +1,6 @@
 """An enrolled university's scoped LangGraph consultation, using shared routing."""
 import json
+import re
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.graph import StateGraph, MessagesState, START, END
@@ -9,6 +10,14 @@ from pure_multi_agent.prompt_evidence import compact_chat_messages
 
 
 from pure_multi_agent.telemetry import traced_operation
+
+
+def needs_clarification(answer: str) -> bool:
+    return bool(re.search(
+        r"\b(?:cannot|can't|could not|unable to) (?:verify|confirm|determine|answer|retrieve)|"
+        r"\b(?:not|no) (?:documented|available|verified|specific information)|"
+        r"\b(?:missing|unverified|unknown)\b|don't have (?:access|that|the information)",
+        answer, re.I))
 
 
 @traced_operation('University Agent')
@@ -61,7 +70,7 @@ def _consult(ctx, row, question, public_row=None):
         if courses and all('research' in str(c.get('level', '')).lower() for c in courses) and not re.search(r'\b(research|thesis|phd)\b', question, re.I):
             scope_warning.append('The available source describes a research degree. It does not establish the entry requirements or applicant eligibility for a taught master’s programme. Are you asking about a research or a taught programme?')
         retrieved[0] = True
-        sources.extend(data.get('facts', []))
+        sources.extend(data.get('facts', []) + data.get('saved_knowledge', []))
         return data
 
     @tool
@@ -72,6 +81,13 @@ def _consult(ctx, row, question, public_row=None):
         result = queries.raise_query(conversation, AgentQuery.Direction.STUDENT, unanswered_question)
         pending.update(result)
         return result
+
+    def escalate_unverified():
+        """Only announce a pending query after the database operation succeeds."""
+        request_university_clarification.invoke({'unanswered_question': question})
+        if pending:
+            return 'I could not verify this answer from the available records.'
+        return 'University information could not be retrieved. Please retry; no escalation was created.'
 
     tools = [retrieve_official_information] if public_row else [retrieve_official_information, request_university_clarification]
     from agents.student_context import university_context
@@ -130,10 +146,14 @@ def _consult(ctx, row, question, public_row=None):
             from pure_multi_agent.answer_checks import violations
             from pure_multi_agent.response_contract import problems as presentation_problems
             problems = violations(reply.content, evidence_bundle, student) + presentation_problems(reply.content)
+            urls = [s.get('source_url') for s in sources if s.get('source_url')]
+            if urls and not pending and not needs_clarification(reply.content) and not any(url in reply.content for url in urls):
+                problems.append('Cite the specific retrieved source URL supporting this answer; do not cite the university homepage instead.')
             # Each consultation owns one institution. Cross-institution prose
             # cannot borrow its numbers or policies for another comparison row.
             for name in ctx.get('turn_intent', {}).get('institutions', []):
-                if name.casefold() != row.name.casefold() and name.casefold() in reply.content.casefold():
+                # A literal short directory query is not a second institution.
+                if name.casefold() not in row.name.casefold() and name.casefold() in reply.content.casefold():
                     problems.append('Answer only about ' + row.name + '; do not make claims about ' + name + '.')
             import re
             if re.search(r'budget.{0,80}\b(covers|sufficient|enough|affordable)\b', reply.content, re.I):
@@ -149,6 +169,8 @@ def _consult(ctx, row, question, public_row=None):
             from pure_multi_agent.context_budget import ContextBudgetExceeded
             if isinstance(exc, ContextBudgetExceeded):
                 from langchain_core.messages import AIMessage
+                if public_row is None:
+                    return {'messages': [AIMessage(content=escalate_unverified())]}
                 reply = AIMessage(content=(
                     'The available university records are too large to review in one pass. '
                     'Please ask about one programme or requirement at a time.'))
@@ -157,10 +179,14 @@ def _consult(ctx, row, question, public_row=None):
                 raise
             from pure_multi_agent.answer_context import partial_answer
             from langchain_core.messages import AIMessage
-            ctx['last_provider'] = 'qwen'
-            reply = AIMessage(content=partial_answer(question, evidence_bundle, getattr(exc, 'draft', ''), student))
-            record('university_agent', 'Answer generation was incomplete; retained available information.',
+            if public_row is None:
+                reply = AIMessage(content=escalate_unverified())
+            else:
+                reply = AIMessage(content=partial_answer(question, evidence_bundle, getattr(exc, 'draft', ''), student))
+            record('university_agent', 'Answer generation was incomplete.',
                    kind='error', metadata={'stage':'generation','error_type':type(exc).__name__})
+        if public_row is None and not reply.tool_calls and isinstance(reply.content, str) and needs_clarification(reply.content) and not pending:
+            request_university_clarification.invoke({'unanswered_question': question})
         return {'messages': [reply]}
 
     def act(state):
@@ -198,9 +224,10 @@ def _consult(ctx, row, question, public_row=None):
     if isinstance(content, list):
         content = ''.join(b.get('text', '') for b in content if isinstance(b, dict) and b.get('type') == 'text')
     # A valid adviser answer is delivered intact. No second review/rewrite call.
-    urls = list(dict.fromkeys(s.get('source_url') for s in sources if s.get('source_url')))
-    if urls and not any(url in content for url in urls):
-        content += '\n\n[University information](' + urls[0] + ')'
+    # Never attach an arbitrary first source to prose it may not support.
+    if pending:
+        content += '\n\nYour question has been sent to ' + row.name + '. It is pending a university response.'
+    sources = [s for s in sources if s.get('source_url') and s['source_url'] in content]
     record('university_agent', content, kind='reply')
     # The adviser owns the answer. A website-only formatter must never replace
     # its enrolled records, officer answers, or personalized assessment.

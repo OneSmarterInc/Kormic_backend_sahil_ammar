@@ -7,10 +7,16 @@ STOP_WORDS = {'what', 'which', 'are', 'the', 'for', 'and', 'with', 'from', 'abou
               'can', 'you', 'me', 'of', 'in', 'to', 'is', 'at', 'my'}
 
 def question_terms(question):
+    question = retrieval_question(question)
     terms = list(dict.fromkeys(t for t in re.findall(r'\w{2,}', question.casefold()) if t not in STOP_WORDS))[:20]
     if re.search(r'admission|requirement|eligib', question, re.I):
         terms += ['admission', 'requirement', 'eligib', 'prerequisite']
     return list(dict.fromkeys(terms))
+
+
+def retrieval_question(question):
+    """Citation instructions are not subject terms (every scraped page has them)."""
+    return re.sub(r'\b[Cc]ite\s+the\s+official\b[^?\n]*(?:\?|$)', '', question).strip()
 
 def rank_records(rows, question, fields):
     score = Value(0, output_field=IntegerField())

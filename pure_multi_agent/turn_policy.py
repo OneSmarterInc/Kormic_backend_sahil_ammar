@@ -50,6 +50,21 @@ def standalone_start_question(text):
         text, re.I))
 
 
+def cited_institution(text):
+    """An explicit request for an institution's official page is not general advice.
+
+    Keep the literal name; directory resolution still checks ambiguous matches.
+    """
+    match = re.search(r'\b(?:cite|consult|read)\s+the\s+official\s+([\w ’\x27.-]{2,100}?)\s+(?:page|website|source)\b', text, re.I)
+    if not match:
+        return None
+    name = match[1].strip()
+    if name.casefold() in {'admissions', 'university', 'college', 'institution', 'programme', 'program'}:
+        return None
+    return {'route': 'university', 'institutions': [name], 'comparison': False,
+            'followup': False, 'reference_topic': 'none'}
+
+
 def classify(ctx, messages):
     if ctx.get('budget_clarification_turn'):
         return {'route': 'general', 'institutions': [], 'comparison': False, 'followup': False, 'reference_topic': 'none'}
@@ -62,6 +77,10 @@ def classify(ctx, messages):
     if not ctx.get('canonical_student_id'):
         return {'route': 'action', 'institutions': [], 'comparison': False, 'followup': False}
     latest = ctx.get('current_message','')
+    explicit_source = cited_institution(latest)
+    if explicit_source:
+        ctx['turn_intent'] = explicit_source
+        return explicit_source
     if standalone_start_question(latest):
         intent = {'route':'general','institutions':[],'comparison':False,'followup':False,'reference_topic':'none'}
         ctx['turn_intent'] = intent
@@ -112,7 +131,18 @@ def classify(ctx, messages):
         intent = {'route': 'general', 'institutions': [], 'comparison': False, 'followup': False}
     # Entity names must be literal spans of this turn, never invented from history.
     latest = ctx.get('current_message', '')
-    intent['institutions'] = [n for n in intent.get('institutions', []) if n.casefold() in latest.casefold()]
+    literal_names = []
+    for name in intent.get('institutions', []):
+        if name.casefold() in latest.casefold():
+            literal_names.append(name)
+            continue
+        # A classifier may expand a short name to its canonical institution.
+        # Preserve only the literal stem; directory lookup still resolves it.
+        stem = re.sub(r'\b(?:university|college|of|the)\b', ' ', name, flags=re.I)
+        stem = ' '.join(stem.split())
+        if len(stem) >= 3 and re.search(r'(?<!\w)' + re.escape(stem) + r'(?!\w)', latest, re.I):
+            literal_names.append(stem)
+    intent['institutions'] = literal_names
     # Country/subject labels are not institutional identities, even when literal.
     non_institutions = {'germany', 'india', 'usa', 'us', 'uk', 'canada', 'australia', 'france', 'netherlands',
                         'computer science', 'artificial intelligence', 'data science', 'english', 'german', 'aps', 'ielts', 'toefl', 'gate'}
