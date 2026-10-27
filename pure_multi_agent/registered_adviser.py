@@ -163,6 +163,10 @@ def _consult(ctx, row, question, public_row=None):
         financial = financial_period_context(question, evidence_bundle)
         if financial:
             instruction += '\nFinancial source-period assessment (server): ' + compact_json(financial)
+            instruction += ('\nUse only periods present in this retrieved financial evidence. '
+                            'Earlier conversation answers may be outdated; do not repeat their years or rates '
+                            'unless independently supported here. When a matching rate is verified, '
+                            'answer with that period and its source conditions without adding historical comparisons.')
             if financial['requires_confirmation'] and public_row is None and not pending:
                 request_university_clarification.invoke({'unanswered_question': question})
             instruction += '\nActual escalation state: ' + compact_json(pending)
@@ -235,9 +239,10 @@ def _consult(ctx, row, question, public_row=None):
                 message = 'I could not finish preparing this answer. Please retry.'
                 if not pending:
                     message += ' No university clarification was requested.'
-                elif financial:
+                if financial:
                     from pure_multi_agent.financial_periods import financial_reference_answer
-                    message = financial_reference_answer(financial) or message
+                    if pending or not financial['requires_confirmation']:
+                        message = financial_reference_answer(financial) or message
                 reply = AIMessage(content=message)
             else:
                 reply = AIMessage(content=partial_answer(question, evidence_bundle, getattr(exc, 'draft', ''), student))

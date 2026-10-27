@@ -129,23 +129,28 @@ def financial_period_context(question: str, evidence: dict, *, today=None) -> di
 
 def financial_reference_answer(assessment: dict) -> str:
     """Recover only literal cited rate passages, never a rejected model draft."""
-    if not assessment.get('requires_confirmation'):
-        return ''
+    current_verified = assessment.get('requires_confirmation') is False
     references = []
     seen = set()
     for rate in sorted(assessment.get('rates', []), key=lambda row: (row['period'] != 'undated', row['period']), reverse=True):
+        if current_verified and not rate.get('matches_requested_period'):
+            continue
         quote, url, period = rate.get('quote'), rate.get('source_url'), rate['period']
         if not quote or not url or (quote, url, period) in seen:
             continue
         seen.add((quote, url, period))
         # Preserve the source wording as quotation, not generated advice.
         quote = re.sub(r'([\\`*_{}\[\]<>])', r'\\\1', quote)
-        label = 'Published deposit — year not specified in the saved excerpt' if period == 'undated' else f'Published for {period} — not confirmed for the requested period'
+        label = (f'Published rate for {period}' if current_verified else
+                 'Published deposit — year not specified in the saved excerpt' if period == 'undated' else
+                 f'Published for {period} — not confirmed for the requested period')
         references.append(f'**{label}**\n\n> {quote}\n\nSource: {url}')
         if len(references) == 1:
             break
     if not references:
         return ''
+    if current_verified:
+        return 'The retrieved source documents the following rate and conditions:\n\n' + '\n\n'.join(references)
     return ('I cannot confirm the current deposit or fee from the available records. '
             'This published rate is reference information, not a verified current charge:\n\n'
             + '\n\n'.join(references)

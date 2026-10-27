@@ -92,6 +92,37 @@ class FinancialPeriodTests(TestCase):
 class FinancialEscalationTests(DatabaseTestCase):
     setUp = StudentGateTwoTests.setUp
 
+    def test_unsupported_old_year_recovers_current_cited_rate_without_escalating(self):
+        from pure_multi_agent.registered_adviser import _consult
+        from pure_multi_agent.model_router import InvalidToolResponse
+        from agent_queries.models import AgentQuery
+        url = 'https://www.franklin.edu/tuition-financial-aid/tuition-fees'
+        evidence = {'facts': [{'content': '2026–2027 F-1 International New Student Deposit (non-refundable; applied directly to first term tuition) $2,000', 'source_url': url}]}
+
+        def reject(messages, tools, **kwargs):
+            try:
+                kwargs['response_validator'](AIMessage(content='The deposit was $2,000 in 2025. Source: ' + url))
+            except ValueError as cause:
+                self.assertIn('Unsupported numeric claims: 2025', str(cause))
+                raise InvalidToolResponse('Invalid after correction') from cause
+            self.fail('Invented historical year was accepted')
+
+        with patch('pure_multi_agent.tools.university_tools._university_evidence', return_value=evidence), \
+             patch('pure_multi_agent.registered_adviser.invoke', side_effect=reject), \
+             patch('agents.student_context.university_context', return_value={}), \
+             patch('pure_multi_agent.financial_periods.date', wraps=date) as clock, \
+             patch('agent_queries.services.notify_query') as notify:
+            clock.today.return_value = date(2026, 10, 27)
+            result = _consult(dict(self.ctx), self.school, 'What is the current F-1 new-student deposit, and is it applied toward tuition?')
+        for term in ('$2,000', '2026–2027', 'non-refundable', 'applied directly to first term tuition', url):
+            self.assertIn(term, result['answer'])
+        for term in ('2025', 'Please retry', 'pending a university response'):
+            self.assertNotIn(term, result['answer'])
+        self.assertFalse(result['pending'])
+        self.assertFalse(AgentQuery.objects.exists())
+        notify.assert_not_called()
+        self.assertEqual(len(result['sources']), 1)
+
     def test_rejected_financial_prose_preserves_cited_rate_and_pending_query(self):
         from pure_multi_agent.registered_adviser import _consult
         from pure_multi_agent.model_router import InvalidToolResponse
