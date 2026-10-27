@@ -87,6 +87,33 @@ class FinancialEscalationTests(DatabaseTestCase):
         self.assertFalse(AgentQuery.objects.exists())
         self.assertIn(url, result['answer'])
 
+    def test_gpa_answer_with_timestamped_officer_history_does_not_crash(self):
+        from django.utils import timezone
+        from agent_queries.models import AgentQuery
+        from agent_queries.services import conversation_for
+        conversation = conversation_for(str(self.student.uuid), str(self.school.uuid))
+        previous = AgentQuery.objects.create(conversation=conversation, direction=AgentQuery.Direction.STUDENT,
+            question='Does Franklin require GRE?', question_hash='previous-gre',
+            status='answered', answer='GRE is not required.', answered_at=timezone.now())
+        # Exercise the consultation with a real timestamped officer answer.
+        from pure_multi_agent.registered_adviser import _consult
+        url = 'https://www.franklin.edu/admissions/admission-requirements/master-degrees'
+        evidence = {'facts': [{'content': 'Domestic applicants with GPA between 2.250 and 2.499 receive conditional admission if they meet other admission requirements.', 'source_url': url}]}
+        answer = 'A domestic applicant with a 2.30 GPA can receive conditional admission if the other admission requirements are met. Source: ' + url
+
+        def generate(messages, tools, **kwargs):
+            reply = AIMessage(content=answer)
+            kwargs['response_validator'](reply)
+            return reply
+
+        with patch('pure_multi_agent.tools.university_tools._university_evidence', return_value=evidence), \
+             patch('pure_multi_agent.registered_adviser.invoke', side_effect=generate), \
+             patch('agents.student_context.university_context', return_value={}):
+            result = _consult(dict(self.ctx), self.school, 'Can a domestic master’s applicant with a 2.30 GPA receive conditional admission at Franklin University?')
+        self.assertEqual(result['answer'], answer)
+        self.assertFalse(result['pending'])
+        self.assertEqual(list(AgentQuery.objects.values_list('pk', flat=True)), [previous.pk])
+
     def test_specific_gpa_exception_does_not_disable_escalation(self):
         from pure_multi_agent.answer_checks import general_conditional_policy
         evidence = {'facts': [{'content': 'Domestic master applicants with GPA between 2.250 and 2.499 receive conditional admission.',
@@ -107,6 +134,8 @@ class FinancialEscalationTests(DatabaseTestCase):
         def generate(messages, tools, **kwargs):
             with self.assertRaisesRegex(ValueError, 'historical|unverified'):
                 kwargs['response_validator'](AIMessage(content='The F-1 new-student deposit is $2,000. Source: ' + url))
+            with self.assertRaisesRegex(ValueError, 'Money, not Admissions'):
+                kwargs['response_validator'](AIMessage(content=answer + ' Please contact Franklin University Admissions Office at admissions@franklin.edu.'))
             reply = AIMessage(content=answer)
             kwargs['response_validator'](reply)
             return reply

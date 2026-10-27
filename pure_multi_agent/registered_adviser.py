@@ -1,5 +1,4 @@
 """An enrolled university's scoped LangGraph consultation, using shared routing."""
-import json
 import re
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
@@ -177,7 +176,7 @@ def _consult(ctx, row, question, public_row=None):
             if general_policy and (needs_clarification(reply.content) or re.search(r'\bescalat\w*\b', reply.content, re.I)):
                 problems.append('The loaded general admissions policy supports this GPA-range question. Answer it with its documented conditions and citation instead of claiming a missing policy or escalation.')
             if pending.get('department') == 'money' and re.search(
-                    r'(?:escalat\w*|sent|forward\w*).{0,100}\badmissions\b', reply.content, re.I):
+                    r'(?:escalat\w*|sent|forward\w*|contact|call|email).{0,100}\badmissions\b', reply.content, re.I):
                 problems.append('The query was routed to Money, not Admissions. Describe the actual escalation destination.')
             if financial and financial['requires_confirmation']:
                 if re.search(r'\bcurrently\s+(?:charges?|costs?|is)|\bcurrent\s+(?:\w+\s+){0,3}(?:rate|deposit|tuition|fee)\s+is\s+[$€£]', reply.content, re.I):
@@ -191,7 +190,7 @@ def _consult(ctx, row, question, public_row=None):
                     r'(?:below|above|outside)\s+(?:the\s+)?(?:automatic\s+)?conditional[- ]admission\s+(?:threshold|range)', reply.content, re.I):
                 problems.append('The applicant GPA lies within the retrieved conditional-admission range. Correct the contradictory range comparison while preserving all other admission conditions.')
             if (re.search(r'\bGPA\b', question, re.I) and re.search(r'conditional', question, re.I)
-                    and re.search(r'other admission requirements', json.dumps(evidence_bundle), re.I)
+                    and re.search(r'other admission requirements', compact_json(evidence_bundle), re.I)
                     and not re.search(r'(?:other|remaining|all)\s+(?:\w+\s+){0,3}(?:requirements|criteria)', reply.content, re.I)
                     and not needs_clarification(reply.content)):
                 problems.append('Preserve the documented condition: the applicant must also meet the other admission requirements. Do not imply GPA alone guarantees admission.')
