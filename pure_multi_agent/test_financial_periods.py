@@ -168,6 +168,38 @@ class FinancialEscalationTests(DatabaseTestCase):
         notify.assert_not_called()
         self.assertEqual(len(result['sources']), 1)
 
+    def test_missing_tuition_policy_and_rejected_referral_keep_real_money_query(self):
+        from agent_queries.models import AgentQuery
+        from pure_multi_agent.registered_adviser import _consult
+        from pure_multi_agent.model_router import InvalidToolResponse
+        from universities.models import KnowledgeGroup
+        KnowledgeGroup.objects.create(university=self.school, slug='money')
+        # A flattened older table has no safely quotable tuition passage.
+        evidence = {'facts': [{'content': '2025-2026 Tuition $690 ' + 'Other charges apply ' * 40,
+                              'source_url': 'https://www.franklin.edu/fees'}]}
+
+        def reject(*args, **kwargs):
+            with self.assertRaisesRegex(ValueError, 'Money, not Admissions'):
+                kwargs['response_validator'](AIMessage(content='Please contact Admissions.'))
+            raise InvalidToolResponse('Invalid after correction')
+
+        with patch('pure_multi_agent.tools.university_tools._university_evidence', return_value=evidence), \
+             patch('pure_multi_agent.registered_adviser.invoke', side_effect=reject), \
+             patch('agents.student_context.university_context', return_value={}), \
+             patch('agent_queries.services.notify_query') as notify:
+            for _ in range(2):
+                result = _consult(dict(self.ctx), self.school,
+                    'What is tuition for Fall 2026, including tuition guarantee changes?')
+        self.assertTrue(result['pending'])
+        self.assertIn('Money department', result['answer'])
+        self.assertIn('pending a university response', result['answer'])
+        self.assertIn('do not need to submit', result['answer'])
+        for unsupported in ('Please retry', 'Admissions', '$690', 'three years'):
+            self.assertNotIn(unsupported, result['answer'])
+        self.assertEqual(result['sources'], [])
+        self.assertEqual(AgentQuery.objects.count(), 1)
+        notify.assert_called_once()
+
     def test_rejected_financial_prose_preserves_cited_rate_and_pending_query(self):
         from pure_multi_agent.registered_adviser import _consult
         from pure_multi_agent.model_router import InvalidToolResponse

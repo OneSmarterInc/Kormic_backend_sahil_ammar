@@ -248,6 +248,10 @@ def _consult(ctx, row, question, public_row=None):
                 message = 'I could not finish preparing this answer. Please retry.'
                 if not pending:
                     message += ' No university clarification was requested.'
+                if pending:
+                    message = ('I could not produce a verified answer from the available evidence. '
+                               'The university needs to confirm the outstanding details. '
+                               'You do not need to submit this question again.')
                 if financial:
                     from pure_multi_agent.financial_periods import financial_reference_answer
                     if pending or not financial['requires_confirmation']:
