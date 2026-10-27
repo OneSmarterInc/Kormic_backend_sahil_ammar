@@ -37,9 +37,6 @@ class CollectorTests(TestCase):
         hosts = (
             "platform.kormic.ai",
             "kormicfrontendammarsahil-kpkx.vercel.app",
-            "kormic-frontend-institutes.vercel.app",
-            "kormic-frontend-university.vercel.app",
-            "kormic-frontend-superuser.vercel.app",
         )
         for host in hosts:
             for path in ("/student/login", "/university/", "/institute/", "/superuser/"):
@@ -48,6 +45,25 @@ class CollectorTests(TestCase):
                     response = self.send({**self.report, "document-uri": f"https://{host}{path}"})
                     self.assertEqual(response.status_code, 204)
                     self.assertEqual(sum(CSPReport.objects.values_list("count", flat=True)), before + 1)
+
+    def test_retired_portals_are_ignored_in_both_report_formats(self):
+        for host in (
+            "kormic-frontend-institutes.vercel.app",
+            "kormic-frontend-university.vercel.app",
+            "kormic-frontend-superuser.vercel.app",
+        ):
+            with self.subTest(host=host):
+                self.assertEqual(self.send({
+                    **self.report, "document-uri": f"https://{host}/login",
+                }).status_code, 204)
+                response = self.client.post("/api/security/csp-report/", json.dumps([{
+                    "type": "csp-violation", "body": {
+                        "documentURL": f"https://{host}/login",
+                        "effectiveDirective": "script-src", "blockedURL": "inline",
+                    },
+                }]), content_type="application/reports+json")
+                self.assertEqual(response.status_code, 204)
+                self.assertFalse(CSPReport.objects.exists())
 
     def test_untrusted_aliases_and_origins_are_not_recorded(self):
         for origin in (

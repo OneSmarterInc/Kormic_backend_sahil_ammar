@@ -12,21 +12,29 @@ Do not run that alternative alongside Supervisor on the existing host.
 
 ## CSP report-only observation
 
-The collector accepts HTTPS documents from these exact production hosts, verified
-against Vercel project domains and public HTTP responses on October 26, 2026:
+The collector accepts HTTPS documents from only these exact unified portal hosts:
 
 - `platform.kormic.ai` - all four unified portals.
-- `kormicfrontendammarsahil-kpkx.vercel.app` - the same four portals.
-- `kormic-frontend-institutes.vercel.app` - standalone institute portal.
-- `kormic-frontend-university.vercel.app` - standalone university portal.
-- `kormic-frontend-superuser.vercel.app` - standalone administrator portal.
+- `kormicfrontendammarsahil-kpkx.vercel.app` - the same unified deployment; retained
+  until a separate alias retirement or redirect is confirmed.
 
-Both unified hosts serve the report-only header and collector URL. The three
-standalone hosts were still serving portal HTML but had no report-only header;
-configure reporting there or redirect them to the corresponding unified portal
-before claiming observation coverage. The collector allowlist alone does not
-make browsers send reports. Arbitrary Vercel previews are intentionally excluded.
-Update the exact allowlist and regression tests when production aliases change.
+On October 27, 2026, the operator reported deleting the three legacy standalone
+Vercel projects: `kormic-frontend-institutes`, `kormic-frontend-university`, and
+`kormic-frontend-superuser`. Their `.vercel.app` hosts are no longer accepted by
+this collector. Reports naming those retired document hosts receive HTTP 204
+but are not stored. Both legacy CSP reports and Reporting API batches use this
+same restriction. Previously collected aggregates are retained.
+
+The collector allowlist does not itself publish a reporting header. Arbitrary
+Vercel previews remain excluded. Keep `Content-Security-Policy-Report-Only`;
+enforcement requires Vikram's written approval.
+
+The original unified-host browser confirmation was recorded at
+`2026-10-26T12:09:30Z`. Preserve that historical start and the daily observation
+records. After deploying this allowlist change, repeat browser-to-collector
+verification on the unified portal and record the recheck timestamp separately.
+Retiring legacy sites does not prove seven days of observation are complete and
+does not retroactively establish coverage for those sites.
 
 
 Deploy the collector before publishing the frontend reporting header. After the

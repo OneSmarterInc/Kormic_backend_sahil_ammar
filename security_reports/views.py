@@ -10,14 +10,11 @@ from django.views.decorators.http import require_POST
 
 from .models import CSPReport
 
-# Exact production aliases verified in Vercel and via HTTP on 2026-10-26.
+# Unified portal hosts only; standalone projects retired on 2026-10-27.
 # Never allow *.vercel.app: it includes deployments owned by other tenants.
 ALLOWED_DOCUMENT_HOSTS = frozenset({
     "platform.kormic.ai",
     "kormicfrontendammarsahil-kpkx.vercel.app",
-    "kormic-frontend-institutes.vercel.app",
-    "kormic-frontend-university.vercel.app",
-    "kormic-frontend-superuser.vercel.app",
 })
 
 MAX_BYTES = 16384
