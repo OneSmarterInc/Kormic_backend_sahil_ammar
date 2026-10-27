@@ -42,6 +42,10 @@ def evidence_excerpt(text, question, budget=3500):
     """
     if len(text) <= budget:
         return text
+    from pure_multi_agent.financial_periods import deposit_table_excerpt
+    deposit_excerpt = deposit_table_excerpt(text, question, budget)
+    if deposit_excerpt:
+        return deposit_excerpt
     from university_research.relevance import question_terms
     def normalized_words(value):
         return [word[:-1] if len(word) > 4 and word.endswith('s') and not word.endswith('ss') else word

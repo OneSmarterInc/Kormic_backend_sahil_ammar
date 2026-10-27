@@ -10,6 +10,42 @@ from pure_multi_agent.test_student_gate2 import StudentGateTwoTests
 
 
 class FinancialPeriodTests(TestCase):
+    def test_flat_fee_table_returns_only_deposit_row_with_conditions(self):
+        from pure_multi_agent.financial_periods import financial_reference_answer
+        table = ('Application fee $40 F-1 International Student Enrollment Term Confirmation Deposit '
+                 '(non-refundable; applied directly to account for intended term of enrollment) $200 '
+                 'F-1 International New Student Deposit (non-refundable; applied directly to first term tuition) $2,000 '
+                 'Graduation application fee $65 Late payment fee $100 ' + 'Other fees and charges. ' * 20)
+        assessment = self.assess(table)
+        answer = financial_reference_answer(assessment)
+        for term in ('$2,000', 'non-refundable', 'applied directly to first term tuition', 'year not specified'):
+            self.assertIn(term, answer)
+        for term in ('$40', '$200 ', '$65', 'Graduation', 'Late payment', '2025'):
+            self.assertNotIn(term, answer)
+        self.assertLess(len(answer), 700)
+
+    def test_long_table_excerpt_keeps_actual_academic_heading(self):
+        from pure_multi_agent.answer_context import compact_evidence
+        row = 'F-1 International New Student Deposit (non-refundable; applied directly to first term tuition) $2,000'
+        text = '2025–2026 Fees\n' + 'Other fee information. ' * 300 + row + ' Graduation fee $65 ' + 'Footer. ' * 400
+        compact = compact_evidence({'facts': [{'content': text, 'source_url': 'https://example.edu/fees'}]},
+                                   'What is the current F-1 new-student deposit?')
+        content = compact['facts'][0]['content']
+        self.assertIn('2025–2026', content)
+        self.assertIn(row, content)
+        self.assertNotIn('Graduation', content)
+        self.assertEqual(self.assess(content)['rates'][0]['period'], '2025–2026')
+
+    def test_mixed_academic_years_keep_current_deposit_evidence(self):
+        from pure_multi_agent.answer_context import compact_evidence
+        row = 'F-1 International New Student Deposit (non-refundable; applied directly to first term tuition) '
+        text = '2025–2026 Fees\n' + row + '$2,000 ' + 'Other fees. ' * 700 + '\n2026–2027 Fees\n' + row + '$2,100'
+        compact = compact_evidence({'facts': [{'content': text}]}, 'What is the F-1 new-student deposit for 2026–2027?')
+        content = compact['facts'][0]['content']
+        self.assertTrue(content.startswith('2026–2027'))
+        self.assertIn('$2,100', content)
+        self.assertFalse(self.assess(content, 'What is the F-1 new-student deposit for 2026–2027?')['requires_confirmation'])
+
     def test_reference_recovery_never_uses_uncited_or_truncated_text(self):
         from pure_multi_agent.financial_periods import financial_reference_answer
         self.assertEqual(financial_reference_answer({'requires_confirmation': True,

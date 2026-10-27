@@ -5,11 +5,50 @@ from datetime import date
 
 PERIOD = re.compile(r'\b(20\d{2})\s*[–—/-]\s*(20\d{2}|\d{2})(?!\d)|'
                     r'\b(Fall|Autumn|Spring|Summer|Winter)\s+(20\d{2})\b', re.I)
+DEPOSIT_ROW = re.compile(
+    r'\b(?:F[-‑]1\s+International\s+)?(?:New[- ]Student|Tuition)\s+Deposit'
+    r'\s*\([^)]{1,500}\)\s*[$€£]\s*\d[\d,.]*', re.I)
 
 
 def normalize_period(text: str) -> str:
     text = re.sub(r'\s*[-–—/]\s*', '-', text).casefold()
     return re.sub(r'\b(20\d{2})-(\d{2})\b', lambda match: match[1] + '-20' + match[2], text)
+
+
+def deposit_table_excerpt(text: str, question: str, budget: int) -> str:
+    """Keep complete deposit table rows with their actual preceding headings."""
+    if not re.search(r'new[- ]student\s+deposit', question, re.I):
+        return ''
+    rows = []
+    for match in DEPOSIT_ROW.finditer(text):
+        periods = list(PERIOD.finditer(text[:match.start()]))
+        period = periods[-1][0] if periods else ''
+        content = (period + '\n' if period else '') + match[0]
+        assessment = financial_period_context(question, {'facts': [{'content': content}]})
+        current = bool(assessment and not assessment['requires_confirmation'])
+        rows.append((current, normalize_period(period), content))
+    kept, size = [], 0
+    for _, _, content in sorted(set(rows), reverse=True):
+        if size + len(content) > budget:
+            continue
+        kept.append(content)
+        size += len(content)
+        if len(kept) == 2:
+            break
+    return '\n\n'.join(kept)
+
+
+def financial_quote(passage: str, topic: str) -> str:
+    if 'deposit' in topic:
+        row = DEPOSIT_ROW.search(passage)
+        if row:
+            return row[0]
+    # Never expose a whole flattened fee table as a sentence. When a complete
+    # short passage cannot be isolated, leave it for the normal answer path.
+    return next((part.strip() for part in re.split(r'\n+|(?<=[.!?])\s+(?=[A-Z])', passage)
+                 if re.search(topic, part, re.I)
+                 and re.search(r'[$€£]\s*\d|\b\d[\d,]*\s*(?:USD|dollars)\b', part, re.I)
+                 and len(part.strip()) <= 450), '')
 
 
 def financial_period_context(question: str, evidence: dict, *, today=None) -> dict:
@@ -74,10 +113,7 @@ def financial_period_context(question: str, evidence: dict, *, today=None) -> di
                     records.append({'period': period[0] if period else 'undated',
                                     'matches_requested_period': current,
                                     'source_url': fact.get('source_url', ''),
-                                    'quote': next((part.strip() for part in re.split(r'\n+|(?<=[.!?])\s+(?=[A-Z])', passage)
-                                        if re.search(topic, part, re.I)
-                                        and re.search(r'[$€£]\s*\d|\b\d[\d,]*\s*(?:USD|dollars)\b', part, re.I)
-                                        and len(part.strip()) <= 1200), '')})
+                                    'quote': financial_quote(passage, topic)})
         visit(data.get('official_website_research'))
 
     visit(evidence)
@@ -97,20 +133,20 @@ def financial_reference_answer(assessment: dict) -> str:
         return ''
     references = []
     seen = set()
-    for rate in sorted(assessment.get('rates', []), key=lambda row: row['period'], reverse=True):
+    for rate in sorted(assessment.get('rates', []), key=lambda row: (row['period'] != 'undated', row['period']), reverse=True):
         quote, url, period = rate.get('quote'), rate.get('source_url'), rate['period']
         if not quote or not url or (quote, url, period) in seen:
             continue
         seen.add((quote, url, period))
         # Preserve the source wording as quotation, not generated advice.
         quote = re.sub(r'([\\`*_{}\[\]<>])', r'\\\1', quote)
-        label = 'Undated source — current applicability unverified' if period == 'undated' else f'Published for {period} — not confirmed for the current/requested period'
+        label = 'Published deposit — year not specified in the saved excerpt' if period == 'undated' else f'Published for {period} — not confirmed for the requested period'
         references.append(f'**{label}**\n\n> {quote}\n\nSource: {url}')
-        if len(references) == 2:
+        if len(references) == 1:
             break
     if not references:
         return ''
-    return ('I cannot confirm the current/requested rate from the available records. '
-            'These published rates are provided only as historical or other-period reference:\n\n'
+    return ('I cannot confirm the current deposit or fee from the available records. '
+            'This published rate is reference information, not a verified current charge:\n\n'
             + '\n\n'.join(references)
             + '\n\nThe university needs to confirm the applicable amount and payment conditions.')
