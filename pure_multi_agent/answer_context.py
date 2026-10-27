@@ -1,6 +1,7 @@
 """Bounded, question-specific model input and non-model failure recovery."""
 import json
 import re
+from collections import Counter
 from pure_multi_agent.chat_cost_controls import unique_records
 
 
@@ -34,28 +35,68 @@ def profile_context(profile, question=''):
 
 
 def evidence_excerpt(text, question, budget=3500):
-    """Select source passages with neighbouring qualifications, retaining order."""
+    """Keep a contiguous passage, including headings and nearby conditions.
+
+    Long scraped tables are often a single paragraph. Skipping paragraphs that
+    exceed the budget discards the very fee/eligibility table being requested.
+    """
     if len(text) <= budget:
         return text
     from university_research.relevance import question_terms
-    terms = question_terms(question)
-    parts = re.split(r'\n\s*\n|(?<=[.!?])\s+(?=[A-Z])', text)
-    ranked = sorted(range(len(parts)), key=lambda i: sum(t in parts[i].lower() for t in terms), reverse=True)
-    selected, used = set(), 0
-    for index in ranked:
-        if not any(term in parts[index].lower() for term in terms):
-            continue
-        for candidate in (index, index - 1, index + 1):
-            if candidate < 0 or candidate >= len(parts) or candidate in selected:
+    def normalized_words(value):
+        return [word[:-1] if len(word) > 4 and word.endswith('s') and not word.endswith('ss') else word
+                for word in re.findall(r'[\w-]{2,}', value.casefold())]
+    wanted = set(normalized_words(' '.join(question_terms(question))))
+    wanted.update(word for word in normalized_words(question) if '-' in word)
+    # Scope tuition tables to the requested degree before choosing a window.
+    # These are document headings, not institution-specific rates or answers.
+    levels = {
+        'master': r"master(?:['’]s|s)?",
+        'doctoral': r'(?:doctoral|doctorate|phd)',
+        'undergraduate': r'(?:undergraduate|bachelor(?:[\'’]s|s)?)',
+    }
+    section = text
+    base = 0
+    if re.search(r'\b(?:tuition|fees?|costs?)\b', question, re.I):
+        heading = r"(?:master(?:['’]s|s)?|doctoral|doctorate|undergraduate|bachelor(?:['’]s|s)?)\s+(?:costs?|tuition|fees?)\b"
+        headings = list(re.finditer(heading, text, re.I))
+        matches = []
+        for level in levels.values():
+            if not re.search(r'\b' + level + r'\b', question, re.I):
                 continue
-            if used + len(parts[candidate]) <= budget:
-                selected.add(candidate); used += len(parts[candidate])
-    if selected:
-        return '\n[…]\n'.join(parts[i] for i in sorted(selected))
-    # A single enormous paragraph still supplies an explicitly partial excerpt.
-    offsets = range(0, max(1, len(text) - budget + 1), max(1, budget // 3))
-    start = max(offsets, key=lambda offset: sum(term in text[offset:offset + budget].casefold() for term in terms))
-    return ('[…] ' if start else '') + text[start:start + budget].rsplit(' ', 1)[0] + ' […]'
+            for index, match in enumerate(headings):
+                if re.match(level, match.group(), re.I):
+                    end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
+                    matches.append((match.start(), text[match.start():end]))
+        if matches:
+            # Prefer a section whose heading names the requested academic year.
+            years = set(re.findall(r'\b20\d{2}\b', question))
+            base, section = max(matches, key=lambda item: len(years & set(re.findall(r'\b20\d{2}\b', item[1][:120]))))
+
+    def score(start):
+        window = section[start:start + budget].casefold()
+        words = Counter(normalized_words(window))
+        overlap = wanted & words.keys()
+        # A repeated substantive policy passage should beat a navigation/header
+        # mention. Cap repetition so long menus cannot dominate without bound.
+        focus = {'gpa', 'conditional', 'tuition', 'housing', 'orientation', 'transcript', 'immigration', 'check-in', 'deposit', 'f-1'}
+        result = sum(3 * min(words[term], 8) if term in focus else 1 for term in overlap)
+        # Keep the start of an applicable table, rather than a tail of its fees.
+        if base and start == 0:
+            result += 3
+        return result
+
+    offsets = set(range(0, max(1, len(section) - budget + 1), max(1, budget // 8)))
+    offsets.add(max(0, len(section) - budget))
+    offsets.update(match.end() for match in re.finditer(r'\n\s*\n|(?<=[.!?])\s+(?=[A-Z])', section)
+                   if match.end() + budget <= len(section))
+    start = max(sorted(offsets), key=score)
+    excerpt = section[start:start + budget]
+    if start and not section[start - 1].isspace():
+        excerpt = excerpt.partition(' ')[2]
+    if start + budget < len(section):
+        excerpt = excerpt.rsplit(' ', 1)[0]
+    return ('[…] ' if base + start else '') + excerpt + (' […]' if base + start + budget < len(text) else '')
 
 
 def compact_evidence(data, question):
@@ -64,6 +105,8 @@ def compact_evidence(data, question):
     from university_research.relevance import question_terms
     words = set(question_terms(question))
     def score(item):
+        if isinstance(item, dict) and isinstance(item.get('retrieval_rank'), int):
+            return 1000 - item['retrieval_rank']
         text = json.dumps(item, default=str).lower()
         return sum(word in text for word in words)
     for key, limit in (('facts', 5), ('courses', 6), ('intakes', 6), ('saved_knowledge', 4), ('previous_answers_for_this_student', 2)):

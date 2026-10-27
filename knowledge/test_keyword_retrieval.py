@@ -35,3 +35,40 @@ class KeywordRetrievalTests(TestCase):
             topic="Housing", content="Dormitory applications open in May.")
         self.kb.reload()
         self.assertEqual(self.kb.search("housing")[0].db_id, fact.pk)
+
+    def test_policy_source_survives_programme_navigation_noise_and_candidate_limit(self):
+        UniversityKnowledgeEntry.objects.bulk_create([
+            UniversityKnowledgeEntry(university_id=str(self.uni.uuid),
+                topic='Admissions Requirements', source_type='scraped', confidence=0.55,
+                source_url=f'https://example.edu/degrees/programme-{index}',
+                content='International student orientation admission requirements. ' + 'Programme modules and coursework. ' * 100)
+            for index in range(150)
+        ])
+        orientation = UniversityKnowledgeEntry.objects.create(
+            university_id=str(self.uni.uuid), topic='Admissions Requirements',
+            source_type='scraped', confidence=0.55,
+            source_url='https://example.edu/international-student-orientation',
+            content='International Student Orientation is a one-day series of interactive online sessions. Immigration check-in requires your passport and visa.')
+        result = UniversityKnowledgeBase(str(self.uni.uuid), lazy=True).search(
+            'How is International Student Orientation delivered?', limit=5)
+        self.assertEqual(result[0].db_id, orientation.pk)
+
+    def test_housing_policy_beats_fee_rows_sharing_applicant_context(self):
+        UniversityKnowledgeEntry.objects.bulk_create([
+            UniversityKnowledgeEntry(
+                university_id=str(self.uni.uuid), source_type='scraped', confidence=0.95,
+                topic=f'International students enrollment fee {index}',
+                content='International students pay an enrollment fee.',
+                source_url='https://example.edu/tuition-fees')
+            for index in range(10)
+        ])
+        housing = UniversityKnowledgeEntry.objects.create(
+            university_id=str(self.uni.uuid), topic='Admissions Requirements',
+            source_type='scraped', confidence=0.55,
+            source_url='https://example.edu/international-students/getting-started',
+            content='OISP helps newly admitted international students find housing.')
+        for lazy in (False, True):
+            with self.subTest(lazy=lazy):
+                results = UniversityKnowledgeBase(str(self.uni.uuid), lazy=lazy).search(
+                    'Who helps newly admitted international students find housing?', limit=5)
+                self.assertEqual(results[0].db_id, housing.pk)

@@ -97,6 +97,7 @@ class UniversityKnowledgeBase:
         "does", "do", "can", "have", "has", "at", "in", "on",
         "and", "or", "with", "about", "tell", "me", "please",
         "give", "show", "explain", "know", "need", "want",
+        "who", "how", "it", "as", "own", "must", "currently",
         "our", "your", "their", "my", "we", "us", "related", "regarding",
         "policy", "policies", "information", "details",
         "wright", "state", "university", "franklin",
@@ -416,6 +417,17 @@ class UniversityKnowledgeBase:
         if not self.lazy:
             self.reload()
         query_words = self._tokenize(query)
+        # Separate the policy being asked about from broad applicant context.
+        # "international students" alone must not outrank "housing" or "transcript".
+        focus = set(query_words) & {
+            'housing', 'orientation', 'transcript', 'deposit', 'scholarship',
+            'gpa', 'conditional', 'immigration', 'check-in', 'deadline', 'f-1',
+        }
+        if not focus:
+            focus = set(query_words) & {'tuition', 'fee', 'cost'}
+        if not focus and any(word in query_words for word in ('admitting', 'admitted', 'admission')):
+            query_words = ['admission' if word in ('admitting', 'admitted') else word for word in query_words]
+            focus = {'admission'}
 
         if not query_words:
             return []
@@ -425,14 +437,18 @@ class UniversityKnowledgeBase:
         if self.lazy:
             from django.db.models import Q, Case, When, Value, IntegerField
             from django_api.models import UniversityKnowledgeEntry
+            base = UniversityKnowledgeEntry.objects.filter(university_id=self.university_id).defer("embedding")
+            terms = {word: word[:max(4, len(word) - 3)] if len(word) >= 6 else word for word in query_words[:16]}
+            predicates = {word: Q(topic__icontains=term) | Q(content__icontains=term) | Q(source_url__icontains=term)
+                          for word, term in terms.items()}
             candidates = Q(pk__in=vector_ids)
             relevance = Value(0, output_field=IntegerField())
-            for word in query_words[:16]:
-                term = word[:max(4, len(word) - 3)] if len(word) >= 6 else word
-                candidates |= Q(topic__icontains=term) | Q(content__icontains=term)
-                relevance += Case(When(topic__icontains=term, then=Value(3)), default=Value(0), output_field=IntegerField())
-                relevance += Case(When(content__icontains=term, then=Value(1)), default=Value(0), output_field=IntegerField())
-            base = UniversityKnowledgeEntry.objects.filter(university_id=self.university_id).defer("embedding")
+            for word, term in terms.items():
+                weight = 5 if word in focus else 1
+                candidates |= predicates[word]
+                relevance += Case(When(topic__icontains=term, then=Value(3 * weight)), default=Value(0), output_field=IntegerField())
+                relevance += Case(When(content__icontains=term, then=Value(weight)), default=Value(0), output_field=IntegerField())
+                relevance += Case(When(source_url__icontains=term, then=Value(2 * weight)), default=Value(0), output_field=IntegerField())
             ids = list(base.filter(candidates).annotate(relevance=relevance).order_by("-relevance", "-confidence", "-pk").values_list("pk", flat=True)[:128])
             self.entries = []
             self._load_from_db(base.filter(pk__in=set(ids + vector_ids)))
@@ -452,13 +468,26 @@ class UniversityKnowledgeBase:
 
         for entry, topic, content in tokenized:
             score = self._phrase_score(query, entry.topic, entry.content)
+            url_words = set(self._tokenize((entry.source_url or '').replace('/', ' ').replace('-', ' ')))
 
             for word in query_words:
+                weight = 5 if word in focus else 1
                 if word in topic:
-                    score += 10 if word in self.IMPORTANT_WORDS else 3
+                    score += weight * (10 if word in self.IMPORTANT_WORDS else 3)
 
                 if word in content:
-                    score += 5 if word in self.IMPORTANT_WORDS else 1
+                    # A specific policy match must beat a high-confidence fee
+                    # row that only shares the broad "international student"
+                    # context. Keep confidence/source weighting afterwards.
+                    score += weight * (5 if word in self.IMPORTANT_WORDS or word in focus else 2)
+                if word in url_words:
+                    score += 3 * weight
+
+            # Distinguish a substantive policy section from one navigation link
+            # when both occur in chunks from the same official page.
+            score += sum(5 * min(3, len(re.findall(
+                r'(?<!\w)' + re.escape(word) + r's?(?!\w)', entry.content, re.I)))
+                for word in focus)
 
             source_boost = self.SOURCE_PRIORITY.get(entry.source_type, 0.5)
 
@@ -479,6 +508,20 @@ class UniversityKnowledgeBase:
                 if entry_id in by_id:
                     ranks[entry_id] = ranks.get(entry_id, 0) + 1 / (60 + rank)
         results = [by_id[pk] for pk in sorted(ranks, key=ranks.get, reverse=True)[:limit]]
+
+        # A general conditional-admission question needs the actual GPA policy,
+        # not a programme marketing page that only shares applicant keywords.
+        if {'gpa', 'conditional'} <= set(query_words):
+            policies = [entry for entry in matches if re.search(
+                r'\bGPA\s+(?:between\s+|of\s+)?\d\.\d+\s*(?:[–—-]|and|to)\s*\d\.\d+',
+                entry.content, re.I) and 'conditional' in entry.content.casefold()]
+            policies.sort(key=lambda entry: (
+                'admission' in (entry.source_url or '').casefold(),
+                'domestic' in entry.content.casefold() if 'domestic' in query_words else False,
+                entry.search_score,
+            ), reverse=True)
+            ids = {entry.db_id for entry in policies}
+            results = (policies + [entry for entry in results if entry.db_id not in ids])[:limit]
 
         for entry in results:
             entry.times_used += 1

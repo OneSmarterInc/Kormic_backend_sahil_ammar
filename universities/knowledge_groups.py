@@ -54,6 +54,10 @@ def classify_group_slug(question: str) -> str:
     ADMISSIONS when no keyword matches."""
     text = str(question or "").lower()
 
+    # The requested financial policy wins over the applicant's visa category.
+    if re.search(r'\b(?:tuition|deposits?|fees?|billing|refunds?|per.credit)\b', text):
+        return KnowledgeGroup.Slug.MONEY
+
     for slug in _CLASSIFICATION_ORDER:
         if any(pattern.search(text) for pattern in _COMPILED_KEYWORDS[slug]):
             return slug

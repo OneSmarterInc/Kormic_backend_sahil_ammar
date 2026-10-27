@@ -17,9 +17,9 @@ from pure_multi_agent.registered_adviser import _consult
 
 QUESTIONS = [
     ('What is the standard minimum GPA for master’s admission?', 'Graduate GPA', 'Standard master’s admission requires GPA 2.50; Nursing requires 3.00.', 'admissions/masters-students'),
-    ('Can a domestic master’s applicant with a 2.30 GPA receive conditional admission?', 'Conditional admission GPA', 'Domestic applicants with GPA 2.30 can receive conditional admission.', 'admissions/masters-students'),
+    ('Can a domestic master’s applicant with a 2.30 GPA receive conditional admission?', 'Conditional admission GPA', 'Domestic applicants with GPA between 2.250 and 2.499 can receive conditional admission if they meet the other admission requirements.', 'admissions/masters-students'),
     ('Can an international applicant email their own transcript and have it count as official?', 'Official international transcripts', 'Applicant-submitted transcripts are not official; the evaluator must send the evaluation directly.', 'admissions/international-students'),
-    ('Does Franklin require the GRE or GMAT for master’s admission?', 'Graduate GRE GMAT', 'Master’s admission does not require GRE or GMAT.', 'admissions/masters-students'),
+    ('Is Franklin currently admitting F-1 undergraduate applicants?', 'F-1 undergraduate admissions policy', 'Franklin is not currently admitting F-1 undergraduate applicants.', 'admissions/international-students'),
     ('What is standard master’s tuition per credit for 2026–2027 including changes effective Fall 2026?', 'Standard graduate tuition', 'Standard master’s tuition for 2026–2027 is $690 per credit.', 'tuition-financial-aid/tuition-fees'),
     ('What is the F-1 new-student deposit, and is it applied toward tuition?', 'F-1 tuition deposit', 'The new-student tuition deposit is applied toward tuition.', 'admissions/international-students'),
     ('Does Franklin offer on-campus housing?', 'Campus housing', 'Franklin does not offer on-campus housing.', 'current-students/international-students/getting-started'),
@@ -106,10 +106,12 @@ class StudentGateTwoTests(TestCase):
         self.assertEqual(result['pending_query']['query_id'], result2['pending_query']['query_id'])
         notify.assert_called_once()
 
-    def test_generation_failure_escalates_instead_of_dumping_irrelevant_excerpts(self):
+    def test_generation_failure_does_not_create_a_university_policy_question(self):
         from pure_multi_agent.model_router import AIServiceUnavailable
         with patch('pure_multi_agent.tools.university_tools._university_evidence', return_value={'facts': [{'content': 'Career development information.', 'source_url': 'https://www.franklin.edu/careers'}]}), patch('pure_multi_agent.registered_adviser.invoke', side_effect=AIServiceUnavailable('Unavailable')), patch('agents.student_context.university_context', return_value={}), patch('agent_queries.services.notify_query'):
             result = _consult(dict(self.ctx), self.school, QUESTIONS[6][0])
-        self.assertTrue(result['pending'])
+        self.assertFalse(result['pending'])
+        from agent_queries.models import AgentQuery
+        self.assertFalse(AgentQuery.objects.exists())
         self.assertNotIn('Saved source excerpt', result['answer'])
         self.assertEqual(result['sources'], [])

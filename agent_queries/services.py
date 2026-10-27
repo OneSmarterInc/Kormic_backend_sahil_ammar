@@ -79,12 +79,12 @@ def notify_query(query, *, answered=False):
 
 
 @transaction.atomic
-def raise_query(conversation, direction, question):
+def raise_query(conversation, direction, question, *, routing_question=None):
     question = question.strip()
     if not question or len(question) > 2000:
         raise ValueError("A specific question of 1â€“2000 characters is required.")
     from universities.knowledge_groups import resolve_group_for_question
-    group = resolve_group_for_question(str(conversation.university.uuid), question)
+    group = resolve_group_for_question(str(conversation.university.uuid), routing_question or question)
     actor = "student_agent" if direction == AgentQuery.Direction.STUDENT else "university_agent"
     target = "university_agent" if actor == "student_agent" else "student_agent"
     # Serialize the pair so concurrent model retries cannot create duplicate notifications.
@@ -97,7 +97,8 @@ def raise_query(conversation, direction, question):
         message(conversation, target, "This information is missing. I have asked my user to answer: " + question, kind="escalation", query=row)
         notify_query(row)
     return {"pending": True, "query_id": row.pk, "status": row.status,
-        "department_email": group.escalation_contact_email if group else "",
+        "department_email": row.group.escalation_contact_email if row.group else "",
+        "department": row.group.slug if row.group else "",
           "university_name": conversation.university.name,
           "instruction": ((f"Tell the student their query has been raised to {conversation.university.name} for further details. Department contact: {group.escalation_contact_email if group else 'not configured'}. " if direction == AgentQuery.Direction.STUDENT else "The student has been notified of the university's question. ") + "Do not ask the requesting user to supply the other party's facts or invent an answer.")}
 
