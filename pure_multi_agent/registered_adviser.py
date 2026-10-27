@@ -78,6 +78,10 @@ def _consult(ctx, row, question, public_row=None):
         if not retrieved[0]:
             return {'error': 'Retrieve official university information first.'}
         from pure_multi_agent.answer_checks import general_conditional_policy
+        from pure_multi_agent.loaded_policy import covered_policy
+        coverage = covered_policy(question, evidence_bundle)
+        if coverage:
+            return {'pending': False, 'instruction': coverage}
         if general_conditional_policy(question, evidence_bundle):
             return {'pending': False, 'instruction': 'The loaded general domestic master’s conditional-admission policy answers this question. Apply its GPA range, cite its source and preserve other admission requirements. No officer query is needed for optional programme details.'}
         result = queries.raise_query(conversation, AgentQuery.Direction.STUDENT, unanswered_question,
@@ -151,6 +155,11 @@ def _consult(ctx, row, question, public_row=None):
         from pure_multi_agent.answer_checks import applicant_gpa_comparison, general_conditional_policy
         comparison = applicant_gpa_comparison(question, evidence_bundle)
         general_policy = general_conditional_policy(question, evidence_bundle)
+        from pure_multi_agent.loaded_policy import covered_policy, tuition_wording_problems
+        coverage = covered_policy(question, evidence_bundle)
+        if coverage:
+            selected_tools = []
+            instruction += '\n' + coverage
         if general_policy:
             selected_tools = []
             instruction += '\nThe loaded general domestic master’s policy answers this range question. Give the supported conditional pathway with its source; do not escalate optional programme-specific questions.'
@@ -186,6 +195,9 @@ def _consult(ctx, row, question, public_row=None):
             from pure_multi_agent.response_contract import problems as presentation_problems
             problems = violations(reply.content, evidence_bundle, student, question=question) + presentation_problems(reply.content)
             problems += tuition_guarantee_problems(reply.content, question)
+            problems += tuition_wording_problems(reply.content, question, evidence_bundle)
+            if coverage and (needs_clarification(reply.content) or re.search(r'escalat|pending|sent.{0,60}university', reply.content, re.I)):
+                problems.append(coverage)
             if general_policy and (needs_clarification(reply.content) or re.search(r'\bescalat\w*\b', reply.content, re.I)):
                 problems.append('The loaded general admissions policy supports this GPA-range question. Answer it with its documented conditions and citation instead of claiming a missing policy or escalation.')
             if pending.get('department') == 'money' and re.search(
@@ -221,9 +233,16 @@ def _consult(ctx, row, question, public_row=None):
             if problems:
                 raise ValueError('; '.join(problems))
         try:
-            reply = invoke([SystemMessage(content=instruction), *state['messages']], selected_tools,
-                require_tools=not retrieved[0], response_validator=validate_answer,
-                profile='evidence', message_preparer=compact_chat_messages, **advice_options())
+            from pure_multi_agent.loaded_policy import covered_tuition_answer
+            policy_answer = covered_tuition_answer(question, evidence_bundle)
+            if policy_answer:
+                from langchain_core.messages import AIMessage
+                reply = AIMessage(content=policy_answer)
+                validate_answer(reply)
+            else:
+                reply = invoke([SystemMessage(content=instruction), *state['messages']], selected_tools,
+                    require_tools=not retrieved[0], response_validator=validate_answer,
+                    profile='evidence', message_preparer=compact_chat_messages, **advice_options())
         except Exception as exc:
             from pure_multi_agent.model_router import AIServiceUnavailable, InvalidToolResponse
             from pure_multi_agent.context_budget import ContextBudgetExceeded

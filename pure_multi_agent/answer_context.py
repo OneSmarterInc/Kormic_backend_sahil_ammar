@@ -42,6 +42,10 @@ def evidence_excerpt(text, question, budget=3500):
     """
     if len(text) <= budget:
         return text
+    from pure_multi_agent.loaded_policy import tuition_excerpt
+    policy_excerpt = tuition_excerpt(text, question, budget)
+    if policy_excerpt:
+        return policy_excerpt
     from pure_multi_agent.financial_periods import deposit_table_excerpt
     deposit_excerpt = deposit_table_excerpt(text, question, budget)
     if deposit_excerpt:

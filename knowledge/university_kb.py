@@ -412,6 +412,7 @@ class UniversityKnowledgeBase:
         - usage score
         """
         from university_research.relevance import retrieval_question
+        fees_requested = bool(re.search(r'\bfees?\b|resource', query, re.I))
         query = retrieval_question(query)
         # Cached agents must not retain pre-edit content between student turns.
         if not self.lazy:
@@ -530,8 +531,15 @@ class UniversityKnowledgeBase:
             policies = [entry for entry in matches
                         if requested_years & set(re.findall(r'\b20\d{2}\b', entry.content))
                         and re.search(r'tuition', entry.content, re.I)
-                        and re.search(r'guarantee', entry.content, re.I)
-                        and re.search(r'change|effective|beginning', entry.content, re.I)]
+                        and re.search(r'guarantee', entry.topic + ' ' + entry.content, re.I)
+                        and re.search(r'chang|effective|beginning', entry.topic + ' ' + entry.content, re.I)]
+            if fees_requested:
+                policy_urls = {entry.source_url for entry in policies if entry.source_url}
+                fee_sections = [entry for entry in matches
+                                if entry.source_url in policy_urls
+                                and re.search(r'resource fee', entry.content, re.I)]
+                policy_ids = {entry.db_id for entry in policies}
+                policies += [entry for entry in fee_sections if entry.db_id not in policy_ids]
             ids = {entry.db_id for entry in policies}
             results = (policies + [entry for entry in results if entry.db_id not in ids])[:limit]
 
